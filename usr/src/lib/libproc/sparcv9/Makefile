@@ -33,4 +33,4 @@ include ../../Makefile.lib.64
 
 CPPFLAGS += -D_SYSCALL32
 
-install: all $(ROOTLIBS64) $(ROOTLINKS64)
+install: all $(ROOTLIBS64) $(ROOTLINKS64) $(ROOTLINT64)

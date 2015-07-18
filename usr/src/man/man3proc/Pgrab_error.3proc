@@ -1,0 +1,56 @@
+.\"
+.\" This file and its contents are supplied under the terms of the
+.\" Common Development and Distribution License ("CDDL"), version 1.0.
+.\" You may only use this file in accordance with the terms of version
+.\" 1.0 of the CDDL.
+.\"
+.\" A full copy of the text of the CDDL should have accompanied this
+.\" source.  A copy of the CDDL is also available via the Internet at
+.\" http://www.illumos.org/license/CDDL.
+.\"
+.\"
+.\" Copyright 2015 Joyent, Inc.
+.\"
+.Dd May 14, 2015
+.Dt PGRAB_ERROR 3PROC
+.Os
+.Sh NAME
+.Nm Pgrab_error
+.Nd get Pgrab error message string
+.Sh SYNOPSIS
+.Lb libproc
+.In libproc.h
+.Ft "const char *"
+.Fo Pgrab_error
+.Fa "int error"
+.Fc
+.Sh DESCRIPTION
+The
+.Fn Pgrab_error
+function returns a pointer to a human-readable character string that
+describes the error the occurred. The
+.Fn Pgrab_error
+function only knows how to translate errors that were returned from a
+failed call to
+.Xr Pgrab 3PROC ,
+.Xr Pfgrab_core ,
+.Xr Pgrab_core 3PROC ,
+and
+.Xr Pgrab_file 3PROC .
+that were stored in the function's
+.Fa perr
+argument.
+.Sh RETURN VALUES
+The
+.Fn Pgrab_error
+function always returns a pointer to a character string that describes
+the error that occurred, even if it is an unknown error.
+.Sh INTERFACE STABILITY
+.Sy Committed
+.Sh MT-LEVEL
+.Sy MT-Safe
+.Sh SEE ALSO
+.Xr libproc 3LIB ,
+.Xr Pgrab 3PROC ,
+.Xr Pgrab_core 3PROC ,
+.Xr Pgrab_file 3PROC

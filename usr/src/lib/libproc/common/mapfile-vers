@@ -21,7 +21,7 @@
 #
 # Copyright (c) 2006, 2010, Oracle and/or its affiliates. All rights reserved.
 # Copyright 2012 DEY Storage Systems, Inc.  All rights reserved.
-# Copyright (c) 2013, Joyent, Inc. All rights reserved.
+# Copyright 2015, Joyent, Inc.
 # Copyright (c) 2013 by Delphix. All rights reserved.
 #
 
@@ -45,27 +45,7 @@ $mapfile_version 2
 # SUNW_1.1 through SUNW_1.4 symbols, but they are now kept as placeholders.
 # Don't add any symbols to these versions.
 
-SYMBOL_VERSION SUNW_1.4 {
-    global:
-	SUNW_1.4;
-} SUNW_1.3;
-
-SYMBOL_VERSION SUNW_1.3 {
-    global:
-	SUNW_1.3;
-} SUNW_1.2;
-
-SYMBOL_VERSION SUNW_1.2 {
-    global:
-	SUNW_1.2;
-} SUNW_1.1;
-
-SYMBOL_VERSION SUNW_1.1 {
-    global:
-	SUNW_1.1;
-};
-
-SYMBOL_VERSION SUNWprivate_1.1 {
+SYMBOL_VERSION ILLUMOS_1.0 {
     global:
 	Lalt_stack;
 	Lclearfault;
@@ -76,7 +56,6 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	Lgetareg;
 	Lgrab;
 	Lgrab_error;
-	_libproc_debug;
 	Lmain_stack;
 	Lprochandle;
 	Lpsinfo;
@@ -124,11 +103,12 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	Pgrab_core;
 	Pgrab_error;
 	Pgrab_file;
-	Pgrab_ops;
 	Pisprocdir;
+	Pissyscall;
 	Pissyscall_prev;
 	Plmid;
 	Plmid_to_loadobj;
+	Plmid_to_ctf;
 	Plmid_to_map;
 	Plookup_by_addr;
 	Plookup_by_name;
@@ -155,7 +135,7 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	Pplatform;
 	Ppltdest;
 	Ppriv;
-	Pprivinfo;
+	Ppriv_free;
 	Ppsinfo;
 	Pputareg;
 	pr_access;
@@ -190,7 +170,6 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	pr_lseek;
 	pr_lstat;
 	pr_lstat64;
-	pr_lwp_exit;
 	pr_memcntl;
 	pr_meminfo;
 	pr_mmap;
@@ -204,6 +183,7 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	proc_fltname;
 	proc_fltset2str;
 	proc_flushstdio;
+	proc_free_priv;
 	proc_get_auxv;
 	proc_get_cred;
 	proc_get_priv;
@@ -229,7 +209,6 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	pr_processor_bind;
 	pr_rename;
 	pr_setitimer;
-	pr_setprojrctl;
 	pr_setrctl;
 	pr_setrlimit;
 	pr_setrlimit64;
@@ -240,8 +219,6 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	pr_statvfs;
 	pr_unlink;
 	pr_waitid;
-	pr_zmap;
-	Pset_procfs_path;
 	Psetbkpt;
 	Psetcred;
 	Psetfault;
@@ -254,26 +231,6 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	Psetwapt;
 	Psetzoneid;
 	Psignal;
-	ps_lcontinue;
-	ps_lgetfpregs;
-	ps_lgetregs;
-	ps_lsetfpregs;
-	ps_lsetregs;
-	ps_lstop;
-	ps_pauxv;
-	ps_pbrandname;
-	ps_pcontinue;
-	ps_pdmodel;
-	ps_pdread		{ FLAGS = NODYNSORT };	# Alias of ps_pread
-	ps_pdwrite		{ FLAGS = NODYNSORT };	# Alias of ps_pwrite
-	ps_pglobal_lookup;
-	ps_pglobal_sym;
-	ps_plog;
-	ps_pread;
-	ps_pstop;
-	ps_ptread		{ FLAGS = NODYNSORT };	# Alias of ps_pread
-	ps_ptwrite		{ FLAGS = NODYNSORT };	# Alias of ps_pwrite
-	ps_pwrite;
 	Pstack_iter;
 	Pstate;
 	Pstatus;
@@ -284,7 +241,6 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	Psymbol_iter_by_lmid;
 	Psymbol_iter_by_name;
 	Psync;
-	Psyscall;
 	Psysentry;
 	Psysexit;
 	Puname;
@@ -308,21 +264,81 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 $if _x86 && _ELF32
 	Pldt;
 	proc_get_ldt;
-	ps_lgetLDT;
 $endif
 
 $if _sparc
 	Plwp_getgwindows;
 	Plwp_getxregs;
 	Plwp_setxregs;
-	ps_lgetxregs;
-	ps_lgetxregsize;
-	ps_lsetxregs;
 
 $if _ELF64
 	Plwp_getasrs;
 	Plwp_setasrs;
 $endif
+$endif
+
+
+};
+
+SYMBOL_VERSION SUNW_1.4 {
+    global:
+	SUNW_1.4;
+} SUNW_1.3;
+
+SYMBOL_VERSION SUNW_1.3 {
+    global:
+	SUNW_1.3;
+} SUNW_1.2;
+
+SYMBOL_VERSION SUNW_1.2 {
+    global:
+	SUNW_1.2;
+} SUNW_1.1;
+
+SYMBOL_VERSION SUNW_1.1 {
+    global:
+	SUNW_1.1;
+};
+
+SYMBOL_VERSION SUNWprivate_1.1 {
+    global:
+	_libproc_debug;
+	Pgrab_ops;
+	Pprivinfo;
+	Pset_procfs_path;
+	Psyscall;
+	pr_zmap;
+	pr_lwp_exit;
+	pr_setprojrctl;
+	ps_lcontinue;
+	ps_lgetfpregs;
+	ps_lgetregs;
+	ps_lsetfpregs;
+	ps_lsetregs;
+	ps_lstop;
+	ps_pauxv;
+	ps_pbrandname;
+	ps_pcontinue;
+	ps_pdmodel;
+	ps_pdread		{ FLAGS = NODYNSORT };	# Alias of ps_pread
+	ps_pdwrite		{ FLAGS = NODYNSORT };	# Alias of ps_pwrite
+	ps_pglobal_lookup;
+	ps_pglobal_sym;
+	ps_plog;
+	ps_pread;
+	ps_pstop;
+	ps_ptread		{ FLAGS = NODYNSORT };	# Alias of ps_pread
+	ps_ptwrite		{ FLAGS = NODYNSORT };	# Alias of ps_pwrite
+	ps_pwrite;
+
+$if _x86 && _ELF32
+	ps_lgetLDT;
+$endif
+
+$if _sparc
+	ps_lgetxregs;
+	ps_lgetxregsize;
+	ps_lsetxregs;
 $endif
 
     local:
