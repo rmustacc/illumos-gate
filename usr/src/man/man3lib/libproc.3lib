@@ -398,7 +398,7 @@ for more information on working with core files.
 Processes in this state are those that have never been run. This is
 always the case for handles that refer to files as the files cannot be
 executed. Those process handles are obtained through calling
-.Xr Pgrab_idle 3PROC .
+.Xr Pgrab_file 3PROC .
 .El
 .Pp
 Many functions that relate to tracing processes, for example
