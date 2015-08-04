@@ -23,10 +23,10 @@
 .Sh DESCRIPTION
 The
 .Nm
-library provides consumers a general series of interfaces to inspect and
-control both live processes and core files. It is intended to be used
-for introspection tools such as debuggers and itself consumes and
-provides a higher-level interface to the /proc file system
+library provides consumers a general series of interfaces to inspect
+and control both live processes and core files. Its intended for
+introspection tools such as debuggers by providing a high-level
+interface to the /proc file system
 .Pf ( Xr proc 4 ) .
 .Pp
 The
@@ -39,11 +39,9 @@ objects.
 .It
 Interrogating the state of a process or core file.
 .It
-Manipulating the current state of a process.
+Manipulating the current state of a process or thread.
 .It
 Interrogating the state of threads of a process or core file.
-.It
-Manipulating the current state of a thread.
 .It
 Running system calls in the context of another process.
 .It
@@ -55,32 +53,29 @@ Various utilities to support debugging tools.
 .Ss Live Processes
 The
 .Nm
-library can be used to manipulate running processes and be used to
-create processes. When manipulating an already running process, the
-caller must first
+library can be used to manipulate running processes and to create new
+ones. To manipulate an existing process first
 .Em grab
-the process. To grab a process, one uses the
-.Fn Pgrab
-function. A process is generally stopped as a side effect of grabbing
+it with the
+.Em Pgrab function. A process is generally stopped as a side effect of grabbing
 it. Callers must exercise caution, as if they do not use the library
-correctly, or they terminate unexpectedly, a process may remain stopped.
+correctly, or they terminate unexpectedly, a process may remain
+stopped.
 .Pp
 Unprivileged users may only grab their own processes. Users with the
 privilege
 .Sy PRIV_PROC_OWNER
-man manipulate processes that they do not own; however, additional
+may manipulate processes that they do not own; however, additional
 restrictions as described in
 .Xr privileges 5
 apply.
 .Pp
 In addition, the
-.Nm
-library may be used to create processes which are always controlled by
-the library. The
 .Fn Pcreate
 and
 .Fn Pxcreate
-functions may be used for this purpose.
+functions may be used to create processes which are always controlled by
+the library.
 .Ss Core Files
 The
 .Nm
@@ -95,29 +90,27 @@ also present.
 .Pp
 Not all functions in the
 .Nm
-library are valid for core files. In general, none of the commands which
-manipulate the current state of a process or thread or that try to force
-system calls on a victim process will work. Furthermore several of the
-information and iteration interfaces are limited based on the data that
-is available in the core file. For example, if the core file is of a
-process that omits the frame pointer, the ability of iterating the stack
-will be limited.
+library are valid for core files. In general, none of the commands
+which manipulate the current state of a process or thread or that try
+to force system calls on a victim process will work. Furthermore
+several of the information and iteration interfaces are limited based
+on the data that is available in the core file. For example, if the
+core file is of a process that omits the frame pointer, the ability to
+iterate the stack will be limited.
 .Pp
-To open a core file, a user should use the
+Use the
 .Fn Pgrab_core
 or
 .Fn Pfgrab_core
-functions. In addition, the library allows an ELF object file to be
-opened through the
+function to open a core file. Use the
 .Fn Pgrab_file
-function.
+function to open an ELF object file.
 This is useful for obtaining information stored in ELF headers and
 sections.
 .Ss Debug Information
-Many of the operations in the library rely on information that may
-commonly be thought of as debug information being present in a process
-and its associated libraries. The library leverages symbol table
-information, CTF data
+Many of the operations in the library rely on debug information being
+present in a process and its associated libraries. The library
+leverages symbol table information, CTF data
 .Pf ( Xr CTF 4 )
 sections, and frame unwinding information based on the use of an ABI
 defined frame pointer, eg.
@@ -126,13 +119,13 @@ and
 .Sy %rbp
 on x86 systems.
 .Pp
-For various reasons, some software providers opt to strip programs of
-this information or build their executables such that the information
-will not be present in a core dump. To deal with this fact, the library
-is able to consume information that is not present in the core file or
-the running process. It can both consume it from the underlying
-executable and it also supports finding it from related ELF objects that
-are linked to it via the
+Some software providers strip programs of this information or build
+their executables such that the information will not be present in a
+core dump. To deal with this fact, the library is able to consume
+information that is not present in the core file or the running
+process. It can both consume it from the underlying executable and it
+also supports finding it from related ELF objects that are linked to
+it via the
 .Sy .gnu_debuglink
 and the
 .Sy .note.gnu.build-id
@@ -170,13 +163,12 @@ context of the running process. This can be used both as a tool for
 introspection, allowing one to get information outside its current
 context as well as performing modifications to a process.
 .Pp
-When using these functions, they run in the context of the calling
-process. This can often be an easier way of getting information from the
-system about a process that isn't exported in another way. For example,
-the
+These functions run in the context of the calling process. This is
+often an easier way of getting non-exported information about a
+process from the system. For example, the
 .Xr pfiles 1
 command uses this interface to get more detailed information about a
-processes open file descriptors, which it would not have access to
+process's open file descriptors, which it would not have access to
 otherwise.
 .Sh INTERFACES
 The shared object
@@ -188,8 +180,7 @@ organized into categories that describe their purpose. Individual
 functions are documented in their own manual pages.
 .Ss Creation, Grabbing, and Releasing
 The following routines are related to creating library handles,
-processes, grabbing cores, processes, and threads, and releasing those
-resources.
+grabbing cores, processes, and threads, and releasing those resources.
 .Bl -column -offset indent ".Sy Pmapping_iter_resolved" ".Sy Psymbol_iter_by_addr"
 .It Sy Lfree Ta Sy Lgrab
 .It Sy Lgrab_error Ta Sy Pcreate
@@ -360,48 +351,46 @@ function.
 The various states are:
 .Bl -tag -width Dv -offset indent
 .It Dv PS_RUN
-This refers to an actively running process. This may be a process that
-was obtained by creating it with functions such as
+An actively running process. This may be a process that was obtained
+by creating it with functions such as
 .Xr Pcreate 3PROC
 or by grabbing an existing process such as
 .Xr Pgrab 3PROC .
 .It Dv PS_STOP
-This refers to an active process that is no longer executing. A process
-may be stopped for many reasons, for example, it have been stopped
-because an explicit stop was requested (through
+An active process that is no longer executing. A process may stop for
+many reasons such as an explicit stop request (through
 .Xr pstop 1
-for example) or a tracing event was hit.
+for example) or if a tracing event is hit.
 .Pp
-The specific reason that a process was stopped may be obtained through
-the thread's
+The reason a process is stopped may be obtained through the thread's
 .Sy lwpstatus_t
-structure which may be read directly from /proc or obtained through the
+structure read directly from /proc or obtained through the
 .Xr Lstatus 3PROC
 function.
 .It Dv PS_LOST
-Control over the process has been lost. One reason that this may happen
-because the process executes a new image that requires a different set
-of privileges. To resume control, callers should call
+Control over the process has been lost. This may happen when the
+process executes a new image requiring a different set of privileges.
+To resume control call
 .Xr Preopen 3PROC . For more information on losing control of a process,
 see
 .Xr proc 4 .
 .It DV PS_UNDEAD
-This is a process that has become a zombie. It has terminated, but it
-has not been cleaned up yet by its parent. For more on the conditions of
-becoming a zombie, see
+A zombie process. It has terminated, but it has not been cleaned up
+yet by its parent. For more on the conditions of becoming a zombie,
+see
 .Xr exec 2 .
 .It DV_PS_DEAD
 Processes in this state are always core files. See the earlier section
 .Sx Core Files
 for more information on working with core files.
 .It Dv PS_IDLE
-Processes in this state are those that have never been run. This is
-always the case for handles that refer to files as the files cannot be
-executed. Those process handles are obtained through calling
+A process that has never been run. This is always the case for handles
+that refer to files as the files cannot be executed. Those process
+handles are obtained through calling
 .Xr Pgrab_file 3PROC .
 .El
 .Pp
-Many functions that relate to tracing processes, for example
+Many functions relating to tracing processes, for example
 .Xr Psignal 3PROC ,
 .Xr Psetsignal 3PROC ,
 .Xr Psetfault 3PROC ,
@@ -924,7 +913,7 @@ When working with live processes, whether from the
 .Xr Pgrab
 or
 .Xr Pcreate
-families of functions, there are some additional considerations.
+family of functions, there are some additional considerations.
 Importantly, if a process calls any of the
 .Xr exec 2
 suite of functions, much of the state information that is obtained,
@@ -941,11 +930,10 @@ manual page, which discusses issues of privileges and security.
 The library provides a means for obtaining additional debugging
 information. The output itself is not part of the
 .Nm
-library's stable interface. To enable this, set the environment variable
+library's stable interface. Setting the environment variable
 .Ev LIBPROC_DEBUG
-to some value. For example,
+to some value will print information to standard error. For example,
 .Ev LIBPROC_DEUBG Ns = Ns Em please .
-This information will be printed to standard error.
 .Sh LOCKING
 Most functions operate on a handle to a process in the form of a
 .Vt "struct ps_prochandle *" .
