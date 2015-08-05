@@ -33,51 +33,48 @@ function attempts to grab the process identified by
 .Fa pid
 and returns a handle to it that allows the process to be controlled,
 interrogated, and manipulated. This interface only works with processes
-that already exist. For core files, instead use
+that already exist. Use
 .Xr Pgrab_core 3PROC
-and to create processes, instead see
-.Xr Pcreate 3PROC .
+for core files and
+.Xr Pcreate 3PROC
+to create processes.
 .Pp
-By default, when a process is stopped the following changes happen to
-it, unless values are passed in via
+A grabbed process undergoes the following changes unless
 .Fa flags
-to the contrary:
+is set to the contrary:
 .Bl -bullet -offset indent
 .It
-The process will be stopped
+The process is stopped
 .It
-All other tracing flags will be cleared
+All other tracing flags are cleared
 .It
-The grab will be exclusive. If any existing handles to this process
-exist or anyone else is using the underlying facilities of the /proc
-file system to control this process, it will fail.
+The grab is exclusive. If any existing handles to this process exist
+or anyone else is using the underlying facilities of the /proc file
+system to control this process, it will fail.
 .It
-Unless the process was already stopped, the
+Unless the process is already stopped, the
 .Dv PR_RLC
-flag will be set on the process indicating that it should
-run-on-last-close. This allows for cases where if the controlling
-process dies, the process will resume running even though it was stopped
-by grabbing it.
+flag is set indicating the process should run-on-last-close. Allowing
+the process to resume running if its controlling process dies.
 .El
 .Pp
-The above list describes the common things that will happen when
-grabbing a process. Grabbing a process should always be considered a
+Grabbing a process is a
 .Em destructive
-action. Stopping a process causes all threads to stop executing. The
-impact of stopping a process depends on the purpose of that process. For
-example, if one stops a process that's doing primarily computation, then
-the only major impact will be that it will be delayed during the entire
-time that it is stopped. However, if instead this is an active TCP
-server, then the accept backlog may fill causing connection errors and
-potentially connection time out errors.
+action. Stopping a process stops execution of all its threads. The
+impact of stopping a process depends on the purpose of that process.
+For example, if one stops a process that's primarily doing
+computation, then its computation is delayed the entire time that it
+is stopped. However, if instead this is an active TCP server, then the
+accept backlog may fill causing connection errors and potentially
+connection time out errors.
 .Pp
-In addition, special care must be taken to ensure that a stopped process
-continues, even if the controlling process terminates. By default the
+Special care must be taken to ensure that a stopped process continues,
+even if the controlling process terminates. If the controlling process
+disables the
 .Dv PR_RLC
-flag is enabled. However, if a caller disables that flag or the process
-was already stopped, then when the program terminates, it will leave the
-process stopped. Callers should exercise caution when changing this
-behavior.
+flag or the process was already stopped, then the process remains
+stopped after the controlling process terminates. Exercise caution
+when changing this behavior.
 .Pp
 Many of these default behaviors can be controlled by passing values to
 the
@@ -117,9 +114,8 @@ its current state, or inject systems calls into it.
 Normally when a process is grabbed, it does so for both reading and
 writing.
 .It Dv PGRAB_NOSTOP
-When the process is opened, do not stop the process and instead allow it
-to continue running. Note, any extant tracing flags on the process will
-still be cleared unless the
+Do not stop a process as it is grabbed. Note, any extant tracing flags
+on the process will still be cleared unless the
 .Dv PGRAB_RETAIN
 flag has been set.
 .Pp
@@ -133,7 +129,7 @@ argument must be a
 pointer which will store a more detailed error in the event that the
 .Fn Pgrab
 function fails. A human-readable form of the error can be obtained
-through the routine
+with
 .Xr Pgrab_error 3PROC .
 .Pp
 Once a caller is done with the library handle it should call
@@ -158,9 +154,9 @@ Upon successful completion, the
 .Fn Pgrab
 function returns a control handle to the process. Otherwise,
 .Dv NULL
-is returned and
+is returned with
 .Fa perr
-is filled in with an error code.
+containing the error code.
 .Sh ERRORS
 The
 .Fn Pgrab
