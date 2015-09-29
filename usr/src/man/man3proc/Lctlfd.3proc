@@ -32,11 +32,11 @@ function returns a file descriptor to the underlying /proc file system
 file for the thread identified by the handle
 .Fa L .
 This may be used for injecting control operations manually; however,
-many interface for using it are provided by
+many interfaces for using it are provided by
 .Xr libproc 3LIB
 itself.
 .Pp
-The file descriptor will become invalid if the thread handle is released
+The file descriptor is invalidated when the thread handle is released
 through
 .Xr Lfree 3PROC .
 The caller
