@@ -29,20 +29,19 @@
 .Sh DESCRIPTION
 The
 .Fn Lgrab
-function is used to obtain a control handle to a thread contained inside
-the process represented by
-.Fa P
-that is suitable for use with other
-.Sy libproc
-routines.
-.Pp
-The thread is specified by its thread identifier, which is placed in the
+function obtains a control handle to the thread identified by
 .Fa lwpid
-argument. The identifier can be obtained from the
+residing under the process
+.Fa P .
+This handle is then passed as argument to other
+.Sy libproc
+routines. The
+.Fa lwpid
+can be obtained from the
 .Sy pr_lwpid
-of the
+member of the
 .Sy lwpstatus_t
-structure for a thread.
+structure.
 .Pp
 The
 .Fa perr
@@ -52,8 +51,8 @@ error code in the event that
 is unable to successfully obtain a handle to the process. The possible
 errors are defined below in the
 .Sx ERRORS
-section and it may be transformed into a human readable string through
-the use of
+section. The code may be transformed into a human readable string
+through the use of
 .Xr Lgrab_error 3PROC .
 .Pp
 The handle to the thread is valid until the
