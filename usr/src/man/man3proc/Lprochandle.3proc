@@ -20,21 +20,21 @@
 .Sh SYNOPSIS
 .Lb libproc
 .In libproc.h
-.Ft "struct ps_prochandle"
+.Ft "struct ps_prochandle *"
 .Fo Lprochandle
 .Fa "struct ps_lwphandle *L"
 .Fc
 .Sh DESCRIPTION
 The
 .Fn Lprochandle
-function returns the process handle that corresponds to the process that
-the thread handle
+function returns the process handle to which the thread handle
 .Fa L
-belongs to which may be used with other
+belongs. This proccess handle may be used with other
 .Xr libproc 3PROC
-functions. The returned handle is valid even if
+functions just as if
+.Xr Pgrab 3PROC was called. The returned handle is valid even if
 .Xr Lfree 3PROC
-is called.
+is called (XXX confused...if Lfree is called on the L handle?).
 .Sh RETURN VALUES
 Upon successful completion, the
 .Fn Lprochandle
@@ -49,4 +49,5 @@ in
 .Sh SEE ALSO
 .Xr libproc 3LIB ,
 .Xr Lfree 3PROC ,
+.Xr Pgrab 3PROC ,
 .Xr Prelease 3PROC
