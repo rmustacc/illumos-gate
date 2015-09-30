@@ -16,12 +16,12 @@
 .Os
 .Sh NAME
 .Nm Pasfd
-.Nd obtain the process address file descriptor
+.Nd obtain the process address space file descriptor
 .Sh SYNOPSIS
 .Lb libproc
 .In libproc.h
 .Ft int
-.Fo Pctlfd
+.Fo Pasfd
 .Fa "struct ps_prochandle *P"
 .Fc
 .Sh DESCRIPTION
@@ -44,12 +44,12 @@ file, except for live processes. Other means of obtaining a
 process handle may not define a file descriptor that contains the
 address space.
 .Pp
-The returned file descriptor must not be closed and is only valid until
-for as long as the corresponding process handle
+The returned file descriptor must not be closed and is only valid for
+as long as the corresponding process handle
 .Fa P
 is valid. After a call to
 .Xr Prelease 3PROC
-the file descriptor will be invalid.
+the file descriptor is invalidated.
 .Sh RETURN VALUES
 Upon successful completion, the
 .Fn Pasfd
