@@ -31,6 +31,7 @@
 .Fo Plmid_to_ctf
 .Fa "struct ps_prochandle *P"
 .Fa "Lmid_t lmid"
+.Fa "const char *name"
 .Fc
 .Ft "ctf_file_t *"
 .Fo Pname_to_ctf
@@ -79,12 +80,10 @@ refers to the executable object itself and the macro
 .Pp
 The
 .Fn Plmid_to_ctf
-function is similar to the
-.Fn Pname_to_ctf ;
-however, the
-.Fn Plmid_to_ctf
-function allows the link-map identifier as
-.Fa lmid
+function is similar to
+.Fn Pname_to_ctf .
+It allows the passing of a link-map identifier,
+.Fa lmid ,
 which constricts the search of the object named with
 .Fa name
 to that link-map. The special value of
