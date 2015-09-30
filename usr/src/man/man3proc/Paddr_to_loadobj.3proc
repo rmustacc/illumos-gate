@@ -31,6 +31,7 @@
 .Fo Plmid_to_loadobj
 .Fa "struct ps_prochandle *P"
 .Fa "Lmid_t lmid"
+.Fa "const char *name"
 .Fc
 .Ft "const rd_loadobj_t *"
 .Fo Pname_to_loadobj
@@ -62,8 +63,8 @@ The
 function attempts to find the loaded object information, if any, that exists for the
 address
 .Fa addr .
-Note, not all address correspond to memory regions that were loaded by
-the run-time link-editor. For example, if a user creates a region of
+Not all address correspond to memory regions that were loaded by the
+run-time link-editor. For example, if a user creates a region of
 anonymous memory through the
 .Xr mmap 2
 function, then it will not have any corresponding loaded module.
@@ -80,12 +81,10 @@ refers to the executable object itself and the macro
 .Pp
 The
 .Fn Plmid_to_loadobj
-function is similar to the
-.Fn Pname_to_loadobj ;
-however, the
-.Fn Plmid_to_loadobj
-function allows the link-map identifier as
-.Fa lmid
+function is similar to
+.Fn Pname_to_loadobj .
+It allows the use of a link-map identifier,
+.Fa lmid ,
 which constricts the search of the object named with
 .Fa name
 to that link-map. The special value of
