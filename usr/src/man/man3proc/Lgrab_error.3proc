@@ -27,18 +27,20 @@
 .Sh DESCRIPTION
 The
 .Fn Lgrab_error
-function returns a pointer to a human-readable character string that
-describes the error the occurred. The
+function returns a pointer to a human-readable character string
+describing the error that occurred. The
 .Fn Lgrab_error
-function only knows how to translate errors that were returned from a
-failed call to
+function only knows how to translate error codes that were stored in
+the third argument (
+.Fa perr
+) of a call to
 .Xr Lgrab 3PROC
-that were stored in the function's third argument.
+.
 .Sh RETURN VALUES
 The
 .Fn Lgrab_error
-function always returns a pointer to a character string that describes
-the error that occurred, even if it is an unknown error.
+function always returns a pointer to a character string describing the
+error that occurred, even if it is an unknown error.
 .Sh INTERFACE STABILITY
 .Sy Committed
 .Sh MT-LEVEL
