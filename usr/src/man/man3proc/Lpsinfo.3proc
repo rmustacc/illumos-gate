@@ -39,7 +39,7 @@ and is valid until a subsequent call to
 .Sh RETURN VALUES
 Upon successful completion, the
 .Fn Lpsinfo
-function returns a pointer to the thread's ps information. Otherwise
+function returns a pointer to the thread's ps information. Otherwise,
 .Dv NULL
 is returned to indicate that it could not be found.
 .Sh INTERFACE STABILITY
