@@ -36,7 +36,8 @@ structure is defined in
 and contains information about the thread including its flags, the size
 of its stack, its user and system time, and more.
 .Pp
-The returned pointer is only valid as long as the process handle
+(XXX Should this paragraph be referencing the L handle, not P?) The
+returned pointer is only valid as long as the process handle
 .Fa P
 is valid. After a call to
 .Xr Prelease 3PROC ,
