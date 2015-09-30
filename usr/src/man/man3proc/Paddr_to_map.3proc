@@ -19,26 +19,27 @@
 .Nm Paddr_to_text_map ,
 .Nm Plmid_to_map ,
 .Nm Pname_to_map
-.Nd lookup loaded object information
+.Nd lookup memory map information
 .Sh SYNOPSIS
 .Lb libproc
 .In libproc.h
-.Ft "const prmat_t *"
+.Ft "const prmap_t *"
 .Fo Paddr_to_map
 .Fa "struct ps_prochandle *P"
 .Fa "uintptr_t addr"
 .Fc
-.Ft "const prmat_t *"
+.Ft "const prmap_t *"
 .Fo Paddr_to_text_map
 .Fa "struct ps_prochandle *P"
 .Fa "uintptr_t addr"
 .Fc
-.Ft "const prmat_t *"
+.Ft "const prmap_t *"
 .Fo Plmid_to_map
 .Fa "struct ps_prochandle *P"
 .Fa "Lmid_t lmid"
+.Fa "const char *name"
 .Fc
-.Ft "const prmat_t *"
+.Ft "const prmap_t *"
 .Fo Pname_to_map
 .Fa "struct ps_prochandle *P"
 .Fa "const char *name"
@@ -50,7 +51,7 @@ The
 .Fn Plmid_to_map ,
 and
 .Fn Pname_to_map
-functions lookup information memory map's in the process handle
+functions lookup memory map information in the process handle
 .Fa P .
 The
 .Sy prmap_t
@@ -92,12 +93,10 @@ refers to the executable object itself and the macro
 .Pp
 The
 .Fn Plmid_to_map
-function is similar to the
-.Fn Pname_to_map ;
-however, the
-.Fn Plmid_to_map
-function allows the link-map identifier as
-.Fa lmid
+function is similar to
+.Fn Pname_to_map .
+It allows passing a link-map identifier,
+.Fa lmid ,
 which constricts the search of the object named with
 .Fa name
 to that link-map. The special value of
@@ -113,9 +112,8 @@ Upon successful completion, the
 .Fn Plmid_to_map ,
 and
 .Fn Pname_to_map
-functions return a pointer to the corresponding loadable object
-information.
-Otherwise, if none exists then
+functions return a pointer to the corresponding mapping information.
+If none exists then
 .Dv NULL
 is returned.
 .Sh INTERFACE STABILITY
