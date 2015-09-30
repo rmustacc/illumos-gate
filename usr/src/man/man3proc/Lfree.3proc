@@ -27,27 +27,22 @@
 .Sh DESCRIPTION
 The
 .Fn Lfree
-function is used to release all resources associated with the thread
-being controlled by the handle
-.Fa L
-due to a call to
-.Xr Lgrab 3PROC .
-After the call to the
+function releases all control resources associated with the the handle
+.Fa L .
+After
 .Fn Lfree
-function, other
+, calls to other
 .Sy libproc
-routines which leveraged information from the handle
+routines which leverage information from the handle
 .Fa L
-will no longer have valid data. After calling the
-.Fn Lfree
-function, the pointer
-.Fa L
-is invalid.
+will no longer work as the pointer is invalidated.
 .Pp
-The state of the thread is not affected by a call to
+The state of the thread controlled by
+.Fa L
+is not affected by the call to
 .Fn Lfree .
 The thread's state will not transition from running to stopped or
-vice-versa, it will retain the thread's state prior to the call to
+vice-versa. It will retain its state prior to the call to
 .Fn Lfree .
 .Sh INTERFACE STABILITY
 .Sy Committed
