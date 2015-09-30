@@ -26,9 +26,9 @@
 .Fc
 .Sh DESCRIPTION
 The
-.Fn Pstate
+.Fn Lstate
 function returns the state of the thread handle
-.Fa P .
+.Fa L .
 The list of states is available in the
 .Sy PROCESS STATES
 section in
