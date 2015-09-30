@@ -43,28 +43,27 @@ The
 .Fn Plmid_to_ctf ,
 and
 .Fn Pname_to_ctf
-functions lookup CTF (Compact C Type Format) data for use with
-.Sy libctf
-from the current process represented by the process handle
+functions lookup CTF (Compact C Type Format) data, for use with
+.Sy libctf ,
+from the process represented by the handle
 .Fa P .
-In all cases, the CTF sections of not just the running executable, but
-also its shared libraries are searched.
+In all cases, the CTF sections of both the running executable and its
+shared libraries are searched.
 .Pp
-The CTF container returned by these functions are valid for as long as
-the process handle
+The CTF container returned is valid as long as the process handle
 .Fa P
-is valid. After a call to
-.Xr Prelease 3PROC ,
-the data will no longer be valid. Further, consumers must not close the
-CTF container.
+is valid. That is, until a call to
+.Xr Prelease 3PROC
+is made. Further, consumers must not close the CTF container.
 .Pp
 The
 .Fn Paddr_to_ctf
 function attempts to find the CTF section, if any, that exists for the
 address
 .Fa addr .
-Note, not all address correspond to memory regions that have CTF data.
-For example, if a user creates a region of anonymous memory through the
+Note, not all addresses correspond to memory regions that have CTF
+data. For example, if a user creates a region of anonymous memory
+through the
 .Xr mmap 2
 function, then it will not have any corresponding CTF information.
 .Pp
@@ -90,8 +89,8 @@ which constricts the search of the object named with
 .Fa name
 to that link-map. The special value of
 .Dv PR_LMID_EVERY
-may be passed to indicate that every link-map should be searched, which
-is equivalent in behavior to the
+indicates that every link-map should be searched, which is equivalent
+in behavior to the
 .Fn Pname_to_ctf
 function.
 .Sh RETURN VALUES
@@ -100,8 +99,8 @@ Upon successful completion, the
 .Fn Plmid_to_ctf ,
 and
 .Fn Pname_to_ctf
-functions return a pointer to the corresponding CTF container.
-Otherwise, if none exists then
+functions return a pointer to the corresponding CTF container. If none
+exists then
 .Dv NULL
 is returned.
 .Sh INTERFACE STABILITY
