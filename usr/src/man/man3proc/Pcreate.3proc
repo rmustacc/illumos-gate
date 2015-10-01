@@ -46,27 +46,23 @@
 .Sh DESCRIPTION
 The
 .Fn Pcreate
-and
-.Fn Pxcreate
-functions allow for the creation of a process that will be controlled by
-the
+function creates a process controlled by the
 .Sy libproc
-library.
-.Pp
-The
-.Fn Pcreate
-function is identical to the
+library. The
 .Fn Pxcreate
-function, except the latter allows for the environment to be replaced.
-Calling either routine will cause the calling program to
-.Xr fork 2
-and then the child will
+function does the same while also allowing the replacement of the
+environment via
+.Fa envp .
+.Pp
+Both functions cause the caller to
+.Xr fork 2 .
+Followed by the child calling
 .Xr exec 2
-the new process image specified by
+to load the new process image specified by
 .Fa file .
-The functions will search
+The
 .Ev PATH
-to try and find the executable named by
+is searched for
 .Fa file
 if it is not an absolute path, similar to
 .Xr execvp 2 .
@@ -120,42 +116,44 @@ or
 functions fail, the value pointed to will be filled in with a more
 detailed error code listed in
 .Sx ERRORS .
-A human-readable version of the error message is obtainable with the
-.Xr Pcreate_error 3PROC
-function.
+A human-readable error message is obtained with
+.Xr Pcreate_error 3PROC .
 .Pp
-If the
+
+Multiple executables named
+.Fa file
+may exist on the
+.Fa PATH .
+To determine the full path of the executable pass a non-NULL
 .Fa path
-argument points to a
-.Pf non- Dv NULL
-pointer, then if either the
+pointer. Upon succesful completion of
 .Fn Pcreate
 or
 .Fn Pxcreate
-function is successfully completed, then at most
-.Fn len
-bytes, including the character NUL, of the actual full executable path
-will be copied into
-.Fa buf .
+the
+.Fa path
+pointer will contain the full path up to
+.Fa len
+bytes, including the NUL character.
 .Pp
 Upon successful completion of the
 .Fn Pcreate
-and
+or
 .Fn Pxcreate
-functions, a handle to the process is returned. This handle is usable
+function, a handle to the process is returned. This handle is usable
 with other
 .Sy libproc
 routines and will persist until either
 .Xr Pfree 3PROC
 or
 .Xr Prelease 3PROC
-is called on the resulting handle. The resulting process that is created
-will be stopped just after the return from the
+is called on the resulting handle. The process created is stopped just
+after return from the
 .Xr exec 2
 family of system calls. The process will not run, unless the caller sets
 it running or releases its handle to the process.
 .Pp
-Note, a 32-bit process cannot use this interface to launch or control a
+A 32-bit process cannot use this interface to launch or control a
 64-bit process. However, a 64-bit process can create and control both
 32-bit and 64-bit processes.
 .Sh RETURN VALUES
@@ -169,7 +167,7 @@ handle to it. Otherwise,
 .Sy NULL
 is returned and
 .Fa perr
-is filled in with a corresponding error.
+is filled in with the corresponding error.
 .Sh ERRORS
 The
 .Fn Pcreate
