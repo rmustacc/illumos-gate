@@ -30,24 +30,23 @@
 The
 .Fn Penv_iter
 function iterates over the environment of the process represented by
-.Fa P
-and calls the callback
+.Fa P .
+For each environment variable,
 .Fa func
-with the argument
-.Fa data ,
-the address of the environment variable and the key-value pair
-once for each entry in the environment. For the full signature of the
+is passed the caller argument
+.Fa data
+along with the address of the environment variable and the key-value
+pair. For the full signature of the
 .Ft proc_env_f
 callback, see
 .Xr libproc 3LIB .
 .Pp
-The function,
-.Fa func Ns 's,
-return value controls whether or not iteration is continued. If
+The callback's return value controls whether or not iteration
+proceeds. If
 .Fa func
-returns zero, then iteration continues. However, if the function instead
-returns non-zero, then it will terminate iteration and return that
-value. It is recommend that callback functions do not return
+returns zero, then iteration continues. Otherwise, iteration is
+terminated and the value if returned. It is recommend that callback
+functions do not return
 .Sy -1
 so as to distinguish between the failure of the
 .Fn Penv_iter
