@@ -27,8 +27,7 @@
 .Sh DESCRIPTION
 The
 .Fn Pcreate_agent
-function causes the agent LWP to be created for the process represented
-by the library handle
+function creates the agent LWP in the process represented by handle
 .Fa P .
 The agent LWP is used as a means to force system calls to be invoked on
 the controlled process. For more information on the agent LWP, see
