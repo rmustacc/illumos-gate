@@ -32,11 +32,11 @@ The
 function obtains the credentials of the process from the handle
 .Fa P .
 .Pp
-The function reads the credentials into the buffer pointed to by
+The credentials are read into the buffer pointed to by
 .Fa pcrp .
 The
 .Sy prcred_t
-is defined in
+type is defined in
 .Xr proc 4 .
 It contains information about the current effective, saved, and real
 user and group IDs. It also allows for supplemental groups to be
