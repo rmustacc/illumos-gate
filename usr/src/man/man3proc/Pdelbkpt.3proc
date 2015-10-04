@@ -29,14 +29,12 @@
 .Sh DESCRIPTION
 The
 .Fn Pdelbkpt
-function removes a breakpoint that was installed at
+function removes the breakpoint installed at
 .Fa address
-with
-.Xr Psetbkpt 3PROC
-from the process represented by the handle
-.Fa P
-and restores the original instruction present in
-.Xr saved .
+from process
+.Fa P .
+Restoring the instruction present in
+.Fa saved .
 .Pp
 If the instruction at
 .Fa address
