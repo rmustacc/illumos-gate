@@ -38,13 +38,13 @@ itself.
 .Pp
 Only live processes have a control file descriptor. Process handles that
 correspond to files and cores, created through
-.Xr Prab_core 3PROC
+.Xr Prab_file 3PROC
 and
-.Xr Pgrab_file 3PROC
+.Xr Pgrab_core 3PROC ,
 do not have a corresponding file descriptor.
 .Pp
-The file descriptor will become invalid if the process handle is
-released through
+The file descriptor is invalidated when the process handle is released
+through
 .Xr Prelease 3PROC
 or if control is lost and the handle is reopened.
 .Sh RETURN VALUES
