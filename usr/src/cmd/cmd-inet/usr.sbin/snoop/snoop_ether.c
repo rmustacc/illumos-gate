@@ -354,6 +354,8 @@ inner_pkt:
 		case ETHERTYPE_AT:
 			interpret_at(flags, (struct ddp_hdr *)data, len);
 			break;
+		case ETHERTYPE_LLDP:
+			interpret_lldp(flags, data, len);
 		case 0:
 			if (ieee8023 == 0)
 				break;

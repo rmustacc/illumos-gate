@@ -205,10 +205,12 @@ main(int argc, char **argv)
 		perror("Warning: sigaction");
 		exit(1);
 	}
+#ifdef XXX
 	if (sigaction(SIGSEGV, &sigact, (struct sigaction *)NULL) < 0) {
 		perror("Warning: sigaction");
 		exit(1);
 	}
+#endif
 	if (sigaction(SIGSYS, &sigact, (struct sigaction *)NULL) < 0) {
 		perror("Warning: sigaction");
 		exit(1);

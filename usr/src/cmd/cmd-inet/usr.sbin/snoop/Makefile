@@ -33,7 +33,7 @@ OBJS=	nfs4_xdr.o snoop.o snoop_aarp.o snoop_adsp.o snoop_aecho.o \
 	snoop_dns.o snoop_ether.o \
 	snoop_filter.o snoop_http.o snoop_icmp.o snoop_igmp.o snoop_ip.o \
 	snoop_ipaddr.o snoop_ipsec.o snoop_isis.o \
-	snoop_ldap.o snoop_mip.o snoop_mount.o \
+	snoop_ldap.o snoop_lldp.o snoop_mip.o snoop_mount.o \
 	snoop_nbp.o snoop_netbios.o snoop_nfs.o snoop_nfs3.o snoop_nfs4.o \
 	snoop_nfs_acl.o snoop_nis.o snoop_nlm.o snoop_ntp.o \
 	snoop_pf.o snoop_ospf.o snoop_ospf6.o snoop_pmap.o snoop_ppp.o \
@@ -51,7 +51,7 @@ include ../../../Makefile.ctf
 
 CPPFLAGS += -I. -I$(SRC)/common/net/dhcp \
 	-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64
-LDLIBS += -ldhcputil -ldlpi -lsocket -lnsl -ltsol
+LDLIBS += -ldhcputil -ldlpi -lsocket -lnsl -llldp -lnvpair -ltsol
 LDFLAGS += $(MAPFILE.NGB:%=-M%)
 CERRWARN += -_gcc=-Wno-switch
 CERRWARN += -_gcc=-Wno-implicit-function-declaration
