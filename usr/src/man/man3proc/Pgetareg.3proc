@@ -66,9 +66,9 @@ and
 .Xr Lsetareg 3PROC
 functions.
 .Pp
-The getting and setting of registers only functions on stopped
+The getting and setting of registers only applies to stopped
 processes. In addition, one may obtain registers from core files, but
-they may not be set on core files. To stop a process, see the
+not set them. To stop a process, see the
 .Xr Pstop 3PROC
 function.
 .Pp
@@ -172,7 +172,7 @@ in
 .Sh SEE ALSO
 .Xr errno 3C ,
 .Xr libproc 3LIB ,
-.Xr Lgrag 3PROC ,
+.Xr Lgrab 3PROC ,
 .Xr Pgrab_file 3PROC ,
 .Xr Pstop 3PROC ,
 .Xr proc 4
