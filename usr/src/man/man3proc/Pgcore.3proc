@@ -47,21 +47,17 @@ wide variety of tools and libraries including
 and more. For details on the core file format, see
 .Xr core 4 .
 .Pp
-The
 .Fn Pfgcore
-function writes out the core file to the file represented by the open
-file descriptor
+writes the core to the file represented by the open descriptor
 .Fa fd .
-The file descriptor should be open for both read and write. The
+The file descriptor should be open for both read and write.
 .Fn Pgcore
-function on the other hand writes out the core file to the file path
-.Fa fpath .
+writes the core to the file path
+.Fa fname .
 .Pp
-The contents of the core file may be controlled by the
+The content of the core is controlled by the
 .Fa content
-argument. The
-.Ft core_content_t
-should be the inclusive-bitwise-OR of various content types which are
+argument. It's the inclusive-bitwise-OR of the various content types
 listed under the
 .Sy core_content_t
 heading in the
@@ -72,16 +68,10 @@ Using
 .Dv CC_CONTENT_INVALID
 is illegal and will result in an error.
 .Pp
-Neither the
-.Fn Pgcore
-or
-.Fn Pfgcore
-functions explicitly stop the handle
+Neither functions stop the handle
 .Fa P .
-It is up to the caller to stop the process, which is recommended for
-obtaining a consistent view of the process
-.Fa P .
-See the
+It is up to the caller to stop the process; which is recommended for
+obtaining a consistent view of the process. See the
 .Xr Pstop 3PROC
 function for a means to stop a handle.
 .Sh RETURN VALUES
@@ -100,7 +90,7 @@ function will truncate
 and the
 .Fn Pgcore
 function will remove
-.Fa fpath .
+.Fa fname .
 .Sh INTERFACE STABILITY
 .Sy Committed
 .Sh MT-LEVEL
