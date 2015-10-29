@@ -47,13 +47,8 @@ that encountered it when it occurs. The value of the
 .Fa stop
 parameter controls whether or not the listed fault in
 .Fa which
-will cause the thread to trap. If the value of
-.Fa stop
-is zero, then when a thread encounters the fault, it will not stop. If the
-value of
-.Fa stop
-is non-zero, then when a thread encounters the fault, the thread that
-caused the fault will stop.
+will cause the thread to trap. A value of 1 indicates the thread
+should stop; a value of 0 indicates it should not.
 .Pp
 The value of
 .Fa which
