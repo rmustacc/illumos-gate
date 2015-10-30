@@ -27,6 +27,12 @@
 .Fa "struct ssd *pldt"
 .Fa "int nldt"
 .Fc
+.Ft int
+.Fo proc_get_ldt
+.Fa "pid_t pid"
+.Fa "struct ssd *pldt"
+.Fa "int nldt"
+.Fc
 .Sh DESCRIPTION
 The
 .Fn Pldt
@@ -88,7 +94,8 @@ or
 is zero, then no data will be written. Otherwise,
 .Sy -1
 is returned. The
-.Fn Pldt function sets
+.Fn Pldt
+function sets
 .Sy errno
 to indicate the error that occurred.
 .Sh ERRORS
