@@ -42,24 +42,21 @@ process, see
 .Xr Pgrab 3PROC
 and
 .Xr Pcreate 3PROC
-respectively. In addition, to inspect a core file, instead use
+respectively. To inspect a core file use
 .Xr Pgrab_core 3PROC .
 .Pp
 The
 .Fa perr
 argument must be a
 .Pf non- Dv NULL
-pointer which will store a more detailed error in the event that the
+pointer which will store a more detailed error in the event that
 .Fn Pgrab_file
-function fails. A human-readable form of the error can be obtained
-through the routine
+fails. A human-readable form of the error can be obtained with
 .Xr Pgrab_error 3PROC .
 .Pp
-When the caller is done with the library handle returned from the
-.Fn Pgrab_file
-function, they must pass it to
+When finished with the returned handle
 .Xr Prelease 3PROC
-to clean up the resources associated with it.
+must be called to clean up resources associated with it.
 .Sh RETURN VALUES
 Upon successful completion, the
 .Fn Pgrab_file
