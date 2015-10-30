@@ -33,14 +33,14 @@ The
 function searches the environment of the process handle
 .Fa P
 for the environment variable named
-.Fa name
-and if found, copies up to
+.Fa name .
+If found it copies up to
 .Fa buflen
 characters of the value, including the null terminator, into the buffer
 .Fa buf .
-When copying the value, everything after the
+Everything after the
 .Sy =
-sign will be copied.
+sign is copied.
 .Sh RETURN VALUES
 Upon successful completion, the
 .Fn Pgetenv
