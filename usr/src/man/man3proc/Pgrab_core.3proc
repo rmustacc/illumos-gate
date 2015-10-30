@@ -41,8 +41,9 @@ and
 .Fn Pfgrab_core
 functions open a core file for introspection. Unlike live processes,
 core files cannot have their state modified; however, all of the
-functions that iterate or query state will work. These functions work on
-all illumos core files and some of other operating systems. See both
+functions that iterate or query state will work. These functions work
+on all illumos core files and the core files of some other operating
+systems. See both
 .Xr core 4
 and the
 .Em Core Files
@@ -65,9 +66,7 @@ supplement information in the core file with that.
 .Pp
 The
 .Fa gflag
-argument to the
-.Fn Pgrab_core
-function controls how the file is opened. If the
+argument controls how the file is opened. If the
 .Dv PGRAB_RDONLY
 flag is specified, then the core file will be opened with the
 .Xr open 2
@@ -90,7 +89,7 @@ The
 .Fn Pfgrab_core
 is similar to the
 .Fn Pgrab_core
-function, except instead of operating on a path, it opens a handle to
+function. Except, instead of operating on a path, it opens a handle to
 the core file referenced by
 .Fa core_fd .
 The
@@ -101,11 +100,8 @@ arguments are identical to those in the
 .Fn Pgrab_core
 function.
 .Pp
-The handle returned from the
-.Fn Pgrab_core
-and
-.Fn Pfgrab_core
-functions will be valid until the handle is closed with either a call to
+The handle returned, from either function, is valid until it is closed
+with
 .Xr Prelease 3PROC
 or
 .Xr Pfree 3PROC .
