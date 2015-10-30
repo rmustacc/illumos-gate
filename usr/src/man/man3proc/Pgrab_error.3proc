@@ -27,19 +27,16 @@
 .Sh DESCRIPTION
 The
 .Fn Pgrab_error
-function returns a pointer to a human-readable character string that
-describes the error the occurred. The
-.Fn Pgrab_error
-function only knows how to translate errors that were returned from a
-failed call to
-.Xr Pgrab 3PROC ,
-.Xr Pfgrab_core ,
-.Xr Pgrab_core 3PROC ,
-and
-.Xr Pgrab_file 3PROC .
-that were stored in the function's
+function returns a pointer to a human-readable character string
+describing the error that occurred. This function only knows how to
+translate errors that are stored in
 .Fa perr
-argument.
+during a failed call to
+.Xr Pgrab 3PROC ,
+.Xr Pfgrab_core 3PROC,
+.Xr Pgrab_core 3PROC ,
+or
+.Xr Pgrab_file 3PROC .
 .Sh RETURN VALUES
 The
 .Fn Pgrab_error
