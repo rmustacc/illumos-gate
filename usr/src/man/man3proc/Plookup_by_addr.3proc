@@ -99,7 +99,7 @@ function, except that it also fills in the structure
 .Fa sip
 with additional information. The definition of the
 .Sy prsyminfo_t
-may be found in
+is found in
 .Xr libproc 3PROC .
 .Pp
 The
@@ -118,19 +118,16 @@ argument allows the caller to specify a specific object that was mapped
 in by the run-time link-editor to search for
 .Fa symbol
 in. The system provides three special values which may be passed in for
-.Fa object
-that refer to the objects of the executable file, ld.so.1, and for every
-object. The symbol
+.Fa object .
+The value
 .Dv PR_OBJ_EXEC
-refers to the executable's object (a.out) and the symbol
+refers to the executable's object (a.out). The value
 .Dv PR_OBJ_LDSO
 refers to the object
 .Sy ld.so.1 .
-The symbol
+The value
 .Dv PR_OBJ_EVERY
-indicates that every object should be searched for the name of the
-symbol
-.Fa symbol .
+indicates that every object should be searched.
 .Pp
 The
 .Fn Pxlookup_by_name
