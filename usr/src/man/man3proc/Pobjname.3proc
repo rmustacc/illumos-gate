@@ -47,11 +47,11 @@ in the process handle
 .Fa P .
 .Pp
 A program consists of multiple memory mappings. Some are provided by the
-system, such as the stack and the heap, while others are created through
+system, such as the stack and the heap. While others are created through
 explicit calls to
 .Xr mmap 2
-or brought by the run-time link-editor due to dependencies specified in
-binaries and libraries.
+or brought in by the run-time link-editor due to dependencies
+specified in binaries and libraries.
 .Pp
 If
 .Fa addr
