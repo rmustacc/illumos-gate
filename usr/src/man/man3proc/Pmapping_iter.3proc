@@ -91,21 +91,17 @@ The return value of
 controls whether or not iteration continues. If
 .Fa func
 returns
-.Sy 0 ,
-then both functions will continue iteration. However, if
+.Sy 0
+then iteration continues. If
 .Fa func
-returns non-zero, then iteration will halt and that value will be used
-as the return value of the
-.Fn Pmapping_iter
-and
-.Fn Pmapping_iter_resolved
-functions. Because both functions return
+returns non-zero then iteration will halt and the value will be
+returned to the caller. Because
 .Sy -1
-on internal failure, it is recommended that the callback function does
-not return
+indicates internal failure, it is recommended that the callback
+function not return
 .Sy -1
-to indicate an error so that the caller may distinguish between the
-failure of the callback function and the failure of the
+to indicate an error itself. This allows the caller to distinguish
+between failure of the callback function versus failure of the
 .Fn Pmapping_iter
 and
 .Fn Pmapping_iter_resolved
@@ -119,12 +115,13 @@ functions are similar to the
 .Fn Pmapping_iter
 and
 .Fn Pmapping_iter_resolved
-functions, except rather than iterating over every mapping, it instead
-iterates over the objects that the process has loaded by the dynamic
+functions. Except, rather than iterating over every mapping, they
+iterate over the objects that the process has loaded by the dynamic
 linker. For example, an anonymous mapping will show up when iterating
 mappings, but will not show up when iterating objects. Further, while
-most dynamic shared objects have multiple mappings for the text and data
-sections, there will only be a single object that is iterated over.
+most dynamic shared objects have multiple mappings for the text and
+data sections, there will only be a single object that is iterated
+over.
 .Pp
 The distinction between the
 .Fn Pobject_iter
