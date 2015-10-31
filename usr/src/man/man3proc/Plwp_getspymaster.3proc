@@ -93,7 +93,7 @@ The process handle
 refers to a core file and the specified thread does not exist.
 .Pp
 The thread,
-Fa lwpid
+.Fa lwpid
 does not have an active agent,
 .Dv PR_AGENT
 is not set in the
