@@ -100,7 +100,7 @@ The
 function fills in
 .Fa stkp
 with the information about the thread's main stack, regardless if there
-is an alternate stack or which it is executing one.
+is an alternate stack or which it is executing.
 .Pp
 Process handles that refer to files, obtained through
 .Xr Pgrab_file 3PROC ,
