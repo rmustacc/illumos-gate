@@ -61,7 +61,7 @@ sets the thread's ancillary registers to the values provided by
 .Fa asrs .
 .Pp
 Processes should be stopped prior to obtaining the register state of
-individual threads. Processes may be stopped through functions such as
+individual threads. Processes may be stopped with
 .Xr Pstop 3PROC .
 .Pp
 The
