@@ -91,8 +91,8 @@ by
 to the register state contained in
 .Fa gregs .
 .Pp
-Processes should be stopped before obtaining the register state of
-individual threads. Processes may be stopped through functions such as
+Processes must be stopped before obtaining the register state of
+individual threads. Processes may be stopped with
 .Xr Pstop 3PROC .
 The structures used for registers are described in
 .Xr proc 4
