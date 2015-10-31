@@ -72,7 +72,7 @@ process.
 .It Dv PRELEASE_RETAIN
 When releasing the process, retain all tracing flags that are currently
 active on the process.
-.It Dv PRELEASE HANG
+.It Dv PRELEASE_HANG
 Leave the process stopped. It will not resume execution unless it is
 explicitly enabled with
 .Xr prun 1
@@ -94,11 +94,10 @@ handle
 however, unlike the
 .Fn Prelease
 function, it does not handle any logic to change or set the grabbed processes
-state. In general, the
+state. In general, prefer
 .Fn Prelease
-function should be used instead of the
-.Fn Pfree
-function.
+to
+.Fn Pfree .
 .Sh INTERFACE STABILITY
 .Sy Committed
 .Sh MT-LEVEL
