@@ -98,17 +98,16 @@ handles that refer to core files, zombie processes, and ELF objects.
 .Pp
 The
 .Fn Lsetrun
-functions is equivalent to the
+function is equivalent to the
 .Fn Psetrun
-function, except rather than operating on the process it instead
-operates on the thread handle
-.Fa L .
-A call to
+function, except rather than operating on a process it operates on a
+thread.
 .Fn Lsetrun
-function will only cause the specified thread to resume execution rather
-than the
+causes the specified thread,
+.Fa L ,
+to resume execution. Whereas
 .Fn Psetrun
-function will cause all threads in the process to resume.
+causes all threads in the process to resume.
 .Sh RETURN VALUES
 Upon successful completion, the
 .Fn Psetrun
@@ -130,7 +129,7 @@ section in
 The
 .Fn Psetrun
 and
-.Fn Lserun
+.Fn Lsetrun
 function will fail if:
 .Bl -tag -width Er
 .It Er EBUSY
