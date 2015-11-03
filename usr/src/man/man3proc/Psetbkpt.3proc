@@ -45,9 +45,10 @@ should be passed as the third argument to
 .Xr Pdelbkpt 3PROC .
 .Pp
 When a process executes an instruction that has been replaced with a
-breakpoint, it will generate a trap, specifically
+breakpoint it generates a
 .Sy FLTBPT
-with will cause the thread that executed it to stop.
+trap
+causing the thread to stop.
 .Pp
 Note, breakpoints may only be set in active processes. They may not be
 set in process handles that refer to core files, zombie processes, or
@@ -60,7 +61,7 @@ returns
 .Sy 0 .
 Otherwise
 .Sy -1
-is returned,
+is returned and
 .Sy errno
 is set to indicate the error.
 .Sh ERRORS
