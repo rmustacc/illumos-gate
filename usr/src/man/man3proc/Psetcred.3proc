@@ -61,5 +61,5 @@ in
 .Xr libproc 3LIB .
 .Sh SEE ALSO
 .Xr libproc 3LIB ,
-.Xr Pcred l3PROC ,
+.Xr Pcred 3PROC ,
 .Xr proc 4
