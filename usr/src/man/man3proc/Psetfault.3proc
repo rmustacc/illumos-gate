@@ -32,12 +32,10 @@ function sets the fault tracing flags on the process handle
 .Fa P
 to
 .Fa set .
-The call to
-.Fn Psetfault
-replaces any existing fault tracing flags on the process.  The fault
-tracing flags determine what faults will cause the thread to stop
-execution, allowing another tool, such as a debugger, to act upon the
-process. For more information on faults and the
+It replaces any existing fault tracing flags on the process. These
+flags indicate which faults cause execution of the thread to stop.
+Allowing another tool, such as a debugger, to act upon the process.
+For more information on faults and the
 .Sy fltset_t
 structure see the
 .Sy PCSFAULT
