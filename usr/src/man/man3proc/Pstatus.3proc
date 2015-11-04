@@ -42,9 +42,9 @@ is valid. After a call to
 .Xr Prelease 3PROC ,
 the returned data pointer is invalid.
 .Sh RETURN VALUES
-Upon successful completion, the
+The
 .Fn Pstatus
-function returns a pointer to the process's status. It always succeeds.
+function always returns a pointer to the process's status.
 .Sh INTERFACE STABILITY
 .Sy Committed
 .Sh MT-LEVEL
