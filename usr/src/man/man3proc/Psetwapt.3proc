@@ -29,11 +29,9 @@
 The
 .Fn Psetwapt
 function adds a watchpoint to the process handle
-.Fa P ,
-which allows the hardware to generate a trap in
-.Fa P
-when there is an access to a specified area.
-The watchpoint's parameters are described in
+.Fa P .
+Allowing the hardware to generate a trap when the specified area is
+accessed. The watchpoint's parameters are described in
 .Fa wp .
 For more information on watchpoints and the
 .Sy prwatch_t
