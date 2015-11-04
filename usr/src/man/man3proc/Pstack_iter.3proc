@@ -37,10 +37,9 @@ starting at the point defined by
 .Pp
 For each valid stack frame encountered, the callback function
 .Fa func
-will be invoked and it will be passed the
+is invoked with
 .Fa data
-argument. The full
-signature of the
+passed as argument. The full signature of
 .Ft proc_stack_f
 is defined in
 .Xr libproc 3LIB .
@@ -87,18 +86,19 @@ The return value of
 controls whether or not iteration continues. If
 .Fa func
 returns
-.Sy 0 ,
-then both functions will continue iteration. However, if
+.Sy 0
+then iteration continues. However, if
 .Fa func
 returns non-zero, then iteration will halt and that value will be used
 as the return value of the
 .Fn Pstack_iter
-function. Because the function returns
+function. Because
+.Fn Pstack_iter
+returns
 .Sy -1
-on internal failure, it is recommended that the callback function does
-not return
+on internal failure it is recommended the callback function not return
 .Sy -1
-to indicate an error so that the caller may distinguish between the
+to indicate an error. Thus the caller may distinguish between the
 failure of the callback function and the failure of the
 .Fn Pstack_iter
 function.
@@ -107,7 +107,7 @@ Upon successful completion, the
 .Fn Pstack_iter
 function returns
 .Sy 0.
-Otherwise, if there was an internal error then
+If there was an internal error then
 .Sy -1
 is returned. Otherwise, if the callback function
 .Fa func
