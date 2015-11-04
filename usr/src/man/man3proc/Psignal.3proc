@@ -36,24 +36,25 @@ If
 is
 .Sy non-zero
 it causes the process handle to stop threads that encounter the signal
-.Fa which
-and if
+.Fa which .
+If
 .Fa stop
 is
 .Sy zero ,
 then it disables tracing for the signal
 .Fa which .
 .Pp
+The signal constants, representing valid values for
+.Fa which ,
+can be found in
+.Xr signal.h 3HEAD.
 The signal
 .Dv SIGKILL
-may not be stopped, otherwise valid values of
-.Fa which
-are the constants that correspond to signals which may be found in
-.Xr signal.h 3HEAD .
+may not be stopped.
 .Pp
 Note, only active processes may have their signal tracing flags updated.
 Process handles that refer to core files, zombie processes, and files do
-not have fault tracing flags. Calling this function on them is an error.
+not have signal tracing flags. Calling this function on them is an error.
 .Sh RETURN VALUES
 Upon successful completion, the
 .Fn Psignal
