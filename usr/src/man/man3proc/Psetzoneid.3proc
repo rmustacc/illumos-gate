@@ -28,9 +28,9 @@
 .Sh DESCRIPTION
 The
 .Fn Psetzoneid
-function allows a process handle
+function moves the process handle
 .Fa P
-to be moved into the zone specified by
+into the zone specified by
 .Fa zoneid .
 A process that is in the non-global zone may only move between the
 global zone and its original zone. A process that is in the global zone
