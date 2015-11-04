@@ -57,7 +57,7 @@ see
 .Pp
 Note, only active processes may have their system call tracing flags
 updated.  Process handles that refer to core files, zombie processes,
-and files do not have fault tracing flags and this function is a no-op
+and files do not have system tracing flags and this function is a no-op
 on them.
 .Sh INTERFACE STABILITY
 .Sy Committed
