@@ -984,3 +984,22 @@ usr/lib/llib-lpcidb.ln
 # debugging program for libadutils
 #
 usr/bin/test-getdc
+
+#
+# libdwarf is private for the moment
+#
+lib/amd64/libdwarf.so			i386
+lib/sparcv9/libdwarf.so			sparc
+lib/libdwarf.so
+lib/llib-ldwarf
+lib/llib-ldwarf.ln
+lib/amd64/llib-ldwarf.ln
+usr/lib/amd64/libdwarf.so		i386
+usr/lib/sparcv9/libdwarf.so		sparc
+usr/lib/libdwarf.so
+
+#
+# We're not quite ready to ship ctfconvert and ctfmerge
+#
+usr/bin/ctfconvert
+usr/bin/ctfmerge

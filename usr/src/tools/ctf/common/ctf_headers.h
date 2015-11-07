@@ -27,8 +27,6 @@
 #ifndef _CTF_HEADERS_H
 #define	_CTF_HEADERS_H
 
-#pragma ident	"%Z%%M%	%I%	%E% SMI"
-
 /*
  * Because the ON tools are executed on the system where they are built,
  * the tools need to include the headers installed on the build system,
@@ -37,6 +35,7 @@
  * as part of Solaris.  These include the following:
  *
  * $(SRC)/lib/libctf/common/libctf.h
+ * $(SRC)/lib/libctf/common/libctf_impl.h
  * $(SRC)/uts/common/sys/ctf_api.h
  * $(SRC)/uts/common/sys/ctf.h
  *
@@ -67,6 +66,8 @@
 
 #include <uts/common/sys/ctf.h>
 #include <uts/common/sys/ctf_api.h>
+#include <common/ctf/ctf_impl.h>
 #include <lib/libctf/common/libctf.h>
+#include <lib/libctf/common/libctf_impl.h>
 
 #endif /* _CTF_HEADERS_H */

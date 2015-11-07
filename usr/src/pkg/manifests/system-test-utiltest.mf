@@ -25,6 +25,7 @@ dir path=opt/util-tests/bin
 dir path=opt/util-tests/runfiles
 dir path=opt/util-tests/tests
 dir path=opt/util-tests/tests/libnvpair_json
+dir path=opt/util-tests/tests/mergeq
 file path=opt/util-tests/README mode=0444
 file path=opt/util-tests/bin/print_json mode=0555
 file path=opt/util-tests/bin/utiltest mode=0555
@@ -39,6 +40,8 @@ file path=opt/util-tests/tests/libnvpair_json/json_05_strings mode=0555
 file path=opt/util-tests/tests/libnvpair_json/json_06_nested mode=0555
 file path=opt/util-tests/tests/libnvpair_json/json_07_nested_arrays mode=0555
 file path=opt/util-tests/tests/libnvpair_json/json_common mode=0555
+file path=opt/util-tests/tests/mergeq/mqt mode=0555
+file path=opt/util-tests/tests/mergeq/wqt mode=0555
 file path=opt/util-tests/tests/printf_test mode=0555
 file path=opt/util-tests/tests/xargs_test mode=0555
 license lic_CDDL license=lic_CDDL

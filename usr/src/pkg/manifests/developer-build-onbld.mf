@@ -24,7 +24,7 @@
 # Copyright 2015, Richard Lowe
 # Copyright 2012, Piotr Jasiukajtis
 # Copyright 2014 Garrett D'Amore <garrett@damore.org>
-# Copyright (c) 2014, Joyent, Inc.
+# Copyright 2016 Joyent, Inc.
 #
 
 set name=pkg.fmri value=pkg:/developer/build/onbld@$(PKGVERS)
@@ -64,8 +64,11 @@ $(sparc_ONLY)file path=opt/onbld/bin/$(ARCH)/chk4ubin mode=0555
 file path=opt/onbld/bin/$(ARCH)/codereview mode=0555
 file path=opt/onbld/bin/$(ARCH)/cscope-fast mode=0555
 file path=opt/onbld/bin/$(ARCH)/ctfconvert mode=0555
+file path=opt/onbld/bin/$(ARCH)/ctfconvert-altexec mode=0555
+file path=opt/onbld/bin/$(ARCH)/ctfdiff mode=0555
 file path=opt/onbld/bin/$(ARCH)/ctfdump mode=0555
 file path=opt/onbld/bin/$(ARCH)/ctfmerge mode=0555
+file path=opt/onbld/bin/$(ARCH)/ctfmerge-altexec mode=0555
 file path=opt/onbld/bin/$(ARCH)/ctfstabs mode=0555
 file path=opt/onbld/bin/$(ARCH)/ctfstrip mode=0555
 file path=opt/onbld/bin/$(ARCH)/cw mode=0555
@@ -140,6 +143,7 @@ file path=opt/onbld/gk/.cshrc
 file path=opt/onbld/gk/.login
 file path=opt/onbld/gk/gen_make.machines mode=0755
 file path=opt/onbld/lib/$(ARCH)/64/libmakestate.so.1
+file path=opt/onbld/lib/$(ARCH)/libctf.so.1 mode=0555
 file path=opt/onbld/lib/$(ARCH)/libdwarf.so.1
 file path=opt/onbld/lib/$(ARCH)/libmakestate.so.1
 file path=opt/onbld/lib/perl/onbld_elfmod.pm
@@ -226,12 +230,13 @@ legacy pkg=SUNWonbld desc="tools used to build the OS-Net consolidation" \
     name="OS-Net Build Tools" version=11.11,REV=2009.10.22
 license cr_Sun license=cr_Sun
 license lic_CDDL license=lic_CDDL
-license usr/src/tools/ctf/dwarf/THIRDPARTYLICENSE \
-    license=usr/src/tools/ctf/dwarf/THIRDPARTYLICENSE
+license usr/src/lib/libdwarf/THIRDPARTYLICENSE \
+    license=usr/src/lib/libdwarf/THIRDPARTYLICENSE
 license usr/src/tools/onbld/THIRDPARTYLICENSE \
     license=usr/src/tools/onbld/THIRDPARTYLICENSE
 link path=opt/onbld/bin/$(ARCH)/dmake target=make
 link path=opt/onbld/bin/git-nits target=git-pbchk
+link path=opt/onbld/lib/$(ARCH)/libctf.so target=libctf.so.1
 link path=opt/onbld/lib/python target=python2.6
 link path=opt/onbld/man/man1onbld/git-nits.1onbld target=git-pbchk.1onbld
 # webrev(1) requires ps2pdf

@@ -156,6 +156,8 @@ main(int argc, char **argv)
 
 	progname = basename(argv[0]);
 
+	ctf_altexec("CTFCONVERT_ALTEXEC", argc, argv);
+
 	if (getenv("CTFCONVERT_DEBUG_LEVEL"))
 		debug_level = atoi(getenv("CTFCONVERT_DEBUG_LEVEL"));
 	if (getenv("CTFCONVERT_DEBUG_PARSE"))
