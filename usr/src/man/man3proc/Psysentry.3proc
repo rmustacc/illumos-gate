@@ -28,7 +28,7 @@
 .Fa "int stop"
 .Fc
 .Ft int
-.Fo Psysentry
+.Fo Psysexit
 .Fa "struct ps_prochandle *P"
 .Fa "int which"
 .Fa "int stop"
@@ -40,15 +40,11 @@ and
 .Fn Psetexit
 functions controls what actions the process handle
 .Fa P
-should take upon executing system calls.
+should take upon executing a system call.
 .Pp
-The system allows a given process to be stopped on both the execution of
-a system call and the return from a system call. The
-.Fn Psetentry
-controls the former and the
-.Fn Psetexit
-controls the latter. For information on the state of the process when it
-is stopped due to system call tracing, see the
+The system allows a process to be stopped on both entry and exit of a
+system call. For information on the state of the process when it is
+stopped due to system call tracing, see the
 .Sy PCSENTRY
 and
 .Sy PCSEXIT
@@ -59,34 +55,21 @@ The value of the
 .Fa stop
 parameter controls whether or not the system call listed in
 .Fa which
-iwll cause the thread to stop. If the value of
-.Fa stop
-is zero, then when a thread executes or returns from the system call, it
-will not stop. If the value of
-.Fa stop
-is non-zero, then when a thread executes or returns from the system call
-it will be stopped.
+causes the process to stop. A value of non-zero indicates the process
+should stop; a value of 0 indicates it should not.
 .Pp
 The value of
 .Fa which
-indicates which system call the change applies to. However, if the value
-of
-.Fa which
-is zero, then it applies to all system calls. Note, the system does not
-supply a stable mapping of system call names to identifiers to pas to
-.Fa which .
+indicates which system call the change applies to. A value of 0
+applies to all system calls. Note, the system does not supply a stable
+mapping from system call names to identifiers.
 .Pp
-The
-.Fn Pfault
-function only applies to actively running processes. It does not
+These functions only apply to actively running processes. They do not
 function on handles that refer to core files, zombie processes, or ELF
 objects.
 .Sh RETURN VALUES
-Upon successful completion, the
-.Fn Psetentry
-and
-.Fn Psetexit
-functions return the old disposition of the system call --
+Upon successful completion both functions return the previous
+disposition of the system call --
 .Sy 0
 if it was not set to stop and
 .Sy 1
@@ -98,11 +81,7 @@ is returned,
 is updated with the error that occurred, and the system call state is
 not updated.
 .Sh ERRORS
-The
-.Fn Psysentry
-and
-.Fn Psysexit
-functions will fail if:
+Both functions will fail if:
 .Bl -tag -width Er
 .It Er EINVAL
 The value of
