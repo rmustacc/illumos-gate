@@ -91,15 +91,14 @@ will be passed to it along with an ELF symbol entry in the form of the
 along with the name of the symbol, if known.
 In the case of the
 .Fn Pxsymbol_iter
-function, then an additional argument will be provided to the callback,
-a
-.Sy prsyminfo_t .
-The full definitions of the
+function an additional
+.Sy prsyminfo_t
+argument will be provided to the callback. The definitions of
 .Sy proc_sym_f ,
 .Sy proc_xsym_f ,
 and
 .Sy prsyminfo_t
-may be found in
+are found in
 .Xr libproc 3LIB .
 .Pp
 The
@@ -206,13 +205,12 @@ refers to the link-map that is used by the run-time link editor,
 ld.so.1. The functions which do not allow a link-map identifier to be
 specified always search every link-map.
 .Pp
-By default, symbols are iterated based on the order of the symbol table
-being searched. However, it is also possible to iterate based on the
-name of the symbol and based on the address of the symbol. To iterate
-where the order is determined by the name of the symbol, use the
+By default, symbols are iterated based on the order of the symbol
+table being searched. However, it is also possible to iterate based on
+the name of the symbol and based on the address of the symbol. To
+iterate by name use the
 .Fn Psymbol_iter_by_name
-function.
-To iterate based on the address of the function, use the
+function. To iterate by address use the
 .Fn Psymbol_iter_by_addr
 function. The
 .Fn Psymbol_iter ,
@@ -245,20 +243,13 @@ not return
 to indicate an error so that the caller may distinguish between the
 failure of the callback function and the failure of these functions.
 .Sh RETURN VALUES
-Upon successful completion, th
-.Fn Psymbol_iter ,
-.Fn Psymbol_iter_by_addr ,
-.Fn Psymbol_iter_by_lmid ,
-.Fn Psymbol_iter_by_name ,
-and
-.Fn Pxsymbol_iter
-functions return
+Upon successful completion all functions return
 .Sy 0 .
-Otherwise, if there was an internal error then
+If there is an internal error then
 .Sy -1
 is returned. Otherwise, if the callback function
 .Fa func
-returns non-zero, then its return value will be returned instead.
+returns non-zero then that value is returned.
 .Sh INTERFACE STABILITY
 .Sy Committed
 .Sh MT-LEVEL
