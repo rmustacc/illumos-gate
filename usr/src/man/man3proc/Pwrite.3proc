@@ -35,8 +35,8 @@ function writes data from
 to the the process handle
 .Fa P
 starting at the address
-.Fa address
-in the process's address space and write at most
+.Fa address .
+It writes at most
 .Fa nbyte
 of data. The
 .Fn Pwrite
@@ -57,9 +57,8 @@ The
 .Fn Pwrite
 function cannot be used to
 .Em extend
-the size of any mapping inside of the process handle
-.Fa P ,
-if it encounters an unmapped region, an error will be generated.
+the size of a mapping; writing to an unmapped region generates an
+error.
 .Sh RETURN VALUES
 Upon successful completion, the
 .Fn Pwrite
@@ -70,8 +69,8 @@ This number is never greater than
 Otherwise, it returns
 .Sy -1
 and
-.Sy errno is set to indicate an error.
-For a full list of possible errors also see the
+.Sy errno
+is set to indicate an error. For the full list of errors see the
 .Sy DIAGNOSTICS
 section in
 .Xr proc 4
