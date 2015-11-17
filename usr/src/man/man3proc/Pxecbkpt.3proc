@@ -51,7 +51,7 @@ corresponding process handle
 .Fa P .
 The functions execute the original instruction that was at the current
 program counter, provided by
-.Fa saved
+.Fa saved ,
 and then leave the process stopped at the next instruction.
 .Pp
 The process must be stopped at the time that the
@@ -64,24 +64,18 @@ The
 .Fn Lxecbkpt
 and
 .Fn Lxecwapt
-functions are identical to the
+functions are identical to
 .Fn Pxecbkpt
 and
-.Fn Pxecwapt
-functions respectively; except rather than operating on the process as a
+.Fn Pxecwapt ,
+respectively; except rather than operating on the process as a
 whole, they operate on the thread handle
 .Fa L .
 These functions only require that the thread represented by
 .Fa L
 be stopped and not the entire process.
 .Sh RETURN VALUES
-Upon successful completion, the
-.Fn Pxecbkpt ,
-.Fn Pxecwapt ,
-.Fn Lxecbkpt ,
-and
-.Fn Lxecwapt
-functions return
+Upon successful completion, all functions return
 .Sy 0
 having executed the original instruction at
 .Fa saved .
@@ -91,17 +85,11 @@ is returned and
 .Sy errno
 is set to indicate the error.
 .Sh ERRORS
-For a full list of possible errors also see the
+For a full list of errors see the
 .Sy DIAGNOSTICS
 section in
 .Xr proc 4 .
-The
-.Fn Pxecbkpt ,
-.Fn Pxecwapt ,
-.Fn Lxecbkpt ,
-and
-.Fn Lxecwapt
-functions will fail if:
+These functions will also fail if:
 .Bl -tag -width Er
 .It Er EBUSY
 Either
