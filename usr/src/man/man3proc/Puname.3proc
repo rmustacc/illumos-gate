@@ -28,20 +28,20 @@
 .Sh DESCRIPTION
 The
 .Fn Puname
-function obtains the operating system information from the process
+function copies the operating system information from the process
 handle
 .Fa P
-and copies it into
+into
 .Fa u .
 .Pp
 For an active process or zombie process, this is the same information
-that is obtained from the
-.Xr utsname 2
-function. For core files, if available, it will be the information about
-the system at the time the core was dumped.
+obtained from
+.Xr uname 2 .
+For core files, if available, it is the system information at the time
+the core was dumped.
 .Pp
-Handles that correspond to ELF objects do not have any uname information
-available.
+Handles that correspond to ELF objects do not contain uname
+information.
 .Sh RETURN VALUES
 Upon successful completion, the
 .Fn Puname
