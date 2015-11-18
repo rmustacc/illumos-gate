@@ -47,9 +47,9 @@ The
 function attempts to determine the name of the zone for the process
 handle
 .Fa P .
-If found, up
+If found, up to
 .Fa nbytes ,
-including a null terminator will be written into
+including a null terminator, will be written into
 .Fa buf .
 .Pp
 The
@@ -59,37 +59,33 @@ process handle
 .Fa P .
 If found, up to
 .Fa nbytes ,
-including a null terminator will be written into
+including a null terminator, will be written into
 .Fa buf .
-If the root cannot be found, for example, a core file that did not
+If the root cannot be found, for example a core file that did not
 originate on the current system, then the empty string will be written
 into
 .Fa buf .
 .Pp
 The
 .Fn Pzonepath
-function attempts to derive the full path of an object in a zone,
-.Fa path ,
-relative to the root associated with the current process handle
+function attempts to derive the full path of the object
+.Fa path
+in a zone relative to the root associated with the current process
+handle
 .Fa P .
 If found, up to
 .Fa nbytes ,
-including a null terminator will be written into
+including a null terminator, will be written into
 .Fa buf .
 It is legal to use the same buffer for both
 .Fa path
 and
-.Fa buf ,
+.Fa buf ;
 it will not be updated unless the function completes successfully.
 .Sh RETURN VALUES
-Upon successful completion, the
-.Fn Pzonename ,
-.Fn Pzoneroot ,
-and
-.Fn Pzonepath
-functions return
+Upon successful completion all functions return
 .Sy buf .
-Otherwise, if an eror occurred,
+Otherwise, if an eror occurrs,
 .Dv NULL
 is returned and
 .Sy errno
