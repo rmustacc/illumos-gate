@@ -30,22 +30,22 @@ The
 .Fn pr_exit
 function injects the
 .Xr exit 2
-system call into the target process specified by the process handle
+system call into the target process
 .Fa P
 by means of the agent lwp.
 If the process handle
 .Fa P
-is the value
+is
 .Dv NULL
-then this will be equivalent to calling
+then this is equivalent to calling
 .Xr exit 2
 on the currently running process.
 .Pp
 The argument
 .Fa status
 has the same meaning as in
-.Xr exit 2 ,
-see
+.Xr exit 2 .
+See
 .Xr exit 2
 for the full description and purpose of the
 .Sy exit
@@ -77,7 +77,7 @@ set to
 .Dv NULL ,
 then the function will not return.
 .Sh ERRORS
-For a full list of possible errors see the
+For the full list of errors see the
 .Sy ERRORS
 section in
 .Xr exit 2 .
