@@ -31,14 +31,14 @@ The
 .Fn pr_door_info
 function injects the
 .Xr door_info 3C
-library call into the target process specified by the process handle
+library call into the target process
 .Fa P
 by means of the agent lwp.
 If the process handle
 .Fa P
-is the value
+is
 .Dv NULL
-then this will be equivalent to calling
+then this is equivalent to calling
 .Xr door_info 3C
 on the currently running process.
 .Pp
@@ -47,8 +47,8 @@ The arguments
 and
 .Fa info
 have the same meaning as in
-.Xr door_info 3C ,
-see
+.Xr door_info 3C .
+See
 .Xr door_info 3C
 for the full description and purpose of the
 .Sy door_info
@@ -72,7 +72,7 @@ is set to
 .Er ENOSYS
 to indicate that the system call could not be injected.
 .Sh ERRORS
-For a full list of possible errors see the
+For the full list of errors see the
 .Sy ERRORS
 section in
 .Xr door_info 3C .
