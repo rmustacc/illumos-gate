@@ -31,14 +31,13 @@ The
 .Fn pr_access
 function injects the
 .Xr access 2
-system call into the target process specified by the process handle
+system call into the target process
 .Fa P
-by means of the agent lwp.
-If the process handle
+by means of the agent lwp. If the process handle
 .Fa P
-is the value
+is
 .Dv NULL
-then this will be equivalent to calling
+then this is equivalent to calling
 .Xr access 2
 on the currently running process.
 .Pp
@@ -47,8 +46,8 @@ The arguments
 and
 .Fa amode
 have the same meaning as in
-.Xr access 2 ,
-see
+.Xr access 2 .
+See
 .Xr access 2
 for the full description and purpose of the
 .Sy access
@@ -72,9 +71,9 @@ is set to
 .Er ENOSYS
 to indicate that the system call could not be injected.
 .Sh ERRORS
-For a full list of possible errors see the
+For the full list of errors see the
 .Sy ERRORS
-section int
+section in
 .Xr access 2 .
 .Pp
 The
