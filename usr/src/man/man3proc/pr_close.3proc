@@ -30,22 +30,22 @@ The
 .Fn pr_close
 function injects the
 .Xr close 2
-system call into the target process specified by the process handle
+system call into the target process
 .Fa P
 by means of the agent lwp.
 If the process handle
 .Fa P
-is the value
+is
 .Dv NULL
-then this will be equivalent to calling
+then this is equivalent to calling
 .Xr close 2
 on the currently running process.
 .Pp
 The argument
 .Fa fd
 has the same meaning as in
-.Xr close 2 ,
-see
+.Xr close 2 .
+See
 .Xr close 2
 for the full description and purpose of the
 .Sy close
@@ -69,7 +69,7 @@ is set to
 .Er ENOSYS
 to indicate that the system call could not be injected.
 .Sh ERRORS
-For a full list of possible errors see the
+For the full list of errors see the
 .Sy ERRORS
 section in
 .Xr close 2 .
