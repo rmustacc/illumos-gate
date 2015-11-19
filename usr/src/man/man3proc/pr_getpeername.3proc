@@ -16,7 +16,7 @@
 .Os
 .Sh NAME
 .Nm pr_getpeername
-.Nd inject getpeername library call call into victim process
+.Nd inject getpeername library call into victim process
 .Sh SYNOPSIS
 .Lb libproc
 .In libproc.h
@@ -32,14 +32,14 @@ The
 .Fn pr_getpeername
 function injects the
 .Xr getpeername 3SOCKET
-library call call into the target process specified by the process handle
+library call into the target process
 .Fa P
 by means of the agent lwp.
 If the process handle
 .Fa P
-is the value
+is
 .Dv NULL
-then this will be equivalent to calling
+then this is equivalent to calling
 .Xr getpeername 3SOCKET
 on the currently running process.
 .Pp
@@ -49,8 +49,8 @@ The arguments
 and
 .Fa namelen
 have the same meaning as in
-.Xr getpeername 3SOCKET ,
-see
+.Xr getpeername 3SOCKET .
+See
 .Xr getpeername 3SOCKET
 for the full description and purpose of the
 .Sy getpeername
@@ -74,7 +74,7 @@ is set to
 .Er ENOSYS
 to indicate that the system call could not be injected.
 .Sh ERRORS
-For a full list of possible errors see the
+For the full list of errors see the
 .Sy ERRORS
 section in
 .Xr getpeername 3SOCKET .
