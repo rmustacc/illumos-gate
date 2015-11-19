@@ -16,7 +16,7 @@
 .Os
 .Sh NAME
 .Nm pr_getrctl
-.Nd inject getrctl system call call into victim process
+.Nd inject getrctl system call into victim process
 .Sh SYNOPSIS
 .Lb libproc
 .In libproc.h
@@ -33,14 +33,14 @@ The
 .Fn pr_getrctl
 function injects the
 .Xr getrctl 2
-system call call into the target process specified by the process handle
+system call into the target process
 .Fa P
 by means of the agent lwp.
 If the process handle
 .Fa P
-is the value
+is
 .Dv NULL
-then this will be equivalent to calling
+then this is equivalent to calling
 .Xr getrctl 2
 on the currently running process.
 .Pp
@@ -51,8 +51,8 @@ The arguments
 and
 .Fa rflag
 have the same meaning as in
-.Xr getrctl 2 ,
-see
+.Xr getrctl 2 .
+See
 .Xr getrctl 2
 for the full description and purpose of the
 .Sy getrctl
@@ -76,7 +76,7 @@ is set to
 .Er ENOSYS
 to indicate that the system call could not be injected.
 .Sh ERRORS
-For a full list of possible errors see the
+For the full list of errors see the
 .Sy ERRORS
 section in
 .Xr getrctl 2 .
