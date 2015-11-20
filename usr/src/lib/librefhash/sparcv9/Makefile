@@ -10,19 +10,10 @@
 #
 
 #
-# Copyright (c) 2012 by Delphix. All rights reserved.
+# Copyright (c) 2014 Joyent, Inc.  All rights reserved.
 #
 
-[DEFAULT]
-pre =
-verbose = False
-quiet = False
-timeout = 60
-post =
-outputdir = /var/tmp/test_results
+include ../Makefile.com
+include ../../Makefile.lib.64
 
-[/opt/os-tests/tests/poll_test]
-user = root
-
-[/opt/os-tests/tests/sigqueue]
-tests = ['sigqueue_queue_size']
+install: all $(ROOTLIBS64) $(ROOTLINKS64) $(ROOTLINT64)

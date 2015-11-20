@@ -485,6 +485,7 @@ CHKHDRS=			\
 	rctl_impl.h		\
 	rds.h			\
 	reboot.h		\
+	refhash.h		\
 	refstr.h		\
 	refstr_impl.h		\
 	resource.h		\

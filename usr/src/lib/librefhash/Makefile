@@ -13,26 +13,32 @@
 # Copyright 2015 Joyent, Inc.
 #
 
-LIBRARY =		 liblldp.a
-VERS =			 .1
-OBJECTS =		liblldp.o liblldp_caps.o
-USDT_PROVIDERS =	lldp_provider.d
+include ../Makefile.lib
 
-include ../../Makefile.lib
+HDRDIR = common
 
-LIBS =			 $(DYNLIB) $(LINTLIB)
+SUBDIRS = $(MACH) 
+$(BUILD64)SUBDIRS += $(MACH64)
 
-SRCDIR =		../common
-CPPFLAGS +=		-I.
-LDLIBS +=		-lc -lnvpair -lsocket -lnsl -lcmdutils
-
-$(LINTLIB) := SRCS = $(SRCDIR)/$(LINTSRC)
+all := TARGET = all
+clean := TARGET = clean
+clobber := TARGET = clobber
+install := TARGET = install
+lint := TARGET = lint
 
 .KEEP_STATE:
 
-all: $(LIBS)
+all clean clobber install lint: $(SUBDIRS)
 
-lint: lintcheck
+install: install_h $(SUBDIRS)
 
-include ../../Makefile.targ
-include ../../Makefile.usdt
+install_h: $(ROOTHDRS)
+
+check: $(CHECKHDRS)
+
+$(SUBDIRS): FRC
+	@cd $@; pwd; $(MAKE) $(TARGET)
+
+FRC:
+
+include ../Makefile.targ

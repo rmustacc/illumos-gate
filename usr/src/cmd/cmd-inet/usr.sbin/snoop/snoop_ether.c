@@ -113,7 +113,8 @@ extern int pi_time_usec;
 
 char *printether();
 char *print_ethertype();
-static char *print_etherinfo();
+static char *print_etherinfo(struct ether_addr *);
+static char *print_rawetherinfo(struct ether_addr *);
 
 char *print_fc();
 char *print_smttype();
@@ -131,7 +132,7 @@ interpret_ether(int flags, char *header, int elen, int origlen)
 	uchar_t *off, *ieeestart;
 	int len;
 	int ieee8023 = 0;
-	extern char *dst_name;
+	extern char *dst_name, *src_name;
 	int ethertype;
 	struct ether_vlan_extinfo *evx = NULL;
 	int blen = MAX(origlen, ETHERMTU);
@@ -355,7 +356,9 @@ inner_pkt:
 			interpret_at(flags, (struct ddp_hdr *)data, len);
 			break;
 		case ETHERTYPE_LLDP:
+			src_name = print_rawetherinfo(&e->ether_shost);
 			interpret_lldp(flags, data, len);
+			break;
 		case 0:
 			if (ieee8023 == 0)
 				break;
@@ -632,6 +635,7 @@ ETHERTYPE_PUP,	"Xerox PUP",
 0x817D, "XTP",
 0x81D6, "Lantastic",
 0x8888, "HP LanProbe test?",
+0x88CC, "LLDP",
 0x9000, "Loopback",
 0x9001, "3Com, XNS Systems Management",
 0x9002, "3Com, TCP/IP Systems Management",
@@ -1526,6 +1530,21 @@ print_etherinfo(struct ether_addr *eaddr)
 		return (ename);
 	else
 		return ((eaddr->ether_addr_octet[0] & 1) ? "(multicast)" : "");
+}
+
+static char *
+print_rawetherinfo(struct ether_addr *eaddr)
+{
+	static char eth[ETHERADDRSTRL];
+
+	if (memcmp(eaddr, &ether_broadcast, sizeof (struct ether_addr)) == 0)
+		return ("(broadcast)");
+
+	if (eaddr->ether_addr_octet[0] & 1)
+		return ("(multicast)");
+
+	(void) ether_ntoa_r(eaddr, eth);
+	return (eth);
 }
 
 static uchar_t	endianswap[] = {

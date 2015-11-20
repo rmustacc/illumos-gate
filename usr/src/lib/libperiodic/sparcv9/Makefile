@@ -10,9 +10,10 @@
 #
 
 #
-# Copyright (c) 2012 by Delphix. All rights reserved.
+# Copyright 2015 Joyent, Inc.
 #
 
-SUBDIRS = periodic poll sigqueue
+include ../Makefile.com
+include ../../Makefile.lib.64
 
-include $(SRC)/test/Makefile.com
+install: all $(ROOTLIBS64) $(ROOTLINKS64) $(ROOTLINT64)

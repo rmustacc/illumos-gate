@@ -16,9 +16,7 @@
 
 include $(SRC)/Makefile.master
 
-SRCS = delphix.run \
-	omnios.run \
-	openindiana.run
+SRCS = default.run
 
 ROOTOPTPKG = $(ROOT)/opt/os-tests
 RUNFILES = $(ROOTOPTPKG)/runfiles

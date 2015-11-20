@@ -10,9 +10,24 @@
 #
 
 #
-# Copyright (c) 2012 by Delphix. All rights reserved.
+# Copyright 2015 Joyent, Inc.
 #
 
-SUBDIRS = periodic poll sigqueue
+LIBRARY =	libperiodic.a
+VERS =		.1
+OBJECTS =	libperiodic.o
 
-include $(SRC)/test/Makefile.com
+include ../../Makefile.lib
+
+LIBS =		$(DYNLIB) $(LINTLIB)
+LDLIBS +=	-lc -lumem -lavl -lrefhash -lidspace
+
+SRCDIR =	../common
+
+.KEEP_STATE:
+
+all: $(LIBS)
+
+lint: lintcheck
+
+include ../../Makefile.targ

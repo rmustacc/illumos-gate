@@ -26,3 +26,13 @@ user = root
 
 [/opt/os-tests/tests/sigqueue]
 tests = ['sigqueue_queue_size']
+
+[/opt/os-tests/tests/periodic/absolute]
+[/opt/os-tests/tests/periodic/badargs]
+[/opt/os-tests/tests/periodic/cancel]
+[/opt/os-tests/tests/periodic/interleave]
+[/opt/os-tests/tests/periodic/interval]
+[/opt/os-tests/tests/periodic/oneshot]
+[/opt/os-tests/tests/periodic/periodic]
+[/opt/os-tests/tests/periodic/reschedule]
+[/opt/os-tests/tests/periodic/stress]

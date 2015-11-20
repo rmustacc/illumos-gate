@@ -699,7 +699,7 @@ done:
  * have specific mibs and errors incremented and available.
  */
 int
-lldp_frame_parse(const void *buf, int buflen, nvlist_t **nvpp)
+lldp_parse_frame(const void *buf, int buflen, nvlist_t **nvpp)
 {
 	int ret;
 	lldp_parse_t lp;

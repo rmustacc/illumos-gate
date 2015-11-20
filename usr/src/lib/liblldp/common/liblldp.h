@@ -74,7 +74,8 @@ extern "C" {
  * 		<subtype>	<byte array>
  */
 
-extern int lldp_frame_parse(const void *, int, nvlist_t **);
+extern int lldp_parse_frame(const void *, int, nvlist_t **);
+extern int lldp_parse_caps(uint16_t, nvlist_t **);
 
 #ifdef __cplusplus
 }
