@@ -33,6 +33,8 @@ typedef id_t periodic_id_t;
 typedef struct periodic_handle periodic_handle_t;
 typedef void (periodic_func_t)(void *);
 
+#define	PERIODIC_INVALID_ID	-1
+
 extern periodic_handle_t *periodic_init(int, void *, clockid_t);
 extern void periodic_fire(periodic_handle_t *);
 extern void periodic_fini(periodic_handle_t *);

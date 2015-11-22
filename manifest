@@ -4823,6 +4823,7 @@ s usr/lib/amd64/liblddbg.so.4=../../../lib/amd64/liblddbg.so.4
 f usr/lib/amd64/libldstab.so.1 0755 root bin
 f usr/lib/amd64/liblgrp.so.1 0755 root bin
 s usr/lib/amd64/liblgrp.so=liblgrp.so.1
+f usr/lib/amd64/liblldp.so.1 0755 root bin
 f usr/lib/amd64/liblm.so.1 0755 root bin
 s usr/lib/amd64/liblm.so=liblm.so.1
 s usr/lib/amd64/libm.so=../../../lib/amd64/libm.so.2
@@ -4866,6 +4867,7 @@ s usr/lib/amd64/libpanel.so=libpanel.so.1
 f usr/lib/amd64/libpcidb.so.1 0755 root bin
 f usr/lib/amd64/libpctx.so.1 0755 root bin
 s usr/lib/amd64/libpctx.so=libpctx.so.1
+f usr/lib/amd64/libperiodic.so.1 0755 root bin
 f usr/lib/amd64/libpicl.so.1 0755 root bin
 s usr/lib/amd64/libpicl.so=libpicl.so.1
 f usr/lib/amd64/libpkcs11.so.1 0755 root bin
@@ -4884,6 +4886,7 @@ f usr/lib/amd64/libraidcfg.so.1 0755 root bin
 s usr/lib/amd64/libraidcfg.so=libraidcfg.so.1
 s usr/lib/amd64/librcm.so.1=../../../lib/amd64/librcm.so.1
 s usr/lib/amd64/librcm.so=../../../lib/amd64/librcm.so.1
+f usr/lib/amd64/librefhash.so.1 0755 root bin
 f usr/lib/amd64/librename.so.1 0755 root bin
 f usr/lib/amd64/libreparse.so.1 0755 root bin
 s usr/lib/amd64/libreparse.so=libreparse.so.1
@@ -6244,6 +6247,7 @@ s usr/lib/liblddbg.so.4=../../lib/liblddbg.so.4
 f usr/lib/libldstab.so.1 0755 root bin
 f usr/lib/liblgrp.so.1 0755 root bin
 s usr/lib/liblgrp.so=liblgrp.so.1
+f usr/lib/liblldp.so.1 0755 root bin
 f usr/lib/liblm.so.1 0755 root bin
 s usr/lib/liblm.so=liblm.so.1
 s usr/lib/libm.so=../../lib/libm.so.2
@@ -6302,6 +6306,7 @@ s usr/lib/libpanel.so=libpanel.so.1
 f usr/lib/libpcidb.so.1 0755 root bin
 f usr/lib/libpctx.so.1 0755 root bin
 s usr/lib/libpctx.so=libpctx.so.1
+f usr/lib/libperiodic.so.1 0755 root bin
 f usr/lib/libpicl.so.1 0755 root bin
 s usr/lib/libpicl.so=libpicl.so.1
 f usr/lib/libpicld_pluginutil.so.1 0755 root bin
@@ -6330,6 +6335,7 @@ s usr/lib/librcm.so.1=../../lib/librcm.so.1
 s usr/lib/librcm.so=../../lib/librcm.so.1
 f usr/lib/librdc.so.1 0755 root bin
 s usr/lib/librdc.so=librdc.so.1
+f usr/lib/librefhash.so.1 0755 root bin
 f usr/lib/librename.so.1 0755 root bin
 f usr/lib/libreparse.so.1 0755 root bin
 s usr/lib/libreparse.so=libreparse.so.1

@@ -318,6 +318,7 @@ periodic_schedule(periodic_handle_t *perh, hrtime_t time, int flags,
 
 	p = umem_zalloc(sizeof (periodic_t), UMEM_DEFAULT);
 	if (p == NULL) {
+		errno = ENOMEM;
 		return (-1);
 	}
 
@@ -343,10 +344,9 @@ periodic_schedule(periodic_handle_t *perh, hrtime_t time, int flags,
 	mutex_enter(&perh->ph_lock);
 	p->peri_id = id_alloc(perh->ph_idspace);
 	if (p->peri_id == -1) {
-		int e = errno;
 		mutex_exit(&perh->ph_lock);
 		umem_free(p, sizeof (periodic_t));
-		errno = e;
+		errno = ENOMEM;
 		return (-1);
 	}
 
