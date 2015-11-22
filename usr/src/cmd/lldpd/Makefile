@@ -38,6 +38,7 @@ LDLIBS += \
 	-llldp		\
 	-lnvpair	\
 	-lperiodic	\
+	-lrename	\
 	-lsocket	\
 	-lumem
 

@@ -46,6 +46,7 @@
 #include <libperiodic.h>
 #include <thread.h>
 #include <synch.h>
+#include <sys/sysmacros.h>
 #include <sys/signalfd.h>
 #include <libdladm.h>
 #include <libdllink.h>
@@ -57,6 +58,7 @@
 #include <liblldp.h>
 #include <sys/avl.h>
 #include <sys/ethernet.h>
+#include <librename.h>
 
 #define	LLDPD_DATA_DIR	"/var/lldpd"
 #define	LLDPD_DOOR_PATH	"/var/run/lldpd.door"
@@ -68,6 +70,7 @@
 
 typedef struct lldpd lldpd_t;
 typedef struct lldpd_datalink lldpd_datalink_t;
+static char lldpd_abortmsg[4096];
 
 typedef void (lldpd_event_f)(lldpd_t *, port_event_t *, void *);
 
@@ -94,11 +97,24 @@ typedef struct lldpd_buffer {
  */
 #define	LLDPD_PERSIST_NAMELEN	(ETHERADDRSTRL + DLPI_LINKNAME_MAX + 1)
 
-typedef enum lldpd_remote_state {
-	LRS_REMOVING	= 0x00,
-	LRS_RETIRED	= 0x01,
+typedef enum lldpd_rhost_state {
+	LRS_REMOVING	= 0x00,		
+	LRS_STALE	= 0x01,
 	LRS_VALID	= 0x02
-} lldpd_remote_state_t;
+} lldpd_rhost_state_t;
+
+#define	LLDPD_PERSIST_VERSION	1
+static uint8_t lldpd_magic[4] = { 'l', 'l', 'p', 'd' };
+
+typedef struct lldpd_persist_header {
+	uint8_t		lph_magic[4];
+	uint32_t	lph_version;
+	/* XXX hash */
+	char		lph_datalink[DLPI_LINKNAME_MAX];
+	char		lph_macaddr[ETHERADDRL];
+	char		lph_rhost[ETHERADDRL];
+	char		lph_pad[4];
+} lldpd_persist_header_t;
 
 typedef struct lldpd_rhost {
 	avl_node_t		lr_link;
@@ -106,7 +122,7 @@ typedef struct lldpd_rhost {
 	char			lr_name[LLDPD_PERSIST_NAMELEN];
 	uint8_t			lr_addr[ETHERADDRL];
 	hrtime_t		lr_expire;
-	lldpd_remote_state_t	lr_state;
+	lldpd_rhost_state_t	lr_state;
 	periodic_id_t		lr_peri;
 	nvlist_t		*lr_data;
 } lldpd_rhost_t;
@@ -168,7 +184,7 @@ _umem_logging_init(void)
 #endif	/* DEBUG */
 
 static void
-lldpd_vwarn(FILE *out, const char *fmt, va_list ap)
+lldpd_vwarn(FILE *out, const char *fmt, va_list ap, boolean_t perm)
 {
 	int error = errno;
 
@@ -179,6 +195,21 @@ lldpd_vwarn(FILE *out, const char *fmt, va_list ap)
 		(void) fprintf(out, ": %s\n", strerror(error));
 
 	(void) fflush(out);
+
+	if (perm == B_TRUE) {
+		ssize_t ret, len;
+		len = sizeof (lldpd_abortmsg);
+		ret = vsnprintf(lldpd_abortmsg, len, fmt, ap);
+		len -= ret;
+		if (ret < 0)
+			return;
+		if (len < 0)
+			len = 0;
+		if (fmt[strlen(fmt) - 1] != '\n') {
+			(void) snprintf(lldpd_abortmsg + ret, len, ": %s\n",
+			    strerror(error));
+		}
+	}
 }
 
 static void
@@ -187,7 +218,7 @@ lldpd_warn(const char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-	lldpd_vwarn(stderr, fmt, ap);
+	lldpd_vwarn(stderr, fmt, ap, B_FALSE);
 	va_end(ap);
 }
 
@@ -197,7 +228,7 @@ lldpd_fatal(const char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-	lldpd_vwarn(stderr, fmt, ap);
+	lldpd_vwarn(stderr, fmt, ap, B_FALSE);
 	va_end(ap);
 
 	exit(LLDPD_EXIT_FATAL);
@@ -209,7 +240,7 @@ lldpd_abort(const char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-	lldpd_vwarn(stderr, fmt, ap);
+	lldpd_vwarn(stderr, fmt, ap, B_TRUE);
 	va_end(ap);
 
 	abort();
@@ -222,7 +253,7 @@ lldpd_dfatal(int dfd, const char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-	lldpd_vwarn(stderr, fmt, ap);
+	lldpd_vwarn(stderr, fmt, ap, B_FALSE);
 	va_end(ap);
 
 	/* Take a single shot at this */
@@ -270,6 +301,138 @@ lldpd_rhost_fini(lldpd_t *lldpd, lldpd_rhost_t *lrp)
 }
 
 static void
+lldpd_rhost_cease(lldpd_t *lldpd, lldpd_rhost_t *lrp)
+{
+	int ret;
+
+	do {
+		ret = unlinkat(lldpd->lldpd_dirfd, lrp->lr_name, 0);
+	} while (ret == -1 && errno == EINTR);
+
+	if (ret == 0)
+		return;
+
+	switch (errno) {
+	case EACCES:
+	case EBUSY:
+	case EFAULT:
+	case ELOOP:
+	case EILSEQ:
+	case ENOLINK:
+	case EPERM:
+		lldpd_abort("unexpected unlinkat error when unlinking %s",
+		    lrp->lr_name);
+	default:
+		break;
+	}
+}
+
+static int
+lldpd_persist_write(int fd, void *buf, size_t buflen)
+{
+	ssize_t ret;
+	off_t off = 0;
+
+	lldpd_warn("trying to write %d bytes to fd %d\n", buflen, fd);
+	while (buflen > 0) {
+		ret = write(fd, (void *)((uintptr_t)buf + off),
+		    MIN(buflen, 4 * 1024));
+		if (ret == -1) {
+			switch (errno) {
+			case EINTR:
+				continue;
+			case EFAULT:
+			case EBADF:
+			case EFBIG:
+			case ENOLINK:
+			case EDEADLK:
+			case EINVAL:
+				lldpd_abort("unexpected write error to fd %d",
+				    fd);
+			default:
+				return (errno);
+			}
+		}
+
+		off += ret;
+		buflen -= ret;
+	}
+
+	return (0);
+}
+
+static boolean_t
+lldpd_rhost_persist(lldpd_t *lldpd, const lldpd_rhost_t *lrp)
+{
+	const lldpd_datalink_t *dlp = lrp->lr_dlp;
+	lldpd_persist_header_t lph;
+	librename_atomic_t *ap;
+	int ret, fd;
+	char *nvbuf;
+	size_t nvsz, packsz;
+
+	bcopy(lldpd_magic, lph.lph_magic, sizeof (lldpd_magic));
+	lph.lph_version = LLDPD_PERSIST_VERSION;
+	bcopy(dlp->ld_info.di_linkname, lph.lph_datalink, DLPI_LINKNAME_MAX);
+	bcopy(dlp->ld_info.di_physaddr, lph.lph_macaddr, ETHERADDRL);
+	bcopy(lrp->lr_addr, lph.lph_rhost, ETHERADDRL);
+
+	VERIFY0(nvlist_size(lrp->lr_data, &nvsz, NV_ENCODE_XDR));
+	nvbuf = umem_alloc(nvsz, UMEM_DEFAULT);
+	if (nvbuf == NULL) {
+		lldpd_warn("failed to allocate sufficient memory (%d bytes) "
+		    "for persisting %s\n", nvsz, lrp->lr_name);
+		return (B_FALSE);
+	}
+
+	packsz = nvsz;
+	if ((ret = nvlist_pack(lrp->lr_data, &nvbuf, &packsz, NV_ENCODE_XDR,
+	    0)) != 0) {
+		lldpd_warn("failed to pack nvlist data for %s: %s\n",
+		    lrp->lr_name, strerror(ret));
+		umem_free(nvbuf, nvsz);
+		return (B_FALSE);
+	}
+
+	if ((ret = librename_atomic_fdinit(lldpd->lldpd_dirfd, lrp->lr_name,
+	    NULL, 0600, 0, &ap)) != 0) {
+		VERIFY3S(ret, !=, ENOTDIR);
+		VERIFY3S(ret, !=, EINVAL);
+		lldpd_warn("failed to initialize librename for %s: %s\n",
+		    lrp->lr_name, strerror(ret));
+		umem_free(nvbuf, nvsz);
+		return (B_FALSE);
+	}
+
+	fd = librename_atomic_fd(ap);
+
+	if ((ret = lldpd_persist_write(fd, &lph,
+	    sizeof (lldpd_persist_header_t))) != 0) {
+		lldpd_warn("failed to write out header for %s: %s\n",
+		    lrp->lr_name, strerror(ret));
+		librename_atomic_fini(ap);
+		umem_free(nvbuf, nvsz);
+		return (B_FALSE);
+	}
+
+	if ((ret = lldpd_persist_write(fd, nvbuf, packsz)) != 0) {
+		lldpd_warn("failed to write out header for %s: %s\n",
+		    lrp->lr_name, strerror(ret));
+		librename_atomic_fini(ap);
+		umem_free(nvbuf, nvsz);
+		return (B_FALSE);
+	}
+
+	do {
+		ret = librename_atomic_commit(ap);
+	} while (ret == EINTR);
+
+	librename_atomic_fini(ap);
+	umem_free(nvbuf, nvsz);
+	return (B_TRUE);
+}
+
+static void
 lldpd_rhost_timer(void *arg)
 {
 	hrtime_t now;
@@ -297,7 +460,7 @@ lldpd_rhost_timer(void *arg)
 		 * used to be talking to.
 		 */
 		if (dlp->ld_linkstate == LINK_STATE_DOWN) {
-			lrp->lr_state = LRS_RETIRED;
+			lrp->lr_state = LRS_STALE;
 			mutex_exit(&dlp->ld_lock);
 			return;
 		}
@@ -307,6 +470,7 @@ lldpd_rhost_timer(void *arg)
 		 * and clean it up.
 		 */
 		avl_remove(&dlp->ld_rhosts, lrp);
+		lldpd_rhost_cease(lldpd, lrp);
 		lldpd_rhost_fini(lldpd, lrp);
 	}
 	mutex_exit(&dlp->ld_lock);
@@ -341,7 +505,8 @@ lldpd_rhost_update(lldpd_t *lldpd, lldpd_datalink_t *dlp, const uint8_t *mac,
 		lrp = umem_zalloc(sizeof (lldpd_rhost_t), UMEM_DEFAULT);
 		if (lrp == NULL) {
 			/* XXX bump counter and basically treat as a drop */
-			goto done;
+			mutex_exit(&dlp->ld_lock);
+			return;
 		}
 
 		(void) ether_ntoa_r((struct ether_addr *)mac, macstr);
@@ -359,11 +524,15 @@ lldpd_rhost_update(lldpd_t *lldpd, lldpd_datalink_t *dlp, const uint8_t *mac,
 	/*
 	 * If the ttl is zero, that indicates that the remote entry is being
 	 * shut down and we should proactively remove it.
+	 *
+	 * XXX Should we really cease the entry immediately here?
 	 */
 	if (ttl == 0) {
 		avl_remove(&dlp->ld_rhosts, lrp);
+		lldpd_rhost_cease(lldpd, lrp);
 		lldpd_rhost_fini(lldpd, lrp);
-		goto done;
+		mutex_exit(&dlp->ld_lock);
+		return;
 	}
 
 	/*
@@ -392,14 +561,16 @@ update:
 		/*
 		 * Not enough memory, drop this entry. XXX Bump a stat.
 		 */
+		mutex_enter(&dlp->ld_lock);
 		avl_remove(&dlp->ld_rhosts, lrp);
+		lldpd_rhost_cease(lldpd, lrp);
 		lldpd_rhost_fini(lldpd, lrp);
+		mutex_exit(&dlp->ld_lock);
+		return;
 	}
 
 	mutex_enter(&dlp->ld_lock);
-
-
-done:
+	lldpd_rhost_persist(lldpd, lrp);
 	mutex_exit(&dlp->ld_lock);
 }
 
