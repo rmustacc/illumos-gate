@@ -918,8 +918,8 @@ CTFMRGFLAGS=
 # honor them.
 #
 ENABLE_NEW_CTF=$(POUND_SIGN)
-$(ENABLE_NEW_CTF)$(_GNUC)CTFCONVERT=	$(ONBLD_TOOLS)/bin/$(MACH)/ctfconvert-altexec
-$(ENABLE_NEW_CTF)$(_GNUC)CTFMERGE=	$(ONBLD_TOOLS)/bin/$(MACH)/ctfmerge-altexec
+$(ENABLE_NEW_CTF)$(__GNUC)CTFCONVERT=	$(ONBLD_TOOLS)/bin/$(MACH)/ctfconvert-altexec
+$(ENABLE_NEW_CTF)$(__GNUC)CTFMERGE=	$(ONBLD_TOOLS)/bin/$(MACH)/ctfmerge-altexec
 
 CTFCONVERT_O		= $(CTFCONVERT) $(CTFCVTFLAGS) $@
 
