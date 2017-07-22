@@ -110,6 +110,7 @@
 #define	USBDRV_MAJOR_VER	2
 #define	USBDRV_MINOR_VER	0
 #include <sys/usb/usba.h>
+#include <sys/usb/usba/usbai_private.h>
 #include <sys/usb/clients/ccid/ccid.h>
 
 /*
@@ -122,26 +123,6 @@
  * have some other asynchronous operation outstanding if needed.
  */
 #define	CCID_NUM_ASYNC_REQS	2
-
-/*
- * Set the upper bound on the size of a message block of data that we may
- * receive from the reader on the Bulk-IN endpoint. Because we need to schedule
- * Bulk-IN responses to deal with all of the arbitrary commands that the reader
- * might send, we pick a size that tries to handle all of the different messages
- * we might receive. Of the defined commands two have a defined status
- * (RDR_to_PC_DataBlock and RDR_to_PC_SlotStatus) while the others do not. While
- * the others are variably sized messages, we size this value based on the
- * maximum data block that we can receive. This seems larger than the variable
- * sized data that the other entries might receive.
- *
- * The maximum data block we can receive consists of a 10 byte header, up to
- * 65,538 data bytes, and then two bytes of status. This gives us a grand total
- * of 65,550 bytes. However, there is a slight inconsistency in the spec. Notably
- * that when transferring a request, you can send up to 65,544 bytes. When
- * adding the 10 byte header, that means 65,554 bytes.  We use the larger value
- * to play it safe.
- */
-#define	CCID_BULK_RESPONSE_SIZE	65554
 
 /*
  * Pick a number of default responses to have queued up with the device. This is
@@ -180,12 +161,15 @@ typedef enum ccid_slot_flags {
 	CCID_SLOT_F_ACTIVE	= 1 << 4
 } ccid_slot_flags_t;
 
-#define	CCID_SLOT_F_STATUS_MASK	(CCID_SLOT_F_CHANGED | CCID_SLOT_F_PRESENT | CCID_SLOT_F_ACTIVE)
+#define	CCID_SLOT_F_INTR_MASK	(CCID_SLOT_F_CHANGED | CCID_SLOT_F_INTR_GONE | \
+    CCID_SLOT_F_INTR_ADD)
 
 typedef struct ccid_slot {
 	uint_t			cs_slotno;	/* WO */
 	kmutex_t		cs_mutex;
 	ccid_slot_flags_t	cs_flags;
+	ccid_class_voltage_t	cs_voltage;
+	mblk_t			*cs_atr;
 } ccid_slot_t;
 
 typedef enum ccid_attach_state {
@@ -196,15 +180,17 @@ typedef enum ccid_attach_state {
 	CCID_ATTACH_OPEN_PIPES	= 1 << 4,
 	CCID_ATTACH_ID_SPACE	= 1 << 5,
 	CCID_ATTACH_SLOTS	= 1 << 6,
-	CCID_ATTACH_INTR_ACTIVE	= 1 << 7,
-	CCID_ATTACH_ACTIVE	= 1 << 8
+	CCID_ATTACH_HOTPLUG_CB	= 1 << 7,
+	CCID_ATTACH_INTR_ACTIVE	= 1 << 8,
+	CCID_ATTACH_ACTIVE	= 1 << 9
 } ccid_attach_state_t;
 
 typedef enum ccid_flags {
 	CCID_FLAG_HAS_INTR		= 1 << 0,
 	CCID_FLAG_DETACHING		= 1 << 1,
 	CCID_FLAG_DISCOVER_REQUESTED	= 1 << 2,
-	CCID_FLAG_DISCOVER_RUNNING	= 1 << 3
+	CCID_FLAG_DISCOVER_RUNNING	= 1 << 3,
+	CCID_FLAG_DISCONNECTED		= 1 << 4
 } ccid_flags_t;
 
 #define	CCID_FLAG_DISCOVER_MASK	(CCID_FLAG_DISCOVER_REQUESTED | \
@@ -238,6 +224,7 @@ typedef struct ccid {
 	usb_pipe_handle_t	ccid_intrin_pipe;	/* WO */
 	usb_pipe_handle_t	ccid_control_pipe;	/* WO */
 	uint_t			ccid_nslots;		/* WO */
+	size_t			ccid_bufsize;		/* WO */
 	ccid_slot_t		*ccid_slots;
 	timeout_id_t		ccid_poll_timeout;
 	ccid_stats_t		ccid_stats;
@@ -308,6 +295,24 @@ ccid_error(ccid_t *ccid, const char *fmt, ...)
 		vcmn_err(CE_WARN, fmt, ap);
 	}
 	va_end(ap);
+}
+
+static size_t
+ccid_command_resp_length(ccid_command_t *cc)
+{
+	uint32_t len;
+	const ccid_header_t *cch;
+
+	VERIFY3P(cc, !=, NULL);
+	VERIFY3P(cc->cc_response, !=, NULL);
+
+	/*
+	 * Fetch out an arbitrarily aligned LE uint32_t value from the header.
+	 */
+	cch = (ccid_header_t *)cc->cc_response->b_rptr;
+	bcopy(&cch->ch_length, &len, sizeof (len));
+	len = LE_32(len);
+	return (len);
 }
 
 static void
@@ -434,6 +439,7 @@ ccid_reply_bulk_cb(usb_pipe_handle_t ph, usb_bulk_req_t *ubrp)
 		ccid_command_complete(cc);
 		mutex_exit(&ccid->ccid_mutex);
 		usb_free_bulk_req(ubrp);
+		return;
 	}
 
 	/*
@@ -446,6 +452,19 @@ ccid_reply_bulk_cb(usb_pipe_handle_t ph, usb_bulk_req_t *ubrp)
 		 * XXX we should fail this command in a way to indicate that
 		 * this has happened and figure out how to clean up.
 		 */
+		mutex_exit(&ccid->ccid_mutex);
+		usb_free_bulk_req(ubrp);
+		return;
+	}
+
+	/*
+	 * Check that we have all the bytes that we were told we'd have. If we
+	 * dno't, simulate this as an aborted command. XXX is this the right
+	 * thing to do?
+	 */
+	if (LE_32(cch.ch_length) + sizeof (ccid_header_t) > mlen) {
+		cc->cc_state = CCID_COMMAND_CCID_ABORTED;
+		ccid_command_complete(cc);
 		mutex_exit(&ccid->ccid_mutex);
 		usb_free_bulk_req(ubrp);
 		return;
@@ -538,11 +557,11 @@ ccid_bulkin_cache_refresh(ccid_t *ccid)
 		 * the rest of the driver needlessly.
 		 */
 		mutex_exit(&ccid->ccid_mutex);
-		ubrp = usb_alloc_bulk_req(ccid->ccid_dip, CCID_BULK_RESPONSE_SIZE, 0);
+		ubrp = usb_alloc_bulk_req(ccid->ccid_dip, ccid->ccid_bufsize, 0);
 		if (ubrp == NULL)
 			return;
 
-		ubrp->bulk_len = CCID_BULK_RESPONSE_SIZE;
+		ubrp->bulk_len = ccid->ccid_bufsize;
 		ubrp->bulk_timeout = CCID_BULK_IN_TIMEOUT;
 		ubrp->bulk_client_private = (usb_opaque_t)ccid;
 		ubrp->bulk_attributes = USB_ATTRS_SHORT_XFER_OK |
@@ -798,7 +817,7 @@ ccid_command_alloc(ccid_t *ccid, ccid_slot_t *slot, boolean_t block,
 	if (datasz + sizeof (ccid_header_t) < datasz)
 		return (EINVAL);
 	allocsz = datasz + sizeof (ccid_header_t);
-	if (datasz > CCID_BULK_RESPONSE_SIZE)
+	if (datasz > ccid->ccid_bufsize)
 		return (EINVAL);
 
 	cc = kmem_zalloc(sizeof (ccid_command_t), kmflag);
@@ -952,6 +971,11 @@ ccid_command_power_on(ccid_t *ccid, ccid_slot_t *cs, ccid_class_voltage_t volt,
 	ccid_reply_slot_status_t css;
 	ccid_command_err_t cce;
 
+	if (atrp == NULL)
+		return (EINVAL);
+
+	*atrp = NULL;
+
 	switch (volt) {
 	case CCID_CLASS_VOLT_AUTO:
 	case CCID_CLASS_VOLT_5_0:
@@ -988,9 +1012,9 @@ ccid_command_power_on(ccid_t *ccid, ccid_slot_t *cs, ccid_class_voltage_t volt,
 	 */
 	ccid_command_status_decode(cc, &crs, &css, &cce);
 	if (crs == CCID_REPLY_STATUS_FAILED) {
-		if (ccs == CCID_REPLY_SLOT_MISSING) {
+		if (css == CCID_REPLY_SLOT_MISSING) {
 			ret = ENOENT;
-		} else if (ccs == CCID_REPLY_SLOT_INACTIVE &&
+		} else if (css == CCID_REPLY_SLOT_INACTIVE &&
 		    cce == 7) {
 			/*
 			 * This means that byte 7 was invalid. In other words,
@@ -1002,11 +1026,40 @@ ccid_command_power_on(ccid_t *ccid, ccid_slot_t *cs, ccid_class_voltage_t volt,
 			ret = EIO;
 		}
 	} else {
-		ret = 0;
-		/* XXX Do something with the ATR */
-	}
+		size_t len;
 
-	ret = ENOTSUP;
+		len = ccid_command_resp_length(cc);
+		if (len == 0) {
+			/*
+			 * XXX Could probably use more descriptive errors and
+			 * not errnos
+			 */
+			ret = EINVAL;
+			goto done;
+		}
+
+#ifdef	DEBUG
+		/*
+		 * This should have already been checked by the response
+		 * framework, but sanity check this again.
+		 */
+		size_t mlen = msgsize(cc->cc_response);
+		VERIFY3U(mlen, >=, len + sizeof (ccid_header_t));
+#endif
+
+		/*
+		 * Munge the message block to have the ATR. We want to make sure
+		 * that the write pointer is set to the maximum length that we
+		 * got back from the driver (the message block could strictly
+		 * speaking be larger, because we got a larger transfer for some
+		 * reason).
+		 */
+		cc->cc_response->b_rptr += sizeof (ccid_header_t);
+		cc->cc_response->b_wptr = cc->cc_response->b_rptr + len;
+		*atrp = cc->cc_response;
+		cc->cc_response = NULL;
+		ret = 0;
+	}
 
 done:
 	ccid_command_free(cc);
@@ -1047,17 +1100,23 @@ ccid_intr_pipe_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 		change = B_FALSE;
 		for (i = 0; i < ccid->ccid_nslots; i++) {
 			uint_t byte = (i * 2 / NBBY) + 1;
-			uint_t mask = (i * 2 % NBBY) + 1;
-			mask = 1 << mask;
+			uint_t shift = i * 2 % NBBY;
+			uint_t present = 1 << shift;
+			uint_t delta = 2 << shift;
 
-			if (mp->b_rptr[byte] & mask) {
+			if (mp->b_rptr[byte] & delta) {
 				ccid_slot_t *cs = &ccid->ccid_slots[i];
 
 				mutex_enter(&cs->cs_mutex);
+				cs->cs_flags &= ~CCID_SLOT_F_INTR_MASK;
 				cs->cs_flags |= CCID_SLOT_F_CHANGED;
+				if (mp->b_rptr[byte] & present) {
+					cs->cs_flags |= CCID_SLOT_F_INTR_ADD;
+				} else {
+					cs->cs_flags |= CCID_SLOT_F_INTR_GONE;
+				}
 				mutex_exit(&cs->cs_mutex);
 				change = B_TRUE;
-				break;
 			}
 		}
 
@@ -1108,6 +1167,124 @@ ccid_intr_pipe_except_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 	usb_free_intr_req(uirp);
 }
 
+/*
+ * The given CCID slot has been removed. Handle insertion.
+ */
+static void
+ccid_slot_removed(ccid_t *ccid, ccid_slot_t *cs)
+{
+	/*
+	 * Nothing to do right now.
+	 */
+	mutex_enter(&cs->cs_mutex);
+	if ((cs->cs_flags & CCID_SLOT_F_PRESENT) == 0) {
+		mutex_exit(&cs->cs_mutex);
+		return;
+	}
+	cs->cs_flags &= ~CCID_SLOT_F_PRESENT;
+	cs->cs_flags &= ~CCID_SLOT_F_ACTIVE;
+	cs->cs_voltage = 0;
+	freemsgchain(cs->cs_atr);
+	cs->cs_atr = NULL;
+	mutex_exit(&cs->cs_mutex);
+}
+
+static void
+ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *cs)
+{
+	uint_t nvolts = 4;
+	uint_t cvolt = 0;
+	mblk_t *atr = NULL;
+	ccid_class_voltage_t volts[4] = { CCID_CLASS_VOLT_AUTO,
+	    CCID_CLASS_VOLT_5_0, CCID_CLASS_VOLT_3_0, CCID_CLASS_VOLT_1_8 };
+
+	mutex_enter(&cs->cs_mutex);
+	if ((cs->cs_flags & CCID_SLOT_F_ACTIVE) != 0) {
+		mutex_exit(&cs->cs_mutex);
+		return;
+	}
+
+	cs->cs_flags |= CCID_SLOT_F_PRESENT;
+	mutex_exit(&cs->cs_mutex);
+
+	ccid_reply_slot_status_t ss;
+	(void) ccid_command_slot_status(ccid, cs, &ss);
+	(void) ccid_command_slot_status(ccid, cs, &ss);
+	/*
+	 * Now, we need to activate this ccid device before we can do anything
+	 * with it. First, power on the device. There are two hardware features
+	 * which may be at play. There may be automatic voltage detection and
+	 * automatic activation on insertion. In theory, when either of those
+	 * are present, we should always try to use the auto voltage.
+	 *
+	 * What's less clear in the specification is if the Auto-Voltage
+	 * property is present is if we should try manual voltages or not. For
+	 * the moment we do.
+	 *
+	 * Also, don't forget to drop the lock while performing this I/O.
+	 * Nothing else should be able to access the ICC yet, as there is no
+	 * minor node present.
+	 */
+	if ((ccid->ccid_class.ccd_dwFeatures &
+	    (CCID_CLASS_F_AUTO_ICC_ACTIVATE | CCID_CLASS_F_AUTO_ICC_VOLTAGE)) ==
+	    0) {
+		/* Skip auto-voltage */
+		cvolt++;
+	}
+
+	for (; cvolt < nvolts; cvolt++) {
+		int ret;
+
+		if (volts[cvolt] != CCID_CLASS_VOLT_AUTO &&
+		    (ccid->ccid_class.ccd_bVoltageSupport & volts[cvolt]) ==
+		    0) {
+			continue;
+		}
+
+		if ((ret = ccid_command_power_on(ccid, cs, volts[cvolt],
+		    &atr)) != 0) {
+			freemsg(atr);
+			atr = NULL;
+
+			/*
+			 * If we got ENOENT, then we know that there is no CCID
+			 * present. This could happen for a number of reasons.
+			 * For example, we could have just started up and no
+			 * card was plugged in (we default to assuming that one
+			 * is). Also, some readers won't really tell us that
+			 * nothing is there until after the power on fails,
+			 * hence why we don't bother with doing a status check
+			 * and just try to power on.
+			 */
+			if (ret == ENOENT) {
+				mutex_enter(&cs->cs_mutex);
+				cs->cs_flags &= ~CCID_SLOT_F_PRESENT;
+				mutex_exit(&cs->cs_mutex);
+				return;
+			}
+			/* XXX we should probably worry about failure */
+			(void) ccid_command_power_off(ccid, cs);
+			continue;
+		}
+
+		break;
+	}
+
+
+	if (cvolt >= nvolts) {
+		ccid_error(ccid, "!failed to activate and power on ICC, no "
+		    "supported voltages found");
+		return;
+	}
+
+
+	mutex_enter(&cs->cs_mutex);
+	cs->cs_voltage = volts[cvolt];
+	cs->cs_atr = atr;
+	cs->cs_flags |= CCID_SLOT_F_ACTIVE;
+	mutex_exit(&cs->cs_mutex);
+}
+
 static void
 ccid_discover(void *arg)
 {
@@ -1130,47 +1307,36 @@ ccid_discover(void *arg)
 		ccid_slot_t *cs = &ccid->ccid_slots[i];
 		ccid_reply_slot_status_t ss;
 		int ret;
+		uint_t flags;
 
 		mutex_enter(&cs->cs_mutex);
-		if ((cs->cs_flags & CCID_SLOT_F_CHANGED) == 0) {
+
+		/*
+		 * Snapshot flags at this point in time before we start
+		 * processing. Note that the flags may change as soon as we drop
+		 * this lock the slot lock, which will happen as part or
+		 * processing the commands.
+		 */
+		flags = cs->cs_flags & CCID_SLOT_F_INTR_MASK;
+		cs->cs_flags &= ~CCID_SLOT_F_INTR_MASK;
+
+		if ((flags & CCID_SLOT_F_CHANGED) == 0) {
 			mutex_exit(&cs->cs_mutex);
 			continue;
 		}
-		mutex_exit(&cs->cs_mutex);
 
-		if ((ret = ccid_command_slot_status(ccid, cs, &ss)) != 0) {
-			ccid_error(ccid, "failed to get slot status: %d\n", ret);
-		}
-
-		if ((ret = ccid_command_slot_status(ccid, cs, &ss)) != 0) {
-			ccid_error(ccid, "failed to get slot status: %d\n", ret);
-		}
-
-		if ((ret = ccid_command_slot_status(ccid, cs, &ss)) != 0) {
-			ccid_error(ccid, "failed to get slot status: %d\n", ret);
-		}
-
-		mutex_enter(&cs->cs_mutex);
-		cs->cs_flags &= ~CCID_SLOT_F_STATUS_MASK;
-		switch (ss) {
-		case CCID_REPLY_SLOT_ACTIVE:
-			cs->cs_flags |= CCID_SLOT_F_PRESENT |
-			    CCID_SLOT_F_ACTIVE;
-			ccid_error(ccid, "Slot %d present", cs->cs_slotno);
-			break;
-		case CCID_REPLY_SLOT_INACTIVE:
-			ccid_error(ccid, "Slot %d inactive", cs->cs_slotno);
-			cs->cs_flags |= CCID_SLOT_F_PRESENT;
-			break;
-		case CCID_REPLY_SLOT_MISSING:
-			ccid_error(ccid, "Slot %d missing", cs->cs_slotno);
-			break;
-		}
 		mutex_exit(&cs->cs_mutex);
 
 		/*
-		 * XXX Do things to get ready to use the slot
+		 * We either have a hardware notified insertion or removal or we
+		 * have something that we think might have been inserted.
 		 */
+		if (flags & CCID_SLOT_F_INTR_GONE) {
+			ccid_slot_removed(ccid, cs);
+		} else {
+			ccid_slot_inserted(ccid, cs);
+		}
+
 	}
 
 	mutex_enter(&ccid->ccid_mutex);
@@ -1312,9 +1478,23 @@ ccid_supported(ccid_t *ccid)
 	}
 
 	/*
-	 * XXX Add a check that our maximum transfer size is within the bounds
-	 * required.
+	 * Try and determine the appropriate buffer size. This can be a little
+	 * tricky. The class descriptor tells us the maximum size that the
+	 * reader excepts. While it may be tempting to try and use a larger
+	 * value such as the maximum size, the readers really don't like
+	 * receiving bulk transfers that large. However, there are also reports
+	 * of readers that will overwrite to a fixed minimum size. XXX which
+	 * devices were those and should this be a p2roundup on the order of 256
+	 * bytes maybe?
 	 */
+	ccid->ccid_bufsize = ccid->ccid_class.ccd_dwMaxCCIDMessageLength;
+
+	/*
+	 * At this time, we do not require that the system have automatic ICC
+	 * activation or automatic ICC voltage. These are handled automatically
+	 * by the system.
+	 */
+
 
 	return (B_TRUE);
 }
@@ -1429,6 +1609,8 @@ ccid_slots_fini(ccid_t *ccid)
 
 	for (i = 0; i < ccid->ccid_nslots; i++) {
 		VERIFY3U(ccid->ccid_slots[i].cs_slotno, ==, i);
+
+		freemsgchain(ccid->ccid_slots[i].cs_atr);
 		mutex_destroy(&ccid->ccid_slots[i].cs_mutex);
 	}
 	kmem_free(ccid->ccid_slots, sizeof (ccid_slot_t) * ccid->ccid_nslots);
@@ -1532,6 +1714,36 @@ ccid_cleanup_bulkin(ccid_t *ccid)
 	ccid->ccid_bulkin_alloced = 0;
 }
 
+static int
+ccid_disconnect_cb(dev_info_t *dip)
+{
+	int inst;
+	ccid_t *ccid;
+
+	if (dip == NULL)
+		goto done;
+
+	inst = ddi_get_instance(dip);
+	ccid = ddi_get_soft_state(ccid_softstate, inst);
+	if (ccid == NULL)
+		goto done;
+	VERIFY3P(dip, ==, ccid->ccid_dip);
+
+	mutex_enter(&ccid->ccid_mutex);
+	ccid->ccid_flags |= CCID_FLAG_DISCONNECTED;
+	mutex_exit(&ccid->ccid_mutex);
+
+done:
+	return (USB_SUCCESS);
+}
+
+static usb_event_t ccid_usb_events = {
+	ccid_disconnect_cb,
+	NULL,
+	NULL,
+	NULL
+};
+
 static void
 ccid_cleanup(dev_info_t *dip)
 {
@@ -1575,6 +1787,11 @@ ccid_cleanup(dev_info_t *dip)
 	if (ccid->ccid_attach & CCID_ATTACH_INTR_ACTIVE) {
 		ccid_intr_poll_fini(ccid);
 		ccid->ccid_attach &= ~CCID_ATTACH_INTR_ACTIVE;
+	}
+
+	if (ccid->ccid_attach & CCID_ATTACH_HOTPLUG_CB) {
+		usb_unregister_event_cbs(dip, &ccid_usb_events);
+		ccid->ccid_attach &= ~CCID_ATTACH_HOTPLUG_CB;
 	}
 
 	if (ccid->ccid_attach & CCID_ATTACH_SLOTS) {
@@ -1727,6 +1944,13 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	}
 	ccid->ccid_attach |= CCID_ATTACH_SLOTS;
 
+	if (usb_register_event_cbs(dip, &ccid_usb_events, 0) != USB_SUCCESS) {
+		ccid_error(ccid, "failed to register USB hotplug callbacks");
+		ccid_cleanup(dip);
+		return (DDI_FAILURE);
+	}
+	ccid->ccid_attach |= CCID_ATTACH_HOTPLUG_CB;
+
 	/*
 	 * Before we enable the interrupt pipe, take a shot at priming our
 	 * bulkin_cache.
@@ -1769,6 +1993,17 @@ ccid_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	VERIFY3P(dip, ==, ccid->ccid_dip);
 
 	mutex_enter(&ccid->ccid_mutex);
+
+	/*
+	 * If the device hasn't been disconnected from a USB sense, refuse to
+	 * detach. Otherwise, there's no way to guarantee that the ccid
+	 * driver will be attached when a user hotplugs an ICC.
+	 */
+	if ((ccid->ccid_flags & CCID_FLAG_DISCONNECTED) == 0) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (DDI_FAILURE);
+	}
+
 	if (list_is_empty(&ccid->ccid_command_queue) == 0 ||
 	    list_is_empty(&ccid->ccid_complete_queue) == 0) {
 		mutex_exit(&ccid->ccid_mutex);
