@@ -9,9 +9,9 @@
 .\" http://www.illumos.org/license/CDDL.
 .\"
 .\"
-.\" Copyright 2016 Joyent, Inc.
+.\" Copyright (c) 2017, Joyent, Inc.
 .\"
-.Dd May 31, 2016
+.Dd August 01, 2017
 .Dt MC_UNICST 9E
 .Os
 .Sh NAME
@@ -47,7 +47,7 @@ For Ethernet devices that length is six bytes,
 .Sh DESCRIPTION
 The
 .Fn mc_unicst
-entry point is used by the GLDv3 to indicate that the device driver
+entry point is used by the MAC framework to indicate that the device driver
 should update the primary MAC address of the device.
 In the basic mode of operation, this entry point is required and the device has
 a single primary MAC address.
@@ -83,8 +83,13 @@ The
 entry point only supports a single MAC address.
 In this case, devices should only use a single MAC address and replace that MAC
 address.
-Support for using more than a single MAC address filter will be provided
-by future interfaces.
+To enable the operating system to take advantage of multiple unicast MAC
+address filters, the driver should implement the
+.Dv MAC_CAPAB_RINGS
+capability.
+See
+.Xr mac_capab_rings 9E
+for more information.
 .Sh RETURN VALUES
 Upon successful completion, the device driver should have updated its
 unicast filter and return
@@ -106,5 +111,6 @@ update the device's state.
 .El
 .Sh SEE ALSO
 .Xr mac 9E ,
+.Xr mac_capab_rings 9E ,
 .Xr mac_register 9F ,
 .Xr mac_register 9S
