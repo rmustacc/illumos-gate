@@ -40,6 +40,7 @@ SYMBOL_SCOPE {
 	__divdi3			{ FLAGS = EXTERN };
 	__stack_chk_fail		{ FLAGS = EXTERN };
 	__stack_chk_guard		{ FLAGS = EXTERN };
+	_pagesize			{ FLAGS = EXTERN };
 	allocb				{ FLAGS = EXTERN };
 	assfail				{ FLAGS = EXTERN };
 	assfail3			{ FLAGS = EXTERN };
@@ -188,4 +189,5 @@ SYMBOL_SCOPE {
 	untimeout			{ FLAGS = EXTERN };
 	vsnprintf			{ FLAGS = EXTERN };
 	vsprintf			{ FLAGS = EXTERN };
+	vdev_err			{ FLAGS = EXTERN };
 };

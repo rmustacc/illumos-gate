@@ -2305,3 +2305,8 @@ BNXE_OBJS +=	bnxe_cfg.o		\
 		lm_sp_req_mgr.o		\
 		lm_stats.o		\
 		lm_util.o
+
+#
+#	BNXT objects
+#
+BNXT_OBJS = bnxt_gld.o bnxt_main.o bnxt_dma.o bnxt_hwrm.o bnxt_intr.o
