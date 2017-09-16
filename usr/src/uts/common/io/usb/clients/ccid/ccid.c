@@ -1613,7 +1613,10 @@ ccid_slots_fini(ccid_t *ccid)
 		freemsgchain(ccid->ccid_slots[i].cs_atr);
 		mutex_destroy(&ccid->ccid_slots[i].cs_mutex);
 	}
+
+	ddi_remove_minor_node(ccid->ccid_dip, NULL);
 	kmem_free(ccid->ccid_slots, sizeof (ccid_slot_t) * ccid->ccid_nslots);
+	ccid->ccid_nslots = 0;
 	ccid->ccid_slots = NULL;
 }
 
@@ -1631,6 +1634,8 @@ ccid_slots_init(ccid_t *ccid)
 	ccid->ccid_slots = kmem_zalloc(sizeof (ccid_slot_t) * ccid->ccid_nslots,
 	    KM_SLEEP);
 	for (i = 0; i < ccid->ccid_nslots; i++) {
+		char buf[32];
+
 		mutex_init(&ccid->ccid_slots[i].cs_mutex, NULL, MUTEX_DRIVER,
 		    ccid->ccid_dev_data->dev_iblock_cookie);
 		/*
@@ -1640,6 +1645,22 @@ ccid_slots_init(ccid_t *ccid)
 		 */
 		ccid->ccid_slots[i].cs_flags |= CCID_SLOT_F_CHANGED;
 		ccid->ccid_slots[i].cs_slotno = i;
+		(void) snprintf(buf, sizeof (buf), "%d", i);
+		/* XXX I wonder if this should be a new DDI_NT type (ccid) */
+		if (ddi_create_minor_node(ccid->ccid_dip, buf, S_IFCHR, i,
+		    "ccid", 0) != DDI_SUCCESS) {
+			int j;
+			for (j = 0; j < i; j++) {
+				mutex_destroy(&ccid->ccid_slots[i].cs_mutex);
+			}
+			ddi_remove_minor_node(ccid->ccid_dip, NULL);
+			kmem_free(ccid->ccid_slots, sizeof (ccid_slot_t) *
+			    ccid->ccid_nslots);
+			ccid->ccid_slots = NULL;
+			ccid->ccid_nslots = 0;
+			return (B_FALSE);
+		}
+
 	}
 
 	return (B_TRUE);
