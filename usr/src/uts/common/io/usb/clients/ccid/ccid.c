@@ -153,6 +153,39 @@
  */
 #define	CCID_INTR_RESPONSE_SIZE	65
 
+/*
+ * Minimum and maximum minor ids. We treat the maximum valid 32-bit minor as
+ * what we can use due to issues in some file systems and the minors that they
+ * can use. We reserved zero as an invalid minor number to make it easier to
+ * tell if things have been initailized or not.
+ */
+#define	CCID_MINOR_MIN		1
+#define	CCID_MINOR_MAX		MAXMIN32
+#define	CCID_MINOR_INVALID	0
+
+/*
+ * This structure is used to map between the global set of minor numbers and the
+ * things represented by them.
+ */
+typedef struct ccid_minor_idx {
+	id_t cmi_minor;
+	avl_node_t cmi_avl;
+	boolean_t cmi_isslot;
+	union {
+		struct ccid_slot *cmi_slot;
+		struct ccid_minor *cmi_user;
+	} cmi_data;
+} ccid_minor_idx_t;
+
+typedef struct ccid_minor {
+	ccid_minor_idx_t	cm_idx;		/* WO */
+	cred_t			*cm_opener;	/* WO */
+	struct ccid_slot	*cm_slot;	/* WO */
+	list_node_t		cm_list;
+	boolean_t		cm_excl_wanted;
+	boolean_t		cm_excl;
+} ccid_minor_t;
+
 typedef enum ccid_slot_flags {
 	CCID_SLOT_F_CHANGED	= 1 << 0,
 	CCID_SLOT_F_INTR_GONE	= 1 << 1,
@@ -165,11 +198,16 @@ typedef enum ccid_slot_flags {
     CCID_SLOT_F_INTR_ADD)
 
 typedef struct ccid_slot {
+	ccid_minor_idx_t	cs_idx;		/* WO */
 	uint_t			cs_slotno;	/* WO */
+	struct ccid		*cs_ccid;	/* WO */
 	kmutex_t		cs_mutex;
 	ccid_slot_flags_t	cs_flags;
 	ccid_class_voltage_t	cs_voltage;
 	mblk_t			*cs_atr;
+	struct ccid_minor	*cs_excl_minor;
+	kcondvar_t		cs_excl_cv;
+	list_t			cs_minors;
 } ccid_slot_t;
 
 typedef enum ccid_attach_state {
@@ -213,7 +251,6 @@ typedef struct ccid {
 	kmutex_t		ccid_mutex;
 	ccid_attach_state_t	ccid_attach;
 	ccid_flags_t		ccid_flags;
-	id_space_t		*ccid_minors;
 	id_space_t		*ccid_seqs;
 	ddi_taskq_t		*ccid_taskq;
 	usb_client_dev_data_t	*ccid_dev_data;
@@ -273,9 +310,21 @@ typedef struct ccid_command {
 } ccid_command_t;
 
 /*
- * ddi_soft_state(9F) pointer.
+ * ddi_soft_state(9F) pointer. This is used for instances of a CCID controller.
  */
 static void *ccid_softstate;
+
+/*
+ * This is used to keep track of our minor nodes. We have two different kinds of
+ * minor nodes. The first are CCID slots. The second are cloned opens of those
+ * slots. Each of these items has a ccid_minor_idx_t embedded in them that is
+ * used to index them in an AVL tree. Given that the number of entries that
+ * should be present here is unlikely to be terribly large at any given time, it
+ * is hoped that an AVL tree will suffice for now.
+ */
+static kmutex_t ccid_idxlock;
+static avl_tree_t ccid_idx;
+static id_space_t *ccid_minors;
 
 /*
  * Required Forwards
@@ -284,6 +333,18 @@ static void ccid_intr_poll_init(ccid_t *);
 static void ccid_discover_request(ccid_t *);
 static void ccid_command_dispatch(ccid_t *);
 static int ccid_bulkin_schedule(ccid_t *);
+
+static int
+ccid_idx_comparator(const void *l, const void *r)
+{
+	const ccid_minor_idx_t *lc = l, *rc = r;
+
+	if (lc->cmi_minor > rc->cmi_minor)
+		return (1);
+	if (lc->cmi_minor < rc->cmi_minor)
+		return (-1);
+	return (0);
+}
 
 static void
 ccid_error(ccid_t *ccid, const char *fmt, ...)
@@ -297,6 +358,61 @@ ccid_error(ccid_t *ccid, const char *fmt, ...)
 		vcmn_err(CE_WARN, fmt, ap);
 	}
 	va_end(ap);
+}
+
+static void
+ccid_minor_free(ccid_minor_idx_t *idx)
+{
+	ccid_minor_idx_t *ip;
+
+	VERIFY3S(idx->cmi_minor, !=, CCID_MINOR_INVALID);
+	mutex_enter(&ccid_idxlock);
+	ip = avl_find(&ccid_idx, idx, NULL);
+	VERIFY3P(idx, ==, ip);
+	avl_remove(&ccid_idx, idx);
+	id_free(ccid_minors, idx->cmi_minor);
+	idx->cmi_minor = CCID_MINOR_INVALID;
+	mutex_exit(&ccid_idxlock);
+}
+
+static boolean_t
+ccid_minor_alloc(ccid_minor_idx_t *idx, boolean_t sleep)
+{
+	id_t id;
+	ccid_minor_idx_t *ip;
+	avl_index_t where;
+
+	mutex_enter(&ccid_idxlock);
+	if (sleep) {
+		id = id_alloc(ccid_minors);
+	} else {
+		id = id_alloc_nosleep(ccid_minors);
+	}
+	if (id == -1) {
+		mutex_exit(&ccid_idxlock);
+		return (B_FALSE);
+	}
+	idx->cmi_minor = id;
+	ip = avl_find(&ccid_idx, idx, &where);
+	VERIFY3P(ip, ==, NULL);
+	avl_insert(&ccid_idx, idx, where);
+	mutex_exit(&ccid_idxlock);
+
+	return (B_TRUE);
+}
+
+static ccid_minor_idx_t *
+ccid_minor_find(minor_t m)
+{
+	ccid_minor_idx_t i = { 0 };
+	ccid_minor_idx_t *ret;
+
+	i.cmi_minor = m;
+	mutex_enter(&ccid_idxlock);
+	ret = avl_find(&ccid_idx, &i, NULL);
+	mutex_exit(&ccid_idxlock);
+
+	return (ret);
 }
 
 static size_t
@@ -1614,6 +1730,8 @@ ccid_slots_fini(ccid_t *ccid)
 
 		freemsgchain(ccid->ccid_slots[i].cs_atr);
 		mutex_destroy(&ccid->ccid_slots[i].cs_mutex);
+		cv_destroy(&ccid->ccid_slots[i].cs_excl_cv);
+		list_destroy(&ccid->ccid_slots[i].cs_minors);
 	}
 
 	ddi_remove_minor_node(ccid->ccid_dip, NULL);
@@ -1645,6 +1763,15 @@ ccid_slots_init(ccid_t *ccid)
 		 */
 		ccid->ccid_slots[i].cs_flags |= CCID_SLOT_F_CHANGED;
 		ccid->ccid_slots[i].cs_slotno = i;
+		ccid->ccid_slots[i].cs_ccid = ccid;
+		ccid->ccid_slots[i].cs_idx.cmi_minor = CCID_MINOR_INVALID;
+		ccid->ccid_slots[i].cs_idx.cmi_isslot = B_TRUE;
+		ccid->ccid_slots[i].cs_idx.cmi_data.cmi_slot =
+		    &ccid->ccid_slots[i];
+		cv_init(&ccid->ccid_slots[i].cs_excl_cv, NULL, CV_DRIVER, NULL);
+		list_create(&ccid->ccid_slots[i].cs_minors, sizeof (ccid_minor_t),
+		   offsetof(ccid_minor_t, cm_list)); 
+
 	}
 
 	return (B_TRUE);
@@ -1653,32 +1780,32 @@ ccid_slots_init(ccid_t *ccid)
 static void
 ccid_minors_fini(ccid_t *ccid)
 {
+	uint_t i;
+
 	ddi_remove_minor_node(ccid->ccid_dip, NULL);
-	id_space_destroy(ccid->ccid_minors);
-	ccid->ccid_minors = NULL;
+	for (i = 0; i < ccid->ccid_nslots; i++) {
+		if (ccid->ccid_slots[i].cs_idx.cmi_minor == CCID_MINOR_INVALID)
+			continue;
+		ccid_minor_free(&ccid->ccid_slots[i].cs_idx);
+	}
 }
 
 static boolean_t
 ccid_minors_init(ccid_t *ccid)
 {
 	uint_t i;
-	char buf[64];
-
-	(void) snprintf(buf, sizeof (buf), "ccid%d_minors",
-	    ddi_get_instance(ccid->ccid_dip));
-	ccid->ccid_minors = id_space_create(buf, ccid->ccid_nslots + 1, INT_MAX);
-	if (ccid->ccid_minors == NULL) {
-		return (B_FALSE);
-	}
 
 	for (i = 0; i < ccid->ccid_nslots; i++) {
+		char buf[32];
+
+		(void) ccid_minor_alloc(&ccid->ccid_slots[i].cs_idx, B_TRUE);
+
 		(void) snprintf(buf, sizeof (buf), "slot%d", i);
 		/* XXX I wonder if this should be a new DDI_NT type (ccid) */
-		if (ddi_create_minor_node(ccid->ccid_dip, buf, S_IFCHR, i,
-		    "ccid", 0) != DDI_SUCCESS) {
-			ddi_remove_minor_node(ccid->ccid_dip, NULL);
-			id_space_destroy(ccid->ccid_minors);
-			ccid->ccid_minors = NULL;
+		if (ddi_create_minor_node(ccid->ccid_dip, buf, S_IFCHR,
+		    ccid->ccid_slots[i].cs_idx.cmi_minor, "ccid", 0) !=
+		    DDI_SUCCESS) {
+			ccid_minors_fini(ccid);
 			return (B_FALSE);
 		}
 	}
@@ -1940,7 +2067,7 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	ccid->ccid_attach |= CCID_ATTACH_MUTEX_INIT;
 
 	(void) snprintf(buf, sizeof (buf), "ccid%d_taskq", inst);
-	ccid->ccid_taskq = ddi_taskq_create(dip, buf, 1, TASKQ_DEFAULTPRI, 0);;
+	ccid->ccid_taskq = ddi_taskq_create(dip, buf, 1, TASKQ_DEFAULTPRI, 0);
 	if (ccid->ccid_taskq == NULL) {
 		ccid_error(ccid, "failed to create CCID taskq");
 		goto cleanup;
@@ -2069,19 +2196,150 @@ ccid_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	return (DDI_SUCCESS);
 }
 
+static int
+ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
+{
+	int ret;
+	ccid_minor_idx_t *idx;
+	ccid_minor_t *cmp;
+	ccid_slot_t *slot;
+
+	/*
+	 * Always check the zone first, to make sure we lie about it existing.
+	 */
+	if (crgetzoneid(credp) != GLOBAL_ZONEID)
+		return (ENOENT);
+
+	if (drv_priv(credp) != 0)
+		return (EPERM);
+
+	if (otyp & OTYP_BLK || !(otyp & OTYP_CHR))
+		return (ENOTSUP);
+
+	if ((flag & (FREAD | FWRITE)) != (FREAD | FWRITE))
+		return (EINVAL);
+
+	if ((flag & FNDELAY) && !(flag & FEXCL))
+		return (EINVAL);
+
+	idx = ccid_minor_find(getminor(*devp));
+	if (idx == NULL) {
+		return (ENOENT);
+	}
+
+	/*
+	 * We don't expect anyone to be able to get a non-slot related minor. If
+	 * that somehow happens, guard against it and error out.
+	 */
+	if (!idx->cmi_isslot) {
+		return (ENOENT);
+	}
+
+	slot = idx->cmi_data.cmi_slot;
+	cmp = kmem_zalloc(sizeof (ccid_minor_t), KM_SLEEP);
+
+	cmp->cm_idx.cmi_minor = CCID_MINOR_INVALID;
+	cmp->cm_idx.cmi_isslot = B_FALSE;
+	cmp->cm_idx.cmi_data.cmi_user = cmp;
+	if (!ccid_minor_alloc(&cmp->cm_idx, B_FALSE)) {
+		kmem_free(cmp, sizeof (ccid_minor_t));
+		return (ENOSPC);
+	}
+	cmp->cm_opener = crdup(credp);
+	cmp->cm_slot = slot;
+	if (otyp & FEXCL) {
+		cmp->cm_excl_wanted = B_TRUE;
+	}
+	cmp->cm_excl = B_FALSE;
+	*devp = makedevice(getmajor(*devp), cmp->cm_idx.cmi_minor);
+
+	mutex_enter(&slot->cs_mutex);
+	list_insert_tail(&slot->cs_minors, cmp);
+
+	/*
+	 * If exclusive access is desired, grab it now.
+	 * XXX Do so
+	 */
+	mutex_exit(&slot->cs_mutex);
+
+	return (0);
+}
+
+static int
+ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
+{
+	return (ENOTSUP);
+}
+
+static int
+ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
+{
+	return (ENOTSUP);
+}
+
+static int
+ccid_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp, int
+    *rvalp)
+{
+	return (ENOTTY);
+}
+
+static int
+ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
+    struct pollhead **phpp)
+{
+	return (ENOTSUP);
+}
+
+static int
+ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
+{
+	minor_t m;
+	ccid_minor_idx_t *idx;
+	ccid_minor_t *cmp;
+	ccid_slot_t *slot;
+
+	m = getminor(dev);
+	idx = ccid_minor_find(m);
+	if (idx == NULL || idx->cmi_isslot) {
+		ASSERT0(idx->cmi_isslot);
+		return (ENOENT);
+	}
+
+	/*
+	 * First tear down the global index entry.
+	 */
+	cmp = idx->cmi_data.cmi_user;
+	slot = cmp->cm_slot;
+	ccid_minor_free(idx);
+
+	mutex_enter(&slot->cs_mutex);
+	/*
+	 * XXX if exlcusive, clean up here.
+	 */
+
+	list_remove(&slot->cs_minors, cmp);
+	mutex_exit(&slot->cs_mutex);
+
+	crfree(cmp->cm_opener);
+	kmem_free(cmp, sizeof (ccid_minor_t));
+
+	return (0);
+}
+
 static struct cb_ops ccid_cb_ops = {
-	nulldev,		/* cb_open */
-	nulldev,		/* cb_close */
+	ccid_open,		/* cb_open */
+	ccid_close,		/* cb_close */
 	nodev,			/* cb_strategy */
 	nodev,			/* cb_print */
 	nodev,			/* cb_dump */
-	nodev,			/* cb_read */
-	nodev,			/* cb_write */
-	nodev,			/* cb_ioctl */
+	ccid_read,		/* cb_read */
+	ccid_write,		/* cb_write */
+	ccid_ioctl,		/* cb_ioctl */
 	nodev,			/* cb_devmap */
 	nodev,			/* cb_mmap */
 	nodev,			/* cb_segmap */
-	nochpoll,		/* cb_chpoll */
+	ccid_chpoll,		/* cb_chpoll */
 	ddi_prop_op,		/* cb_prop_op */
 	NULL,			/* cb_stream */
 	D_MP,			/* cb_flag */
@@ -2127,10 +2385,21 @@ _init(void)
 		return (ret);
 	}
 
-	if ((ret = mod_install(&ccid_modlinkage)) != 0) {
+	if ((ccid_minors = id_space_create("ccid_minors", CCID_MINOR_MIN, INT_MAX)) == NULL) {
 		ddi_soft_state_fini(&ccid_softstate);
 		return (ret);
 	}
+
+	if ((ret = mod_install(&ccid_modlinkage)) != 0) {
+		id_space_destroy(ccid_minors);
+		ccid_minors = NULL;
+		ddi_soft_state_fini(&ccid_softstate);
+		return (ret);
+	}
+
+	mutex_init(&ccid_idxlock, NULL, MUTEX_DRIVER, NULL);
+	avl_create(&ccid_idx, ccid_idx_comparator, sizeof (ccid_minor_idx_t),
+	    offsetof(ccid_minor_idx_t, cmi_avl));
 
 	return (ret);
 }
@@ -2150,6 +2419,10 @@ _fini(void)
 		return (ret);
 	}
 
+	avl_destroy(&ccid_idx);
+	mutex_destroy(&ccid_idxlock);
+	id_space_destroy(ccid_minors);
+	ccid_minors = NULL;
 	ddi_soft_state_fini(&ccid_softstate);
 
 	return (ret);
