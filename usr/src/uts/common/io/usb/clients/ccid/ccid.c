@@ -178,11 +178,12 @@ typedef enum ccid_attach_state {
 	CCID_ATTACH_TASKQ	= 1 << 2,
 	CCID_ATTACH_CMD_LIST	= 1 << 3,
 	CCID_ATTACH_OPEN_PIPES	= 1 << 4,
-	CCID_ATTACH_ID_SPACE	= 1 << 5,
+	CCID_ATTACH_SEQ_IDS	= 1 << 5,
 	CCID_ATTACH_SLOTS	= 1 << 6,
 	CCID_ATTACH_HOTPLUG_CB	= 1 << 7,
 	CCID_ATTACH_INTR_ACTIVE	= 1 << 8,
-	CCID_ATTACH_ACTIVE	= 1 << 9
+	CCID_ATTACH_MINORS	= 1 << 9,
+	CCID_ATTACH_ACTIVE	= 1 << 10
 } ccid_attach_state_t;
 
 typedef enum ccid_flags {
@@ -212,6 +213,7 @@ typedef struct ccid {
 	kmutex_t		ccid_mutex;
 	ccid_attach_state_t	ccid_attach;
 	ccid_flags_t		ccid_flags;
+	id_space_t		*ccid_minors;
 	id_space_t		*ccid_seqs;
 	ddi_taskq_t		*ccid_taskq;
 	usb_client_dev_data_t	*ccid_dev_data;
@@ -1634,8 +1636,6 @@ ccid_slots_init(ccid_t *ccid)
 	ccid->ccid_slots = kmem_zalloc(sizeof (ccid_slot_t) * ccid->ccid_nslots,
 	    KM_SLEEP);
 	for (i = 0; i < ccid->ccid_nslots; i++) {
-		char buf[32];
-
 		mutex_init(&ccid->ccid_slots[i].cs_mutex, NULL, MUTEX_DRIVER,
 		    ccid->ccid_dev_data->dev_iblock_cookie);
 		/*
@@ -1645,22 +1645,42 @@ ccid_slots_init(ccid_t *ccid)
 		 */
 		ccid->ccid_slots[i].cs_flags |= CCID_SLOT_F_CHANGED;
 		ccid->ccid_slots[i].cs_slotno = i;
-		(void) snprintf(buf, sizeof (buf), "%d", i);
+	}
+
+	return (B_TRUE);
+}
+
+static void
+ccid_minors_fini(ccid_t *ccid)
+{
+	ddi_remove_minor_node(ccid->ccid_dip, NULL);
+	id_space_destroy(ccid->ccid_minors);
+	ccid->ccid_minors = NULL;
+}
+
+static boolean_t
+ccid_minors_init(ccid_t *ccid)
+{
+	uint_t i;
+	char buf[64];
+
+	(void) snprintf(buf, sizeof (buf), "ccid%d_minors",
+	    ddi_get_instance(ccid->ccid_dip));
+	ccid->ccid_minors = id_space_create(buf, ccid->ccid_nslots + 1, INT_MAX);
+	if (ccid->ccid_minors == NULL) {
+		return (B_FALSE);
+	}
+
+	for (i = 0; i < ccid->ccid_nslots; i++) {
+		(void) snprintf(buf, sizeof (buf), "slot%d", i);
 		/* XXX I wonder if this should be a new DDI_NT type (ccid) */
 		if (ddi_create_minor_node(ccid->ccid_dip, buf, S_IFCHR, i,
 		    "ccid", 0) != DDI_SUCCESS) {
-			int j;
-			for (j = 0; j < i; j++) {
-				mutex_destroy(&ccid->ccid_slots[i].cs_mutex);
-			}
 			ddi_remove_minor_node(ccid->ccid_dip, NULL);
-			kmem_free(ccid->ccid_slots, sizeof (ccid_slot_t) *
-			    ccid->ccid_nslots);
-			ccid->ccid_slots = NULL;
-			ccid->ccid_nslots = 0;
+			id_space_destroy(ccid->ccid_minors);
+			ccid->ccid_minors = NULL;
 			return (B_FALSE);
 		}
-
 	}
 
 	return (B_TRUE);
@@ -1805,6 +1825,11 @@ ccid_cleanup(dev_info_t *dip)
 		ccid->ccid_attach &= ~CCID_ATTACH_ACTIVE;
 	}
 
+	if (ccid->ccid_attach & CCID_ATTACH_MINORS) {
+		ccid_minors_fini(ccid);
+		ccid->ccid_attach &= ~CCID_ATTACH_MINORS;
+	}
+
 	if (ccid->ccid_attach & CCID_ATTACH_INTR_ACTIVE) {
 		ccid_intr_poll_fini(ccid);
 		ccid->ccid_attach &= ~CCID_ATTACH_INTR_ACTIVE;
@@ -1820,10 +1845,10 @@ ccid_cleanup(dev_info_t *dip)
 		ccid->ccid_attach &= ~CCID_ATTACH_SLOTS;
 	}
 
-	if (ccid->ccid_attach & CCID_ATTACH_ID_SPACE) {
+	if (ccid->ccid_attach & CCID_ATTACH_SEQ_IDS) {
 		id_space_destroy(ccid->ccid_seqs);
 		ccid->ccid_seqs = NULL;
-		ccid->ccid_attach &= ~CCID_ATTACH_ID_SPACE;
+		ccid->ccid_attach &= ~CCID_ATTACH_SEQ_IDS;
 	}
 
 	if (ccid->ccid_attach & CCID_ATTACH_OPEN_PIPES) {
@@ -1900,16 +1925,14 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 
 	if ((ret = usb_client_attach(dip, USBDRV_VERSION, 0)) != USB_SUCCESS) {
 		ccid_error(ccid, "failed to attach to usb client: %d", ret);
-		ccid_cleanup(dip);
-		return (DDI_FAILURE);
+		goto cleanup;
 	}
 	ccid->ccid_attach |= CCID_ATTACH_USB_CLIENT;
 
 	if ((ret = usb_get_dev_data(dip, &ccid->ccid_dev_data, USB_PARSE_LVL_IF,
 	    0)) != USB_SUCCESS) {
 		ccid_error(ccid, "failed to get usb device data: %d", ret);
-		ccid_cleanup(dip);
-		return (DDI_FAILURE);
+		goto cleanup;
 	}
 
 	mutex_init(&ccid->ccid_mutex, NULL, MUTEX_DRIVER,
@@ -1920,8 +1943,7 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	ccid->ccid_taskq = ddi_taskq_create(dip, buf, 1, TASKQ_DEFAULTPRI, 0);;
 	if (ccid->ccid_taskq == NULL) {
 		ccid_error(ccid, "failed to create CCID taskq");
-		ccid_cleanup(dip);
-		return (DDI_FAILURE);
+		goto cleanup;
 	}
 	ccid->ccid_attach |= CCID_ATTACH_TASKQ;
 
@@ -1932,20 +1954,17 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 
 	if (!ccid_parse_class_desc(ccid)) {
 		ccid_error(ccid, "failed to parse CCID class descriptor");
-		ccid_cleanup(dip);
-		return (DDI_FAILURE);
+		goto cleanup;
 	}
 
 	if (!ccid_supported(ccid)) {
 		ccid_error(ccid, "CCID reader is not supported, not attaching");
-		ccid_cleanup(dip);
-		return (DDI_FAILURE);
+		goto cleanup;
 	}
 
 	if (!ccid_open_pipes(ccid)) {
 		ccid_error(ccid, "failed to open CCID pipes, not attaching");
-		ccid_cleanup(dip);
-		return (DDI_FAILURE);
+		goto cleanup;
 	}
 	ccid->ccid_attach |= CCID_ATTACH_OPEN_PIPES;
 
@@ -1953,22 +1972,19 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	if ((ccid->ccid_seqs = id_space_create(buf, CCID_SEQ_MIN,
 	    CCID_SEQ_MAX + 1)) == NULL) {
 		ccid_error(ccid, "failed to create CCID sequence id space");
-		ccid_cleanup(dip);
-		return (DDI_FAILURE);
+		goto cleanup;
 	}
-	ccid->ccid_attach |= CCID_ATTACH_ID_SPACE;
+	ccid->ccid_attach |= CCID_ATTACH_SEQ_IDS;
 
 	if (!ccid_slots_init(ccid)) {
 		ccid_error(ccid, "failed to initialize CCID slot structures");
-		ccid_cleanup(dip);
-		return (DDI_FAILURE);
+		goto cleanup;
 	}
 	ccid->ccid_attach |= CCID_ATTACH_SLOTS;
 
 	if (usb_register_event_cbs(dip, &ccid_usb_events, 0) != USB_SUCCESS) {
 		ccid_error(ccid, "failed to register USB hotplug callbacks");
-		ccid_cleanup(dip);
-		return (DDI_FAILURE);
+		goto cleanup;
 	}
 	ccid->ccid_attach |= CCID_ATTACH_HOTPLUG_CB;
 
@@ -1984,12 +2000,24 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	ccid->ccid_attach |= CCID_ATTACH_INTR_ACTIVE;
 
 	/*
+	 * Create minor nodes for each slot.
+	 */
+	if (!ccid_minors_init(ccid)) {
+		ccid_error(ccid, "failed to create minor nodes");
+		goto cleanup;
+	}
+
+	/*
 	 * Before we kick off discovery, mark that we're fully active at this
 	 * point.
 	 */
 	ccid->ccid_attach |= CCID_ATTACH_ACTIVE;
 	ccid_discover_request(ccid);
 
+	return (DDI_SUCCESS);
+
+cleanup:
+	ccid_cleanup(dip);
 	return (DDI_SUCCESS);
 }
 
