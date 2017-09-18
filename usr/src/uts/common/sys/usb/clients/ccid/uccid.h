@@ -35,8 +35,8 @@ extern "C" {
 
 #define	UCCID_TXN_DONT_BLOCK	0x01
 typedef struct uccid_cmd_txn_begin {
-	uint_t	uct_version;
-	uint_t	uct_flags;
+	uint32_t	uct_version;
+	uint32_t	uct_flags;
 } uccid_cmd_txn_begin_t;
 
 /*
@@ -48,7 +48,7 @@ typedef struct uccid_cmd_txn_begin {
 #define	UCCID_CMD_TXN_BEGIN	(UCCID_IOCTL | 0x01)
 
 typedef struct uccid_cmd_txn_end {
-	uint_t	uct_version;
+	uint32_t	uct_version;
 } uccid_cmd_txn_end_t;
 
 /*
@@ -59,8 +59,8 @@ typedef struct uccid_cmd_txn_end {
 #define	UCCID_STATUS_F_CARD_PRESENT	0x01
 #define	UCCID_STATUS_F_CARD_ACTIVE	0x02
 typedef struct uccid_cmd_status {
-	uint_t	ucs_version;
-	uint_t	ucs_status;
+	uint32_t	ucs_version;
+	uint32_t	ucs_status;
 } uccid_cmd_status_t;
 
 /*
@@ -69,11 +69,19 @@ typedef struct uccid_cmd_status {
 #define	UCCID_CMD_STATUS	(UCCID_IOCTL | 0x3)
 
 typedef struct uccid_cmd_getatr {
-	uint_t	ucg_version;
-	uint_t	ucg_buflen;
+	uint32_t	ucg_version;
+	uint32_t	ucg_buflen;
 	/* XXX should this just be a static buffer with a likely maximum size? */
-	void	*ucg_buffer;
+	void		*ucg_buffer;
 } uccid_cmd_getatr_t;
+
+#ifdef	_KERNEL
+typedef struct uccid_cmd_getatr32 {
+	uint32_t	ucg_version;
+	uint32_t	ucg_buflen;
+	uintptr32_t	ucg_buffer;
+} uccid_cmd_getatr32_t;
+#endif
 
 /*
  * Obtain the answer to reset for the slot. If ucs_buflen is zero, then the

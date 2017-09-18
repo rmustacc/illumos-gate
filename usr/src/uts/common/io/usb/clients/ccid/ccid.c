@@ -112,6 +112,7 @@
 #include <sys/usb/usba.h>
 #include <sys/usb/usba/usbai_private.h>
 #include <sys/usb/clients/ccid/ccid.h>
+#include <sys/usb/clients/ccid/uccid.h>
 
 /*
  * Set the amount of parallelism we'll want to have from kernel threads which
@@ -413,6 +414,21 @@ ccid_minor_find(minor_t m)
 	mutex_exit(&ccid_idxlock);
 
 	return (ret);
+}
+
+static ccid_minor_idx_t *
+ccid_minor_find_user(minor_t m)
+{
+	ccid_minor_idx_t *idx;
+
+	idx = ccid_minor_find(m);
+	if (idx == NULL) {
+		return (NULL);
+	}
+	ASSERT0(idx->cmi_isslot);
+	if (idx->cmi_isslot)
+		return (NULL);
+	return (idx);
 }
 
 static size_t
@@ -2278,9 +2294,127 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 }
 
 static int
+ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
+{
+	uccid_cmd_status_t ucs;
+
+	if (ddi_copyin((void *)arg, &ucs, sizeof (ucs), mode & FKIOCTL) != 0)
+		return (EFAULT);
+
+	if (ucs.ucs_version != UCCID_VERSION_ONE)
+		return (EINVAL);
+
+	ucs.ucs_status = 0;
+	mutex_enter(&slot->cs_mutex);
+	if (slot->cs_flags & CCID_SLOT_F_PRESENT)
+		ucs.ucs_status |= UCCID_STATUS_F_CARD_PRESENT;
+	if (slot->cs_flags & CCID_SLOT_F_ACTIVE)
+		ucs.ucs_status |= UCCID_STATUS_F_CARD_ACTIVE;
+	mutex_exit(&slot->cs_mutex);
+
+	if (ddi_copyout(&ucs, (void *)arg, sizeof (ucs), mode & FKIOCTL) != 0)
+		return (EFAULT);
+
+	return (0);
+}
+
+static int
+ccid_ioctl_getatr(ccid_slot_t *slot, intptr_t arg, int mode)
+{
+	int ret;
+	size_t atrlen;
+	uccid_cmd_getatr_t ucg;
+
+	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
+		uccid_cmd_getatr32_t ucg32;
+
+		if (ddi_copyin((void *)arg, &ucg32, sizeof (ucg32),
+		    mode & FKIOCTL) != 0)
+			return (EFAULT);
+		ucg.ucg_version = ucg32.ucg_version;
+		ucg.ucg_buflen = ucg32.ucg_buflen;
+		ucg.ucg_buffer = (void *)(uintptr_t)ucg32.ucg_buffer;
+	} else {
+		if (ddi_copyin((void *)arg, &ucg, sizeof (ucg),
+		    mode & FKIOCTL) != 0)
+			return (EFAULT);
+	}
+
+	if (ucg.ucg_version != UCCID_VERSION_ONE)
+		return (EINVAL);
+
+	mutex_enter(&slot->cs_mutex);
+	if (slot->cs_atr == NULL) {
+		mutex_exit(&slot->cs_mutex);
+		return (ENXIO);
+	}
+
+	atrlen = msgsize(slot->cs_atr);
+	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
+		if (atrlen > UINT32_MAX) {
+			mutex_exit(&slot->cs_mutex);
+			return (ERANGE);
+		}
+	}
+
+	if (ucg.ucg_buflen >= atrlen) {
+		if (ddi_copyout(slot->cs_atr->b_rptr, ucg.ucg_buffer, atrlen,
+		    mode & FKIOCTL) != 0) {
+			mutex_exit(&slot->cs_mutex);
+			return (EFAULT);
+		}
+		ret = 0;
+	} else {
+		ret = EOVERFLOW;
+	}
+	ucg.ucg_buflen = atrlen;
+	mutex_exit(&slot->cs_mutex);
+
+	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
+		uccid_cmd_getatr32_t ucg32;
+
+		ucg32.ucg_version = ucg.ucg_version;
+		ucg32.ucg_buflen = (uint32_t)ucg.ucg_buflen;
+		ucg32.ucg_buffer = (uintptr32_t)(uintptr_t)ucg.ucg_buffer;
+
+		if (ddi_copyout(&ucg32, (void *)arg, sizeof (ucg32),
+		    mode & FKIOCTL) != 0)
+			return (EFAULT);
+	} else {
+		if (ddi_copyout(&ucg, (void *)arg, sizeof (ucg),
+		    mode & FKIOCTL) != 0)
+			return (EFAULT);
+	}
+
+	return (ret);
+}
+
+static int
 ccid_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp, int
     *rvalp)
 {
+	ccid_minor_idx_t *idx;
+	ccid_slot_t *slot;
+
+	idx = ccid_minor_find_user(getminor(dev));
+	if (idx == NULL) {
+		return (ENOENT);
+	}
+
+	slot = idx->cmi_data.cmi_user->cm_slot;
+
+	switch (cmd) {
+	case UCCID_CMD_TXN_BEGIN:
+	case UCCID_CMD_TXN_END:
+		return (ENOTSUP);
+	case UCCID_CMD_STATUS:
+		return (ccid_ioctl_status(slot, arg, mode));
+	case UCCID_CMD_GETATR:
+		return (ccid_ioctl_getatr(slot, arg, mode));
+	default:
+		break;
+	}
+
 	return (ENOTTY);
 }
 
@@ -2294,15 +2428,12 @@ ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 static int
 ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 {
-	minor_t m;
 	ccid_minor_idx_t *idx;
 	ccid_minor_t *cmp;
 	ccid_slot_t *slot;
 
-	m = getminor(dev);
-	idx = ccid_minor_find(m);
-	if (idx == NULL || idx->cmi_isslot) {
-		ASSERT0(idx->cmi_isslot);
+	idx = ccid_minor_find_user(getminor(dev));
+	if (idx == NULL) {
 		return (ENOENT);
 	}
 
