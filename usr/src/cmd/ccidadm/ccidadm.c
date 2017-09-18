@@ -10,12 +10,14 @@
  */
 
 /*
- * Copyright 2017 <contributor>
+ * Copyright (c) 2017, Joyent, Inc. 
  */
 
 /*
- * Describe the purpose of this file.
+ * Print out information about a CCID device.
  */
+
+#define	CCID_ROOT	"/dev/ccid/
 
 int
 main(void)
