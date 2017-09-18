@@ -16,13 +16,25 @@
 PROG= ccidadm
 
 include ../Makefile.cmd
+include ../Makefile.ctf
 
 ROOTCMDDIR = $(ROOTLIB)/ccid
 CFLAGS += $(CCVERBOSE)
+LDLIBS += -lofmt
+SRCS = ccidadm.o
+OBJS = $(SRCS:%.c=%.o)
 
-ROOTLIBDLFILES = $(PROG:%=$(ROOTLIB)/dl/%)
+ROOTCCIDFILES = $(PROG:%=$(ROOTCMDDIR)/%)
 
 .KEEP_STATE:
+
+$(PROG): $(OBJS)
+	$(LINK.c) -o $@ $(OBJS) $(LDLIBS)
+	$(POST_PROCESS)
+
+%.o: %.c
+	$(COMPILE.c) $<
+	$(POST_PROCESS_O)
 
 all: $(PROG)
 
@@ -30,6 +42,6 @@ install: all $(ROOTCMD)
 
 clean:
 
-lint:	lint_PROG
+lint:	lint_SRCS
 
 include ../Makefile.targ

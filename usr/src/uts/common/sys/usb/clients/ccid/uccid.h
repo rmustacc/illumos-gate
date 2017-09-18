@@ -20,6 +20,8 @@
  * Definitions for the userland CCID interface.
  */
 
+#include <sys/types.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -27,7 +29,7 @@ extern "C" {
 #define	UCCID_IOCTL	(('u' << 24) | ('c' << 16) | ('d') << 8)
 
 #define	UCCID_VERSION_ONE	1
-#define	UCCID_CURRENT_VERSION	UCCID_VERSIN_ONE
+#define	UCCID_CURRENT_VERSION	UCCID_VERSION_ONE
 
 /*
  * XXX We should probably put a version at the start of every ioctl.
