@@ -2149,6 +2149,7 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 		ccid_error(ccid, "failed to create minor nodes");
 		goto cleanup;
 	}
+	ccid->ccid_attach |= CCID_ATTACH_MINORS;
 
 	/*
 	 * Before we kick off discovery, mark that we're fully active at this
