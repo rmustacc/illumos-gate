@@ -457,7 +457,7 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	VERIFY3P(slot->cs_excl_minor, !=, NULL);
 
 	cmp = slot->cs_excl_minor;
-	cmp->cm_flags &= CCID_MINOR_F_HASEXCL;
+	cmp->cm_flags &= ~CCID_MINOR_F_HASEXCL;
 	slot->cs_excl_minor = NULL;
 
 	/*
@@ -2365,8 +2365,8 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 	mutex_enter(&slot->cs_mutex);
 	list_insert_tail(&slot->cs_minors, cmp);
 
-	if (otyp & FEXCL) {
-		boolean_t nowait = !!(otyp & FNDELAY);
+	if (flag & FEXCL) {
+		boolean_t nowait = !!(flag & FNDELAY);
 
 		if ((ret = ccid_slot_excl_req(slot, cmp, nowait)) != 0) {
 			list_remove(&slot->cs_minors, cmp);
@@ -2536,6 +2536,8 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 	VERIFY3S(cmp->cm_flags & CCID_MINOR_F_HASEXCL, !=, 0);
 	ccid_slot_excl_rele(slot);
 	mutex_exit(&slot->cs_mutex);
+
+	return (0);
 }
 
 static int
@@ -2562,7 +2564,7 @@ ccid_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp, int
 	case UCCID_CMD_TXN_BEGIN:
 		return (ccid_ioctl_txn_begin(slot, cmp, arg, mode));
 	case UCCID_CMD_TXN_END:
-		return (ENOTSUP);
+		return (ccid_ioctl_txn_end(slot, cmp, arg, mode));
 	case UCCID_CMD_STATUS:
 		return (ccid_ioctl_status(slot, arg, mode));
 	case UCCID_CMD_GETATR:
