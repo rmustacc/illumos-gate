@@ -178,13 +178,19 @@ typedef struct ccid_minor_idx {
 	} cmi_data;
 } ccid_minor_idx_t;
 
+typedef enum ccid_minor_flags {
+	CCID_MINOR_F_WAITING	= 1 << 0,
+	CCID_MINOR_F_HASEXCL	= 1 << 1
+} ccid_minor_flags_t;
+
 typedef struct ccid_minor {
 	ccid_minor_idx_t	cm_idx;		/* WO */
 	cred_t			*cm_opener;	/* WO */
 	struct ccid_slot	*cm_slot;	/* WO */
-	list_node_t		cm_list;
-	boolean_t		cm_excl_wanted;
-	boolean_t		cm_excl;
+	list_node_t		cm_minor_list;
+	list_node_t		cm_excl_list;
+	kcondvar_t		cm_excl_cv;
+	ccid_minor_flags_t	cm_flags;
 } ccid_minor_t;
 
 typedef enum ccid_slot_flags {
@@ -206,8 +212,8 @@ typedef struct ccid_slot {
 	ccid_slot_flags_t	cs_flags;
 	ccid_class_voltage_t	cs_voltage;
 	mblk_t			*cs_atr;
-	struct ccid_minor	*cs_excl_minor;
-	kcondvar_t		cs_excl_cv;
+	ccid_minor_t		*cs_excl_minor;
+	list_t			cs_excl_waiters;
 	list_t			cs_minors;
 } ccid_slot_t;
 
@@ -429,6 +435,95 @@ ccid_minor_find_user(minor_t m)
 	if (idx->cmi_isslot)
 		return (NULL);
 	return (idx);
+}
+
+static void
+ccid_slot_excl_signal(ccid_slot_t *slot)
+{
+	ccid_minor_t *cmp;
+
+	VERIFY(MUTEX_HELD(&slot->cs_mutex));
+	VERIFY3P(slot->cs_excl_minor, ==, NULL);
+
+	cmp = list_head(&slot->cs_excl_waiters);
+}
+
+static void
+ccid_slot_excl_rele(ccid_slot_t *slot)
+{
+	ccid_minor_t *cmp;
+
+	VERIFY(MUTEX_HELD(&slot->cs_mutex));
+	VERIFY3P(slot->cs_excl_minor, !=, NULL);
+
+	cmp = slot->cs_excl_minor;
+	cmp->cm_flags &= CCID_MINOR_F_HASEXCL;
+	slot->cs_excl_minor = NULL;
+
+	/*
+	 * Wake up the next in the queue
+	 */
+	ccid_slot_excl_signal(slot);
+}
+
+static int
+ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
+{
+	ccid_minor_t *check;
+
+	VERIFY(MUTEX_HELD(&slot->cs_mutex));
+
+	if (slot->cs_excl_minor == cmp) {
+		VERIFY(cmp->cm_flags & CCID_MINOR_F_HASEXCL);
+		return (EEXIST);
+	}
+
+	if (cmp->cm_flags & CCID_MINOR_F_WAITING) {
+		return (EINPROGRESS);
+	}
+
+	/*
+	 * If we were asked to try and fail quickly, do that before the main
+	 * loop.
+	 */
+	if (slot->cs_excl_minor != NULL && nosleep) {
+		return (EBUSY);
+	}
+
+	/*
+	 * If no one has it, go ahead and claim it and don't insert us into the
+	 * pending list.
+	 */
+	if (slot->cs_excl_minor == NULL) {
+		goto claim;
+	}
+
+	/*
+	 * Mark that we're waiting in case we race with another thread trying to
+	 * claim exclusive access for this. Insert ourselves on the wait list.
+	 * If for some reason we get a signal, then we can't know for certain if
+	 * we had a signal /  cv race. In such a case, we always wake up the
+	 * next person in the queue (potentially spuriously.
+	 */
+	cmp->cm_flags |= CCID_MINOR_F_WAITING;
+	list_insert_tail(&slot->cs_excl_waiters, cmp);
+	while (slot->cs_excl_minor != NULL) {
+		if (cv_wait_sig(&cmp->cm_excl_cv, &slot->cs_mutex) == 0) {
+			list_remove(&slot->cs_excl_waiters, cmp);
+			cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
+			ccid_slot_excl_signal(slot);
+			return (EINTR);
+		}
+	}
+
+	VERIFY3P(cmp, ==, list_head(&slot->cs_excl_waiters));
+	list_remove(&slot->cs_excl_waiters, cmp);
+
+claim:
+	cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
+	cmp->cm_flags |= CCID_MINOR_F_HASEXCL;
+	slot->cs_excl_minor = cmp;
+	return (0);
 }
 
 static size_t
@@ -1746,8 +1841,8 @@ ccid_slots_fini(ccid_t *ccid)
 
 		freemsgchain(ccid->ccid_slots[i].cs_atr);
 		mutex_destroy(&ccid->ccid_slots[i].cs_mutex);
-		cv_destroy(&ccid->ccid_slots[i].cs_excl_cv);
 		list_destroy(&ccid->ccid_slots[i].cs_minors);
+		list_destroy(&ccid->ccid_slots[i].cs_excl_waiters);
 	}
 
 	ddi_remove_minor_node(ccid->ccid_dip, NULL);
@@ -1784,10 +1879,10 @@ ccid_slots_init(ccid_t *ccid)
 		ccid->ccid_slots[i].cs_idx.cmi_isslot = B_TRUE;
 		ccid->ccid_slots[i].cs_idx.cmi_data.cmi_slot =
 		    &ccid->ccid_slots[i];
-		cv_init(&ccid->ccid_slots[i].cs_excl_cv, NULL, CV_DRIVER, NULL);
 		list_create(&ccid->ccid_slots[i].cs_minors, sizeof (ccid_minor_t),
-		   offsetof(ccid_minor_t, cm_list)); 
-
+		   offsetof(ccid_minor_t, cm_minor_list)); 
+		list_create(&ccid->ccid_slots[i].cs_excl_waiters, sizeof (ccid_minor_t),
+		   offsetof(ccid_minor_t, cm_excl_list)); 
 	}
 
 	return (B_TRUE);
@@ -2262,21 +2357,28 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 		kmem_free(cmp, sizeof (ccid_minor_t));
 		return (ENOSPC);
 	}
+	cv_init(&cmp->cm_excl_cv, NULL, CV_DRIVER, NULL);
 	cmp->cm_opener = crdup(credp);
 	cmp->cm_slot = slot;
-	if (otyp & FEXCL) {
-		cmp->cm_excl_wanted = B_TRUE;
-	}
-	cmp->cm_excl = B_FALSE;
 	*devp = makedevice(getmajor(*devp), cmp->cm_idx.cmi_minor);
 
 	mutex_enter(&slot->cs_mutex);
 	list_insert_tail(&slot->cs_minors, cmp);
 
-	/*
-	 * If exclusive access is desired, grab it now.
-	 * XXX Do so
-	 */
+	if (otyp & FEXCL) {
+		boolean_t nowait = !!(otyp & FNDELAY);
+
+		if ((ret = ccid_slot_excl_req(slot, cmp, nowait)) != 0) {
+			list_remove(&slot->cs_minors, cmp);
+			mutex_exit(&slot->cs_mutex);
+
+			ASSERT3S(ret, !=, EINPROGRESS);
+			ccid_minor_free(&cmp->cm_idx);
+			cv_destroy(&cmp->cm_excl_cv);
+			kmem_free(cmp, sizeof (ccid_minor_t));
+			return (ret);
+		}
+	}
 	mutex_exit(&slot->cs_mutex);
 
 	return (0);
@@ -2391,21 +2493,74 @@ ccid_ioctl_getatr(ccid_slot_t *slot, intptr_t arg, int mode)
 }
 
 static int
+ccid_ioctl_txn_begin(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
+{
+	int ret;
+	uccid_cmd_txn_begin_t uct;
+	boolean_t nowait;
+
+	if (ddi_copyin((void *)arg, &uct, sizeof (uct), mode & FKIOCTL) != 0)
+		return (EFAULT);
+
+	if (uct.uct_version != UCCID_VERSION_ONE)
+		return (EINVAL);
+	if ((uct.uct_flags & ~UCCID_TXN_DONT_BLOCK) != 0)
+		return (EINVAL);
+	nowait = !!(uct.uct_flags & UCCID_TXN_DONT_BLOCK);
+
+	mutex_enter(&slot->cs_mutex);
+	ret = ccid_slot_excl_req(slot, cmp, nowait);
+	mutex_exit(&slot->cs_mutex);
+
+	return (ret);
+}
+
+static int
+ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
+{
+	int ret;
+	uccid_cmd_txn_end_t uct;
+	boolean_t nowait;
+
+	if (ddi_copyin((void *)arg, &uct, sizeof (uct), mode & FKIOCTL) != 0)
+		return (EFAULT);
+
+	if (uct.uct_version != UCCID_VERSION_ONE)
+		return (EINVAL);
+
+	mutex_enter(&slot->cs_mutex);
+	if (slot->cs_excl_minor != cmp) {
+		mutex_exit(&slot->cs_mutex);
+		return (ENXIO);
+	}
+	VERIFY3S(cmp->cm_flags & CCID_MINOR_F_HASEXCL, !=, 0);
+	ccid_slot_excl_rele(slot);
+	mutex_exit(&slot->cs_mutex);
+}
+
+static int
 ccid_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp, int
     *rvalp)
 {
 	ccid_minor_idx_t *idx;
 	ccid_slot_t *slot;
+	ccid_minor_t *cmp;
 
 	idx = ccid_minor_find_user(getminor(dev));
 	if (idx == NULL) {
 		return (ENOENT);
 	}
 
-	slot = idx->cmi_data.cmi_user->cm_slot;
+	if (idx->cmi_isslot) {
+		return (ENXIO);
+	}
+
+	cmp = idx->cmi_data.cmi_user;
+	slot = cmp->cm_slot;
 
 	switch (cmd) {
 	case UCCID_CMD_TXN_BEGIN:
+		return (ccid_ioctl_txn_begin(slot, cmp, arg, mode));
 	case UCCID_CMD_TXN_END:
 		return (ENOTSUP);
 	case UCCID_CMD_STATUS:
@@ -2446,14 +2601,15 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	ccid_minor_free(idx);
 
 	mutex_enter(&slot->cs_mutex);
-	/*
-	 * XXX if exlcusive, clean up here.
-	 */
+	if (cmp->cm_flags & CCID_MINOR_F_HASEXCL) {
+		ccid_slot_excl_rele(slot);
+	}
 
 	list_remove(&slot->cs_minors, cmp);
 	mutex_exit(&slot->cs_mutex);
 
 	crfree(cmp->cm_opener);
+	cv_destroy(&cmp->cm_excl_cv);
 	kmem_free(cmp, sizeof (ccid_minor_t));
 
 	return (0);

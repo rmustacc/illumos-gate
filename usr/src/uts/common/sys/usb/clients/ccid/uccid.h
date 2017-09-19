@@ -31,10 +31,6 @@ extern "C" {
 #define	UCCID_VERSION_ONE	1
 #define	UCCID_CURRENT_VERSION	UCCID_VERSION_ONE
 
-/*
- * XXX We should probably put a version at the start of every ioctl.
- */
-
 #define	UCCID_TXN_DONT_BLOCK	0x01
 typedef struct uccid_cmd_txn_begin {
 	uint32_t	uct_version;
