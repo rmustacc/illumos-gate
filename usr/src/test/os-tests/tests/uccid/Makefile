@@ -22,7 +22,9 @@ PROGS = 		\
 	excl-basic	\
 	excl-close	\
 	excl-loop	\
-	excl-nonblock
+	excl-nonblock	\
+	status		\
+	yk
 
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/test/Makefile.com
