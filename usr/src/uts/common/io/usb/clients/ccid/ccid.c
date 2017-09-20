@@ -189,6 +189,7 @@ typedef struct ccid_minor {
 	struct ccid_slot	*cm_slot;	/* WO */
 	list_node_t		cm_minor_list;
 	list_node_t		cm_excl_list;
+	list_t			cm_read_commands;
 	kcondvar_t		cm_excl_cv;
 	ccid_minor_flags_t	cm_flags;
 } ccid_minor_t;
@@ -551,6 +552,14 @@ ccid_command_resp_length(ccid_command_t *cc)
 	return (len);
 }
 
+/*
+ * Complete a single command. The way that a command completes depends on the
+ * kind of command that occurs. If this is commad is flagged as a user command,
+ * that implies that it must be handled in a different way from administrative
+ * commands. User commands are placed into the minor to consume via a read(9E).
+ * Non-user commands are placed into a completion queue and must be picked up
+ * via the ccid_command_poll() interface.
+ */
 static void
 ccid_command_complete(ccid_command_t *cc)
 {
@@ -559,8 +568,21 @@ ccid_command_complete(ccid_command_t *cc)
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	cc->cc_completion_time = gethrtime();
 	list_remove(&ccid->ccid_command_queue, cc);
-	list_insert_tail(&ccid->ccid_complete_queue, cc);
-	cv_broadcast(&cc->cc_cv);
+
+	if (cc->cc_flags & CCID_COMMAND_F_USER) {
+		ccid_slot_t *slot;
+		ccid_minor_t *cmp;
+		/*
+		 * This command was associated with a user request. We need to
+		 * append it to the minor so that we can read it. XXX The minor
+		 * may have been closed before this happened and this needs to
+		 * be discarded.
+		 */
+		slot = ccid->ccid_nslots[cc->cc_slot];
+	} else {
+		list_insert_tail(&ccid->ccid_complete_queue, cc);
+		cv_broadcast(&cc->cc_cv);
+	}
 
 	/*
 	 * Finally, we also need to kick off the next command.
@@ -1125,6 +1147,8 @@ ccid_command_alloc(ccid_t *ccid, ccid_slot_t *slot, boolean_t block,
 static void
 ccid_command_poll(ccid_t *ccid, ccid_command_t *cc)
 {
+	VERIFY0(cc->cc_flags & CCID_COMMAND_F_USER);
+
 	mutex_enter(&ccid->ccid_mutex);
 	while (cc->cc_state < CCID_COMMAND_COMPLETE) {
 		cv_wait(&cc->cc_cv, &ccid->ccid_mutex);
@@ -1143,7 +1167,6 @@ ccid_command_poll(ccid_t *ccid, ccid_command_t *cc)
 	ASSERT3P(check, !=, NULL);
 #endif
 	VERIFY(list_link_active(&cc->cc_list_node));
-	VERIFY0(cc->cc_flags & CCID_COMMAND_F_USER);
 	list_remove(&ccid->ccid_complete_queue, cc);
 	mutex_exit(&ccid->ccid_mutex);
 }
@@ -2395,6 +2418,8 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 		return (ENOSPC);
 	}
 	cv_init(&cmp->cm_excl_cv, NULL, CV_DRIVER, NULL);
+	list_create(&cmp->cm_read_commands, sizeof (ccid_command_t),
+	    offsetof(ccid_command_t, cc_list_node));
 	cmp->cm_opener = crdup(credp);
 	cmp->cm_slot = slot;
 	*devp = makedevice(getmajor(*devp), cmp->cm_idx.cmi_minor);
@@ -2412,6 +2437,7 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 			ASSERT3S(ret, !=, EINPROGRESS);
 			ccid_minor_free(&cmp->cm_idx);
 			cv_destroy(&cmp->cm_excl_cv);
+			list_destroy(&cmp->cm_read_commands);
 			kmem_free(cmp, sizeof (ccid_minor_t));
 			return (ret);
 		}
@@ -2770,6 +2796,7 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	ccid_minor_idx_t *idx;
 	ccid_minor_t *cmp;
 	ccid_slot_t *slot;
+	ccid_command_t *cc;
 
 	idx = ccid_minor_find_user(getminor(dev));
 	if (idx == NULL) {
@@ -2791,6 +2818,13 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	list_remove(&slot->cs_minors, cmp);
 	mutex_exit(&slot->cs_mutex);
 
+	/*
+	 * Clean up queued commands.
+	 */
+	while ((cc = list_remove_head(&cmp->cm_read_commands)) != NULL) {
+		ccid_command_free(cc);
+	}
+	list_destroy(&cmp->cm_read_commands);
 	crfree(cmp->cm_opener);
 	cv_destroy(&cmp->cm_excl_cv);
 	kmem_free(cmp, sizeof (ccid_minor_t));
