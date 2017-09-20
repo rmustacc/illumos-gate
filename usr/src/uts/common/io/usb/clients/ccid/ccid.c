@@ -209,7 +209,6 @@ typedef struct ccid_slot {
 	ccid_minor_idx_t	cs_idx;		/* WO */
 	uint_t			cs_slotno;	/* WO */
 	struct ccid		*cs_ccid;	/* WO */
-	kmutex_t		cs_mutex;
 	ccid_slot_flags_t	cs_flags;
 	ccid_class_voltage_t	cs_voltage;
 	mblk_t			*cs_atr;
@@ -450,7 +449,7 @@ ccid_slot_excl_signal(ccid_slot_t *slot)
 {
 	ccid_minor_t *cmp;
 
-	VERIFY(MUTEX_HELD(&slot->cs_mutex));
+	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
 	VERIFY3P(slot->cs_excl_minor, ==, NULL);
 
 	cmp = list_head(&slot->cs_excl_waiters);
@@ -461,7 +460,7 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 {
 	ccid_minor_t *cmp;
 
-	VERIFY(MUTEX_HELD(&slot->cs_mutex));
+	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
 	VERIFY3P(slot->cs_excl_minor, !=, NULL);
 
 	cmp = slot->cs_excl_minor;
@@ -479,7 +478,7 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 {
 	ccid_minor_t *check;
 
-	VERIFY(MUTEX_HELD(&slot->cs_mutex));
+	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
 
 	if (slot->cs_excl_minor == cmp) {
 		VERIFY(cmp->cm_flags & CCID_MINOR_F_HASEXCL);
@@ -516,7 +515,7 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 	cmp->cm_flags |= CCID_MINOR_F_WAITING;
 	list_insert_tail(&slot->cs_excl_waiters, cmp);
 	while (slot->cs_excl_minor != NULL) {
-		if (cv_wait_sig(&cmp->cm_excl_cv, &slot->cs_mutex) == 0) {
+		if (cv_wait_sig(&cmp->cm_excl_cv, &slot->cs_ccid->ccid_mutex) == 0) {
 			list_remove(&slot->cs_excl_waiters, cmp);
 			cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
 			ccid_slot_excl_signal(slot);
@@ -578,7 +577,6 @@ ccid_command_complete(ccid_command_t *cc)
 		 * may have been closed before this happened and this needs to
 		 * be discarded.
 		 */
-		slot = ccid->ccid_nslots[cc->cc_slot];
 	} else {
 		list_insert_tail(&ccid->ccid_complete_queue, cc);
 		cv_broadcast(&cc->cc_cv);
@@ -1363,11 +1361,9 @@ ccid_intr_pipe_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 	case CCID_INTR_CODE_SLOT_CHANGE:
 		mutex_enter(&ccid->ccid_mutex);
 		ccid->ccid_stats.cst_intr_slot_change++;
-		mutex_exit(&ccid->ccid_mutex);
 
 		explen = 1 + ((2 * ccid->ccid_nslots + (NBBY-1)) / NBBY);
 		if (msglen < explen) {
-			mutex_enter(&ccid->ccid_mutex);
 			ccid->ccid_stats.cst_intr_inval++;
 			mutex_exit(&ccid->ccid_mutex);
 			goto done;
@@ -1381,21 +1377,20 @@ ccid_intr_pipe_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 			uint_t delta = 2 << shift;
 
 			if (mp->b_rptr[byte] & delta) {
-				ccid_slot_t *cs = &ccid->ccid_slots[i];
+				ccid_slot_t *slot = &ccid->ccid_slots[i];
 
-				mutex_enter(&cs->cs_mutex);
-				cs->cs_flags &= ~CCID_SLOT_F_INTR_MASK;
-				cs->cs_flags |= CCID_SLOT_F_CHANGED;
+				slot->cs_flags &= ~CCID_SLOT_F_INTR_MASK;
+				slot->cs_flags |= CCID_SLOT_F_CHANGED;
 				if (mp->b_rptr[byte] & present) {
-					cs->cs_flags |= CCID_SLOT_F_INTR_ADD;
+					slot->cs_flags |= CCID_SLOT_F_INTR_ADD;
 				} else {
-					cs->cs_flags |= CCID_SLOT_F_INTR_GONE;
+					slot->cs_flags |= CCID_SLOT_F_INTR_GONE;
 				}
-				mutex_exit(&cs->cs_mutex);
 				change = B_TRUE;
 			}
 		}
 
+		mutex_exit(&ccid->ccid_mutex);
 		if (change) {
 			ccid_discover_request(ccid);
 		}
@@ -1403,16 +1398,15 @@ ccid_intr_pipe_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 	case CCID_INTR_CODE_HW_ERROR:
 		mutex_enter(&ccid->ccid_mutex);
 		ccid->ccid_stats.cst_intr_hwerr++;
-		mutex_exit(&ccid->ccid_mutex);
 
 		if (msglen < sizeof (ccid_intr_hwerr_t)) {
-			mutex_enter(&ccid->ccid_mutex);
 			ccid->ccid_stats.cst_intr_inval++;
 			mutex_exit(&ccid->ccid_mutex);
 			goto done;
 		}
 
 		/* XXX what should we do with this? */
+		mutex_exit(&ccid->ccid_mutex);
 		break;
 	default:
 		mutex_enter(&ccid->ccid_mutex);
@@ -1447,26 +1441,26 @@ ccid_intr_pipe_except_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
  * The given CCID slot has been removed. Handle insertion.
  */
 static void
-ccid_slot_removed(ccid_t *ccid, ccid_slot_t *cs)
+ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot)
 {
 	/*
 	 * Nothing to do right now.
 	 */
-	mutex_enter(&cs->cs_mutex);
-	if ((cs->cs_flags & CCID_SLOT_F_PRESENT) == 0) {
-		mutex_exit(&cs->cs_mutex);
+	mutex_enter(&ccid->ccid_mutex);
+	if ((slot->cs_flags & CCID_SLOT_F_PRESENT) == 0) {
+		mutex_exit(&ccid->ccid_mutex);
 		return;
 	}
-	cs->cs_flags &= ~CCID_SLOT_F_PRESENT;
-	cs->cs_flags &= ~CCID_SLOT_F_ACTIVE;
-	cs->cs_voltage = 0;
-	freemsgchain(cs->cs_atr);
-	cs->cs_atr = NULL;
-	mutex_exit(&cs->cs_mutex);
+	slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
+	slot->cs_flags &= ~CCID_SLOT_F_ACTIVE;
+	slot->cs_voltage = 0;
+	freemsgchain(slot->cs_atr);
+	slot->cs_atr = NULL;
+	mutex_exit(&ccid->ccid_mutex);
 }
 
 static void
-ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *cs)
+ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 {
 	uint_t nvolts = 4;
 	uint_t cvolt = 0;
@@ -1474,18 +1468,18 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *cs)
 	ccid_class_voltage_t volts[4] = { CCID_CLASS_VOLT_AUTO,
 	    CCID_CLASS_VOLT_5_0, CCID_CLASS_VOLT_3_0, CCID_CLASS_VOLT_1_8 };
 
-	mutex_enter(&cs->cs_mutex);
-	if ((cs->cs_flags & CCID_SLOT_F_ACTIVE) != 0) {
-		mutex_exit(&cs->cs_mutex);
+	mutex_enter(&ccid->ccid_mutex);
+	if ((slot->cs_flags & CCID_SLOT_F_ACTIVE) != 0) {
+		mutex_exit(&ccid->ccid_mutex);
 		return;
 	}
 
-	cs->cs_flags |= CCID_SLOT_F_PRESENT;
-	mutex_exit(&cs->cs_mutex);
+	slot->cs_flags |= CCID_SLOT_F_PRESENT;
+	mutex_exit(&ccid->ccid_mutex);
 
 	ccid_reply_slot_status_t ss;
-	(void) ccid_command_slot_status(ccid, cs, &ss);
-	(void) ccid_command_slot_status(ccid, cs, &ss);
+	(void) ccid_command_slot_status(ccid, slot, &ss);
+	(void) ccid_command_slot_status(ccid, slot, &ss);
 	/*
 	 * Now, we need to activate this ccid device before we can do anything
 	 * with it. First, power on the device. There are two hardware features
@@ -1517,7 +1511,7 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *cs)
 			continue;
 		}
 
-		if ((ret = ccid_command_power_on(ccid, cs, volts[cvolt],
+		if ((ret = ccid_command_power_on(ccid, slot, volts[cvolt],
 		    &atr)) != 0) {
 			freemsg(atr);
 			atr = NULL;
@@ -1533,13 +1527,13 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *cs)
 			 * and just try to power on.
 			 */
 			if (ret == ENOENT) {
-				mutex_enter(&cs->cs_mutex);
-				cs->cs_flags &= ~CCID_SLOT_F_PRESENT;
-				mutex_exit(&cs->cs_mutex);
+				mutex_enter(&ccid->ccid_mutex);
+				slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
+				mutex_exit(&ccid->ccid_mutex);
 				return;
 			}
 			/* XXX we should probably worry about failure */
-			(void) ccid_command_power_off(ccid, cs);
+			(void) ccid_command_power_off(ccid, slot);
 			continue;
 		}
 
@@ -1554,11 +1548,11 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *cs)
 	}
 
 
-	mutex_enter(&cs->cs_mutex);
-	cs->cs_voltage = volts[cvolt];
-	cs->cs_atr = atr;
-	cs->cs_flags |= CCID_SLOT_F_ACTIVE;
-	mutex_exit(&cs->cs_mutex);
+	mutex_enter(&ccid->ccid_mutex);
+	slot->cs_voltage = volts[cvolt];
+	slot->cs_atr = atr;
+	slot->cs_flags |= CCID_SLOT_F_ACTIVE;
+	mutex_exit(&ccid->ccid_mutex);
 }
 
 static void
@@ -1580,12 +1574,12 @@ ccid_discover(void *arg)
 	mutex_exit(&ccid->ccid_mutex);
 
 	for (i = 0; i < ccid->ccid_nslots; i++) {
-		ccid_slot_t *cs = &ccid->ccid_slots[i];
+		ccid_slot_t *slot = &ccid->ccid_slots[i];
 		ccid_reply_slot_status_t ss;
 		int ret;
 		uint_t flags;
 
-		mutex_enter(&cs->cs_mutex);
+		mutex_enter(&slot->cs_ccid->ccid_mutex);
 
 		/*
 		 * Snapshot flags at this point in time before we start
@@ -1593,24 +1587,24 @@ ccid_discover(void *arg)
 		 * this lock the slot lock, which will happen as part or
 		 * processing the commands.
 		 */
-		flags = cs->cs_flags & CCID_SLOT_F_INTR_MASK;
-		cs->cs_flags &= ~CCID_SLOT_F_INTR_MASK;
+		flags = slot->cs_flags & CCID_SLOT_F_INTR_MASK;
+		slot->cs_flags &= ~CCID_SLOT_F_INTR_MASK;
 
 		if ((flags & CCID_SLOT_F_CHANGED) == 0) {
-			mutex_exit(&cs->cs_mutex);
+			mutex_exit(&slot->cs_ccid->ccid_mutex);
 			continue;
 		}
 
-		mutex_exit(&cs->cs_mutex);
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 		/*
 		 * We either have a hardware notified insertion or removal or we
 		 * have something that we think might have been inserted.
 		 */
 		if (flags & CCID_SLOT_F_INTR_GONE) {
-			ccid_slot_removed(ccid, cs);
+			ccid_slot_removed(ccid, slot);
 		} else {
-			ccid_slot_inserted(ccid, cs);
+			ccid_slot_inserted(ccid, slot);
 		}
 
 	}
@@ -1900,7 +1894,6 @@ ccid_slots_fini(ccid_t *ccid)
 		VERIFY3U(ccid->ccid_slots[i].cs_slotno, ==, i);
 
 		freemsgchain(ccid->ccid_slots[i].cs_atr);
-		mutex_destroy(&ccid->ccid_slots[i].cs_mutex);
 		list_destroy(&ccid->ccid_slots[i].cs_minors);
 		list_destroy(&ccid->ccid_slots[i].cs_excl_waiters);
 	}
@@ -1925,8 +1918,6 @@ ccid_slots_init(ccid_t *ccid)
 	ccid->ccid_slots = kmem_zalloc(sizeof (ccid_slot_t) * ccid->ccid_nslots,
 	    KM_SLEEP);
 	for (i = 0; i < ccid->ccid_nslots; i++) {
-		mutex_init(&ccid->ccid_slots[i].cs_mutex, NULL, MUTEX_DRIVER,
-		    ccid->ccid_dev_data->dev_iblock_cookie);
 		/*
 		 * We initialize every possible slot as having changed to make
 		 * sure that we have a chance to discover it. See the slot
@@ -2424,7 +2415,7 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 	cmp->cm_slot = slot;
 	*devp = makedevice(getmajor(*devp), cmp->cm_idx.cmi_minor);
 
-	mutex_enter(&slot->cs_mutex);
+	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	list_insert_tail(&slot->cs_minors, cmp);
 
 	if (flag & FEXCL) {
@@ -2432,7 +2423,7 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 
 		if ((ret = ccid_slot_excl_req(slot, cmp, nowait)) != 0) {
 			list_remove(&slot->cs_minors, cmp);
-			mutex_exit(&slot->cs_mutex);
+			mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 			ASSERT3S(ret, !=, EINPROGRESS);
 			ccid_minor_free(&cmp->cm_idx);
@@ -2442,7 +2433,7 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 			return (ret);
 		}
 	}
-	mutex_exit(&slot->cs_mutex);
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	return (0);
 }
@@ -2535,20 +2526,20 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	}
 	cc->cc_flags |= CCID_COMMAND_F_USER;
 
-	mutex_enter(&slot->cs_mutex);
+	mutex_enter(&slot->cs_ccid->ccid_mutex);
 
 	/*
 	 * Check if we have exclusive access and if there's a card present. If
 	 * not, both are errors.
 	 */
 	if (!(cmp->cm_flags & CCID_MINOR_F_HASEXCL)) {
-		mutex_exit(&slot->cs_mutex);
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (EACCES);
 	}
 
 	if (!(slot->cs_flags & CCID_SLOT_F_ACTIVE)) {
-		mutex_exit(&slot->cs_mutex);
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (ENXIO);
 	}
@@ -2558,7 +2549,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 */
 	if ((ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
 	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
-		mutex_exit(&slot->cs_mutex);
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (ENOTSUP);
 	}
@@ -2568,13 +2559,13 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * from the perspective of hardware and all those other fun things.
 	 */
 	if (slot->cs_command != NULL) {
-		mutex_exit(&slot->cs_mutex);
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (EBUSY);
 	}
 
 	slot->cs_command = cc;
-	mutex_exit(&slot->cs_mutex);
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	/*
 	 * Now that the slot is set up. Try and queue on the command. After
@@ -2615,12 +2606,12 @@ ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
 		return (EINVAL);
 
 	ucs.ucs_status = 0;
-	mutex_enter(&slot->cs_mutex);
+	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	if (slot->cs_flags & CCID_SLOT_F_PRESENT)
 		ucs.ucs_status |= UCCID_STATUS_F_CARD_PRESENT;
 	if (slot->cs_flags & CCID_SLOT_F_ACTIVE)
 		ucs.ucs_status |= UCCID_STATUS_F_CARD_ACTIVE;
-	mutex_exit(&slot->cs_mutex);
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	if (ddi_copyout(&ucs, (void *)arg, sizeof (ucs), mode & FKIOCTL) != 0)
 		return (EFAULT);
@@ -2653,16 +2644,16 @@ ccid_ioctl_getatr(ccid_slot_t *slot, intptr_t arg, int mode)
 	if (ucg.ucg_version != UCCID_VERSION_ONE)
 		return (EINVAL);
 
-	mutex_enter(&slot->cs_mutex);
+	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	if (slot->cs_atr == NULL) {
-		mutex_exit(&slot->cs_mutex);
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENXIO);
 	}
 
 	atrlen = msgsize(slot->cs_atr);
 	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
 		if (atrlen > UINT32_MAX) {
-			mutex_exit(&slot->cs_mutex);
+			mutex_exit(&slot->cs_ccid->ccid_mutex);
 			return (ERANGE);
 		}
 	}
@@ -2670,7 +2661,7 @@ ccid_ioctl_getatr(ccid_slot_t *slot, intptr_t arg, int mode)
 	if (ucg.ucg_buflen >= atrlen) {
 		if (ddi_copyout(slot->cs_atr->b_rptr, ucg.ucg_buffer, atrlen,
 		    mode & FKIOCTL) != 0) {
-			mutex_exit(&slot->cs_mutex);
+			mutex_exit(&slot->cs_ccid->ccid_mutex);
 			return (EFAULT);
 		}
 		ret = 0;
@@ -2678,7 +2669,7 @@ ccid_ioctl_getatr(ccid_slot_t *slot, intptr_t arg, int mode)
 		ret = EOVERFLOW;
 	}
 	ucg.ucg_buflen = atrlen;
-	mutex_exit(&slot->cs_mutex);
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
 		uccid_cmd_getatr32_t ucg32;
@@ -2715,9 +2706,9 @@ ccid_ioctl_txn_begin(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mod
 		return (EINVAL);
 	nowait = !!(uct.uct_flags & UCCID_TXN_DONT_BLOCK);
 
-	mutex_enter(&slot->cs_mutex);
+	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	ret = ccid_slot_excl_req(slot, cmp, nowait);
-	mutex_exit(&slot->cs_mutex);
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	return (ret);
 }
@@ -2735,14 +2726,14 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 	if (uct.uct_version != UCCID_VERSION_ONE)
 		return (EINVAL);
 
-	mutex_enter(&slot->cs_mutex);
+	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	if (slot->cs_excl_minor != cmp) {
-		mutex_exit(&slot->cs_mutex);
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENXIO);
 	}
 	VERIFY3S(cmp->cm_flags & CCID_MINOR_F_HASEXCL, !=, 0);
 	ccid_slot_excl_rele(slot);
-	mutex_exit(&slot->cs_mutex);
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	return (0);
 }
@@ -2810,13 +2801,13 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	slot = cmp->cm_slot;
 	ccid_minor_free(idx);
 
-	mutex_enter(&slot->cs_mutex);
+	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	if (cmp->cm_flags & CCID_MINOR_F_HASEXCL) {
 		ccid_slot_excl_rele(slot);
 	}
 
 	list_remove(&slot->cs_minors, cmp);
-	mutex_exit(&slot->cs_mutex);
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	/*
 	 * Clean up queued commands.
