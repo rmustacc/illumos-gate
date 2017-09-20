@@ -212,6 +212,7 @@ typedef struct ccid_slot {
 	ccid_slot_flags_t	cs_flags;
 	ccid_class_voltage_t	cs_voltage;
 	mblk_t			*cs_atr;
+	struct ccid_command	*cs_command;
 	ccid_minor_t		*cs_excl_minor;
 	list_t			cs_excl_waiters;
 	list_t			cs_minors;
@@ -294,14 +295,14 @@ typedef enum ccid_command_state {
 	CCID_COMMAND_COMPLETE,
 	CCID_COMMAND_TRANSPORT_ERROR,
 	CCID_COMMAND_CCID_ABORTED
-} ccid_command_state;
+} ccid_command_state_t;
 
 typedef struct ccid_command {
 	list_node_t	cc_list_node;
 	kcondvar_t	cc_cv;
 	uint8_t		cc_mtype;
 	uint8_t		cc_slot;
-	ccid_command_state	cc_state;
+	ccid_command_state_t	cc_state;
 	int		cc_usb;
 	usb_cr_t	cc_usbcr;
 	size_t		cc_reqlen;
@@ -562,11 +563,20 @@ ccid_command_complete(ccid_command_t *cc)
 }
 
 static void
+ccid_command_state_transition(ccid_command_t *cc, ccid_command_state_t state)
+{
+	VERIFY(MUTEX_HELD(&cc->cc_ccid->ccid_mutex));
+
+	cc->cc_state = state;
+	cv_broadcast(&cc->cc_cv);
+}
+
+static void
 ccid_command_transport_error(ccid_command_t *cc, int usb_status, usb_cr_t cr)
 {
 	VERIFY(MUTEX_HELD(&cc->cc_ccid->ccid_mutex));
 
-	cc->cc_state = CCID_COMMAND_TRANSPORT_ERROR;
+	ccid_command_state_transition(cc, CCID_COMMAND_TRANSPORT_ERROR);
 	cc->cc_usb = usb_status;
 	cc->cc_usbcr = cr;
 	cc->cc_response = NULL;
@@ -664,7 +674,7 @@ ccid_reply_bulk_cb(usb_pipe_handle_t ph, usb_bulk_req_t *ubrp)
 	 * zero length packet as an abort.
 	 */
 	if (!header_valid) {
-		cc->cc_state = CCID_COMMAND_CCID_ABORTED;
+		ccid_command_state_transition(cc, CCID_COMMAND_CCID_ABORTED);
 		ccid_command_complete(cc);
 		mutex_exit(&ccid->ccid_mutex);
 		usb_free_bulk_req(ubrp);
@@ -692,7 +702,7 @@ ccid_reply_bulk_cb(usb_pipe_handle_t ph, usb_bulk_req_t *ubrp)
 	 * thing to do?
 	 */
 	if (LE_32(cch.ch_length) + sizeof (ccid_header_t) > mlen) {
-		cc->cc_state = CCID_COMMAND_CCID_ABORTED;
+		ccid_command_state_transition(cc, CCID_COMMAND_CCID_ABORTED);
 		ccid_command_complete(cc);
 		mutex_exit(&ccid->ccid_mutex);
 		usb_free_bulk_req(ubrp);
@@ -732,7 +742,7 @@ ccid_reply_bulk_cb(usb_pipe_handle_t ph, usb_bulk_req_t *ubrp)
 	 */
 	cc->cc_response = ubrp->bulk_data;
 	ubrp->bulk_data = NULL;
-	cc->cc_state = CCID_COMMAND_COMPLETE;
+	ccid_command_state_transition(cc, CCID_COMMAND_COMPLETE);
 	ccid_command_complete(cc);
 	mutex_exit(&ccid->ccid_mutex);
 	usb_free_bulk_req(ubrp);
@@ -876,7 +886,7 @@ ccid_command_dispatch(ccid_t *ccid)
 		 * Mark the command as being dispatched to the device. This
 		 * prevents anyone else from getting in and confusing things.
 		 */
-		cc->cc_state = CCID_COMMAND_DISPATCHED;
+		ccid_command_state_transition(cc, CCID_COMMAND_DISPATCHED);
 		cc->cc_dispatch_time = gethrtime();
 
 		/*
@@ -920,7 +930,7 @@ ccid_command_queue(ccid_t *ccid, ccid_command_t *cc)
 	cchead->ch_seq = (uint8_t)seq;
 	mutex_enter(&ccid->ccid_mutex);
 	list_insert_tail(&ccid->ccid_command_queue, cc);
-	cc->cc_state = CCID_COMMAND_QUEUED;
+	ccid_command_state_transition(cc, CCID_COMMAND_QUEUED);
 	cc->cc_queue_time = gethrtime();
 	ccid_command_dispatch(ccid);
 	mutex_exit(&ccid->ccid_mutex);
@@ -941,7 +951,7 @@ ccid_dispatch_bulk_cb(usb_pipe_handle_t ph, usb_bulk_req_t *ubrp)
 
 	mutex_enter(&ccid->ccid_mutex);
 	VERIFY3S(cc->cc_state, ==, CCID_COMMAND_DISPATCHED);
-	cc->cc_state = CCID_COMMAND_REPLYING;
+	ccid_command_state_transition(cc, CCID_COMMAND_REPLYING);
 	cc->cc_dispatch_cb_time = gethrtime();
 
 	/*
@@ -1004,8 +1014,8 @@ ccid_command_free(ccid_command_t *cc)
  */
 static int
 ccid_command_alloc(ccid_t *ccid, ccid_slot_t *slot, boolean_t block,
-    size_t datasz, uint8_t mtype, uint8_t param0, uint8_t param1,
-    uint8_t param2, ccid_command_t **ccp)
+    mblk_t *datamp, size_t datasz, uint8_t mtype, uint8_t param0,
+    uint8_t param1, uint8_t param2, ccid_command_t **ccp)
 {
 	size_t allocsz;
 	int kmflag, usbflag;
@@ -1039,13 +1049,12 @@ ccid_command_alloc(ccid_t *ccid, ccid_slot_t *slot, boolean_t block,
 		kmflag = KM_SLEEP;
 		usbflag = USB_FLAGS_SLEEP;
 	} else {
-		kmflag = KM_NOSLEEP;
+		kmflag = KM_NOSLEEP | KM_NORMALPRI;
 		usbflag = 0;
 	}
 
 	if (datasz + sizeof (ccid_header_t) < datasz)
 		return (EINVAL);
-	allocsz = datasz + sizeof (ccid_header_t);
 	if (datasz > ccid->ccid_bufsize)
 		return (EINVAL);
 
@@ -1053,7 +1062,12 @@ ccid_command_alloc(ccid_t *ccid, ccid_slot_t *slot, boolean_t block,
 	if (cc == NULL)
 		return (ENOMEM);
 
-	cc->cc_ubrp = usb_alloc_bulk_req(ccid->ccid_dip, allocsz, usbflag);
+	allocsz = datasz + sizeof (ccid_header_t);
+	if (datamp == NULL) {
+		cc->cc_ubrp = usb_alloc_bulk_req(ccid->ccid_dip, allocsz, usbflag);
+	} else {
+		cc->cc_ubrp = usb_alloc_bulk_req(ccid->ccid_dip, 0, usbflag);
+	}
 	if (cc->cc_ubrp == NULL) {
 		kmem_free(cc, sizeof (ccid_command_t));
 		return (ENOMEM);
@@ -1071,6 +1085,9 @@ ccid_command_alloc(ccid_t *ccid, ccid_slot_t *slot, boolean_t block,
 	 * Fill in bulk request attributes. Note that short transfers out
 	 * are not OK.
 	 */
+	if (datamp != NULL) {
+		cc->cc_ubrp->bulk_data = datamp;
+	}
 	cc->cc_ubrp->bulk_len = allocsz;
 	cc->cc_ubrp->bulk_timeout = CCID_BULK_OUT_TIMEOUT;
 	cc->cc_ubrp->bulk_client_private = (usb_opaque_t)cc;
@@ -1131,7 +1148,7 @@ ccid_command_slot_status(ccid_t *ccid, ccid_slot_t *slot,
 	int ret;
 	ccid_command_t *cc;
 
-	if ((ret = ccid_command_alloc(ccid, slot, B_TRUE, 0,
+	if ((ret = ccid_command_alloc(ccid, slot, B_TRUE, NULL, 0,
 	    CCID_REQUEST_SLOT_STATUS, 0, 0, 0, &cc)) != 0) {
 		return (ret);
 	}
@@ -1162,7 +1179,7 @@ ccid_command_power_off(ccid_t *ccid, ccid_slot_t *cs)
 	ccid_command_t *cc;
 	ccid_reply_command_status_t crs;
 
-	if ((ret = ccid_command_alloc(ccid, cs, B_TRUE, 0,
+	if ((ret = ccid_command_alloc(ccid, cs, B_TRUE, NULL, 0,
 	    CCID_REQUEST_POWER_OFF, 0, 0, 0, &cc)) != 0) {
 		return (ret);
 	}
@@ -1215,7 +1232,7 @@ ccid_command_power_on(ccid_t *ccid, ccid_slot_t *cs, ccid_class_voltage_t volt,
 		return (EINVAL);
 	}
 
-	if ((ret = ccid_command_alloc(ccid, cs, B_TRUE, 0,
+	if ((ret = ccid_command_alloc(ccid, cs, B_TRUE, NULL, 0,
 	    CCID_REQUEST_POWER_ON, volt, 0, 0, &cc)) != 0) {
 		return (ret);
 	}
@@ -1723,6 +1740,19 @@ ccid_supported(ccid_t *ccid)
 	 * activation or automatic ICC voltage. These are handled automatically
 	 * by the system.
 	 */
+
+	/*
+	 * Explicitly require some form of APDU support. Note, at this time we
+	 * check for this when performing writes, but warn about it here.
+	 * 
+	 * XXX We should figure out whether we should fail attach or not here.
+	 * Maybe not for some kind of ugen thing?
+	 */
+	if ((ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
+	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
+		ccid_error(ccid, "CCID does not support required APDU transfer "
+		    "capabilities");
+	}
 
 
 	return (B_TRUE);
@@ -2391,9 +2421,152 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 }
 
 static int
+ccid_write_copyin(struct uio *uiop, mblk_t **mpp)
+{
+	mblk_t *mp;
+	int ret;
+	size_t len = uiop->uio_resid + sizeof (ccid_header_t);
+
+	*mpp = NULL;
+	mp = allocb(len, 0);
+	if (mp == NULL) {
+		return (ENOMEM);
+	}
+	mp->b_wptr = mp->b_rptr + len;
+
+	/*
+	 * Copy in the buffer, leaving enough space for the ccid header.
+	 */
+	if ((ret = uiomove(mp->b_rptr + sizeof (ccid_header_t), uiop->uio_resid,
+	    UIO_WRITE, uiop)) != 0) {
+		freemsg(mp);
+		return (ret);
+	}
+	*mpp = mp;
+	return (0);
+}
+
+static int
 ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 {
-	return (ENOTSUP);
+	int ret;
+	ccid_minor_idx_t *idx;
+	ccid_minor_t *cmp;
+	ccid_slot_t *slot;
+	ccid_t *ccid;
+	mblk_t *mp = NULL;
+	ccid_command_t *cc = NULL;
+	size_t len;
+
+	if (uiop->uio_resid > CCID_APDU_LEN_MAX) {
+		return (E2BIG);
+	}
+
+	if (uiop->uio_resid <= 0) {
+		return (EINVAL);
+	}
+
+	idx = ccid_minor_find(getminor(dev));
+	if (idx == NULL) {
+		return (ENOENT);
+	}
+
+	if (idx->cmi_isslot) {
+		return (ENXIO);
+	}
+
+	cmp = idx->cmi_data.cmi_user;
+	slot = cmp->cm_slot;
+	ccid = slot->cs_ccid;
+
+	/*
+	 * XXX On failure, we should consider whether or not we want to advance
+	 * the resid or not.
+	 */
+
+	/*
+	 * Copy in the uio data into an mblk. For the iosize we use the actual
+	 * size of the data we care about. We put a ccid_header_t worth of data
+	 * in front of this so we have space for the header. Snapshot the size
+	 * before we do the uiomove().
+	 */
+	len = uiop->uio_resid;
+	if ((ret = ccid_write_copyin(uiop, &mp)) != 0) {
+		return (ret);
+	}
+
+	if ((ret = ccid_command_alloc(ccid, slot, B_FALSE, mp, len,
+	    CCID_REQUEST_TRANSFER_BLOCK, 0, 0, 0, &cc)) != 0) {
+		freemsg(mp);
+		return (ret);
+	}
+
+	mutex_enter(&slot->cs_mutex);
+
+	/*
+	 * Check if we have exclusive access and if there's a card present. If
+	 * not, both are errors.
+	 */
+	if (!(cmp->cm_flags & CCID_MINOR_F_HASEXCL)) {
+		mutex_exit(&slot->cs_mutex);
+		ccid_command_free(cc);
+		return (EACCES);
+	}
+
+	if (!(slot->cs_flags & CCID_SLOT_F_ACTIVE)) {
+		mutex_exit(&slot->cs_mutex);
+		ccid_command_free(cc);
+		return (ENXIO);
+	}
+
+	/*
+	 * Make sure that we have a supported short APDU form.
+	 */
+	if ((ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
+	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
+		mutex_exit(&slot->cs_mutex);
+		ccid_command_free(cc);
+		return (ENOTSUP);
+	}
+
+	/*
+	 * XXX This isn't taking into accounts commands that we need to issue
+	 * from the perspective of hardware and all those other fun things.
+	 */
+	if (slot->cs_command != NULL) {
+		mutex_exit(&slot->cs_mutex);
+		ccid_command_free(cc);
+		return (EBUSY);
+	}
+
+	slot->cs_command = cc;
+	mutex_exit(&slot->cs_mutex);
+
+	/*
+	 * Now that the slot is set up. Try and queue on the command. After
+	 * that, we'll poll until it's gotten to the point where something is
+	 * replying ot it. At that point, we'll be free to return the write.
+	 */
+
+	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
+		ccid_command_free(cc);
+		return (ret);
+	}
+
+	mutex_enter(&ccid->ccid_mutex);
+	while (cc->cc_state < CCID_COMMAND_REPLYING) {
+		/*
+		 * If we receive a signal, break out of the loop. Don't return
+		 * EINTR, as this has been successfully dispatched. It just
+		 * means that it'll be a little while before more I/O is ready.
+		 */
+		if (cv_wait_sig(&cc->cc_cv, &ccid->ccid_mutex) == 0)
+			break;
+	}
+
+	mutex_exit(&ccid->ccid_mutex);
+
+	return (0);
 }
 
 static int

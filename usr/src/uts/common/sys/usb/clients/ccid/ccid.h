@@ -254,6 +254,12 @@ typedef enum ccid_command_err {
 	CCID_ERR_CMD_NOT_SUPPORTED = 0x00
 } ccid_command_err_t;
 
+/*
+ * Maximum size of an APDU (application data unit) payload. There are both short
+ * and extended ADPUs. At this time, we only support the short ADPUs.
+ */
+#define	CCID_APDU_LEN_MAX	261
+
 #pragma pack()
 
 #ifdef __cplusplus
