@@ -2383,11 +2383,6 @@ ccid_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	}
 	mutex_exit(&ccid->ccid_mutex);
 
-	/*
-	 * XXX we should probably figure out how to not detach from being idle,
-	 * only when being unplugged.
-	 */
-
 	ccid_cleanup(dip);
 	return (DDI_SUCCESS);
 }
