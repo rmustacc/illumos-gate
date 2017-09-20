@@ -297,24 +297,30 @@ typedef enum ccid_command_state {
 	CCID_COMMAND_CCID_ABORTED
 } ccid_command_state_t;
 
+typedef enum ccid_command_flags {
+	CCID_COMMAND_F_USER	= 1 << 0
+} ccid_command_flags_t;
+
 typedef struct ccid_command {
-	list_node_t	cc_list_node;
-	kcondvar_t	cc_cv;
-	uint8_t		cc_mtype;
-	uint8_t		cc_slot;
+	list_node_t		cc_list_node;
+	kcondvar_t		cc_cv;
+	uint8_t			cc_mtype;
+	uint8_t			cc_slot;
 	ccid_command_state_t	cc_state;
-	int		cc_usb;
-	usb_cr_t	cc_usbcr;
-	size_t		cc_reqlen;
-	id_t		cc_seq;
-	usb_bulk_req_t	*cc_ubrp;
-	ccid_t		*cc_ccid;
-	hrtime_t	cc_queue_time;
-	hrtime_t	cc_dispatch_time;
-	hrtime_t	cc_dispatch_cb_time;
-	hrtime_t	cc_response_time;
-	hrtime_t	cc_completion_time;
-	mblk_t		*cc_response;
+	ccid_command_flags_t	cc_flags;
+	int			cc_usb;
+	usb_cr_t		cc_usbcr;
+	size_t			cc_reqlen;
+	id_t			cc_seq;
+	boolean_t		cc_isuser;
+	usb_bulk_req_t		*cc_ubrp;
+	ccid_t			*cc_ccid;
+	hrtime_t		cc_queue_time;
+	hrtime_t		cc_dispatch_time;
+	hrtime_t		cc_dispatch_cb_time;
+	hrtime_t		cc_response_time;
+	hrtime_t		cc_completion_time;
+	mblk_t			*cc_response;
 } ccid_command_t;
 
 /*
@@ -1137,6 +1143,7 @@ ccid_command_poll(ccid_t *ccid, ccid_command_t *cc)
 	ASSERT3P(check, !=, NULL);
 #endif
 	VERIFY(list_link_active(&cc->cc_list_node));
+	VERIFY0(cc->cc_flags & CCID_COMMAND_F_USER);
 	list_remove(&ccid->ccid_complete_queue, cc);
 	mutex_exit(&ccid->ccid_mutex);
 }
@@ -2500,6 +2507,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 		freemsg(mp);
 		return (ret);
 	}
+	cc->cc_flags |= CCID_COMMAND_F_USER;
 
 	mutex_enter(&slot->cs_mutex);
 
