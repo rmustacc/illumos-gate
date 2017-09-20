@@ -37,8 +37,9 @@ int
 main(int argc, char *argv[])
 {
 	int fd;
-	ssize_t ret;
+	ssize_t ret, i;
 	uccid_cmd_txn_begin_t begin;
+	uint8_t buf[UCCID_APDU_SIZE_MAX];
 
 	if (argc != 2) {
 		errx(EXIT_FAILURE, "missing required ccid path");
@@ -55,8 +56,23 @@ main(int argc, char *argv[])
 		err(EXIT_FAILURE, "failed to issue begin ioctl");
 	}
 
-	ret = write(fd, yk_req, sizeof (yk_req));
-	printf("write returned %ld (errno %d)\n", ret, errno);
+	if ((ret = write(fd, yk_req, sizeof (yk_req))) < 0) {
+		err(EXIT_FAILURE, "failed to write data");
+	}
+
+	if ((ret = read(fd, buf, sizeof (buf))) < 0) {
+		err(EXIT_FAILURE, "failed to read data");
+	}
+
+	printf("read %d bytes\n", ret);
+	for (i = 0; i < ret; i++) {
+		printf("%02x", buf[i]);
+		if (i == (ret - 1) || (i % 16) == 15) {
+			printf("\n");
+		} else {
+			printf(" ");
+		}
+	}
 
 	return (0);
 }

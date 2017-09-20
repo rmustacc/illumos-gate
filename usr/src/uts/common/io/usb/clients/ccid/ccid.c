@@ -96,6 +96,18 @@
  * XXX
  */
 
+/*
+ * Various XXX:
+ *
+ * o If hardware says that the ICC became shut down / disactivated. Should we
+ * explicitly reactivate it as part of something or just make that a future
+ * error?
+ *  - Should we provide an ioctl to try to reactivate?
+ *
+ * o Should we default to powering off and on the device whenever someone gets
+ * an exclusive transaction unless otherwise noted?
+ */
+
 #include <sys/modctl.h>
 #include <sys/errno.h>
 #include <sys/conf.h>
@@ -189,7 +201,6 @@ typedef struct ccid_minor {
 	struct ccid_slot	*cm_slot;	/* WO */
 	list_node_t		cm_minor_list;
 	list_node_t		cm_excl_list;
-	list_t			cm_read_commands;
 	kcondvar_t		cm_read_cv;
 	kcondvar_t		cm_excl_cv;
 	ccid_minor_flags_t	cm_flags;
@@ -535,6 +546,9 @@ claim:
 	return (0);
 }
 
+/*
+ * XXX This will probably need to change when we start doing TPDU processing.
+ */
 static size_t
 ccid_command_resp_length(ccid_command_t *cc)
 {
@@ -564,14 +578,6 @@ ccid_command_complete_user(ccid_t *ccid, ccid_command_t *cc)
 	slot = &ccid->ccid_slots[cc->cc_slot];
 
 	/*
-	 * This command should be the command that's on the slot as the
-	 * outstanding user command. If it's not, something has gone drastically
-	 * wrong.
-	 */
-	VERIFY3P(slot->cs_command, ==, cc);
-	slot->cs_command = NULL;
-
-	/*
 	 * This command was associated with a user request. We need to
 	 * append it to the minor so that we can read it. XXX The minor
 	 * may have been closed before this happened and this needs to
@@ -587,8 +593,10 @@ ccid_command_complete_user(ccid_t *ccid, ccid_command_t *cc)
 	 * Append this to the end of the list and wake up anyone who was blocked
 	 * or polling. At this point, we only need to signal readers, but we
 	 * need to wake up pollers for read and write.
+	 *
+	 * XXX Raise portable
 	 */
-	list_insert_tail(&cmp->cm_read_commands, cc);
+	cv_signal(&cmp->cm_read_cv);
 }
 
 /*
@@ -645,7 +653,7 @@ ccid_command_transport_error(ccid_command_t *cc, int usb_status, usb_cr_t cr)
 
 static void
 ccid_command_status_decode(ccid_command_t *cc, ccid_reply_command_status_t *comp,
-    ccid_reply_slot_status_t *slotp, ccid_command_err_t *errp)
+    ccid_reply_icc_status_t *iccp, ccid_command_err_t *errp)
 {
 	ccid_header_t cch;
 	size_t mblen;
@@ -660,8 +668,8 @@ ccid_command_status_decode(ccid_command_t *cc, ccid_reply_command_status_t *comp
 		*comp = CCID_REPLY_STATUS(cch.ch_param0);
 	}
 
-	if (slotp != NULL) { 
-		*slotp = CCID_REPLY_SLOT(cch.ch_param0);
+	if (iccp != NULL) { 
+		*iccp = CCID_REPLY_ICC(cch.ch_param0);
 	}
 
 	if (errp != NULL) {
@@ -1204,7 +1212,7 @@ ccid_command_poll(ccid_t *ccid, ccid_command_t *cc)
 
 static int
 ccid_command_slot_status(ccid_t *ccid, ccid_slot_t *slot,
-    ccid_reply_slot_status_t *ssp)
+    ccid_reply_icc_status_t *isp)
 {
 	int ret;
 	ccid_command_t *cc;
@@ -1226,7 +1234,7 @@ ccid_command_slot_status(ccid_t *ccid, ccid_slot_t *slot,
 		goto done;
 	}
 
-	ccid_command_status_decode(cc, NULL, ssp, NULL);
+	ccid_command_status_decode(cc, NULL, isp, NULL);
 	ret = 0;
 done:
 	ccid_command_free(cc);
@@ -1275,7 +1283,7 @@ ccid_command_power_on(ccid_t *ccid, ccid_slot_t *cs, ccid_class_voltage_t volt,
 	int ret;
 	ccid_command_t *cc;
 	ccid_reply_command_status_t crs;
-	ccid_reply_slot_status_t css;
+	ccid_reply_icc_status_t cis;
 	ccid_command_err_t cce;
 
 	if (atrp == NULL)
@@ -1317,11 +1325,11 @@ ccid_command_power_on(ccid_t *ccid, ccid_slot_t *cs, ccid_class_voltage_t volt,
 	 * - ICC_MUTE via a few potential ways
 	 * - Bad voltage
 	 */
-	ccid_command_status_decode(cc, &crs, &css, &cce);
+	ccid_command_status_decode(cc, &crs, &cis, &cce);
 	if (crs == CCID_REPLY_STATUS_FAILED) {
-		if (css == CCID_REPLY_SLOT_MISSING) {
+		if (cis == CCID_REPLY_ICC_MISSING) {
 			ret = ENOENT;
-		} else if (css == CCID_REPLY_SLOT_INACTIVE &&
+		} else if (cis == CCID_REPLY_ICC_INACTIVE &&
 		    cce == 7) {
 			/*
 			 * This means that byte 7 was invalid. In other words,
@@ -1510,7 +1518,8 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 	slot->cs_flags |= CCID_SLOT_F_PRESENT;
 	mutex_exit(&ccid->ccid_mutex);
 
-	ccid_reply_slot_status_t ss;
+	/* XXX Is this needed? */
+	ccid_reply_icc_status_t ss;
 	(void) ccid_command_slot_status(ccid, slot, &ss);
 	(void) ccid_command_slot_status(ccid, slot, &ss);
 	/*
@@ -1608,7 +1617,7 @@ ccid_discover(void *arg)
 
 	for (i = 0; i < ccid->ccid_nslots; i++) {
 		ccid_slot_t *slot = &ccid->ccid_slots[i];
-		ccid_reply_slot_status_t ss;
+		ccid_reply_icc_status_t ss;
 		int ret;
 		uint_t flags;
 
@@ -2354,6 +2363,7 @@ static int
 ccid_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 {
 	int inst;
+	uint_t i;
 	ccid_t *ccid;
 
 	if (cmd != DDI_DETACH)
@@ -2365,6 +2375,10 @@ ccid_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	VERIFY3P(dip, ==, ccid->ccid_dip);
 
 	mutex_enter(&ccid->ccid_mutex);
+
+	/*
+	 * If we still have open minors, make sure we fail.
+	 */
 
 	/*
 	 * If the device hasn't been disconnected from a USB sense, refuse to
@@ -2396,10 +2410,6 @@ ccid_minor_free(ccid_minor_t *cmp)
 	 * Clean up queued commands.
 	 */
 	VERIFY3U(cmp->cm_idx.cmi_minor, ==, CCID_MINOR_INVALID);
-	while ((cc = list_remove_head(&cmp->cm_read_commands)) != NULL) {
-		ccid_command_free(cc);
-	}
-	list_destroy(&cmp->cm_read_commands);
 	crfree(cmp->cm_opener);
 	cv_destroy(&cmp->cm_read_cv);
 	cv_destroy(&cmp->cm_excl_cv);
@@ -2458,8 +2468,6 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 	}
 	cv_init(&cmp->cm_excl_cv, NULL, CV_DRIVER, NULL);
 	cv_init(&cmp->cm_read_cv, NULL, CV_DRIVER, NULL);
-	list_create(&cmp->cm_read_commands, sizeof (ccid_command_t),
-	    offsetof(ccid_command_t, cc_list_node));
 	cmp->cm_opener = crdup(credp);
 	cmp->cm_slot = slot;
 	*devp = makedevice(getmajor(*devp), cmp->cm_idx.cmi_minor);
@@ -2485,10 +2493,41 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 	return (0);
 }
 
+/*
+ * Copy a command which may have a message block chain out to the user.
+ */
 static int
-ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
+ccid_read_copyout(struct uio *uiop, ccid_command_t *cc, size_t len)
 {
-	return (ENOTSUP);
+	int ret;
+	mblk_t *mp;
+	offset_t off;
+
+	off = uiop->uio_loffset;
+	mp = cc->cc_response;
+	while (len > 0) {
+		size_t tocopy;
+		/*
+		 * Each message block in the chain has its CCID header at the
+		 * front.
+		 *
+		 * XXX This may or may not be true for TPDU land.
+		 */
+		mp->b_rptr += sizeof (ccid_header_t);
+		tocopy = MIN(len, MBLKL(mp));
+		ret = uiomove(mp->b_rptr, tocopy, UIO_READ, uiop);
+		mp->b_rptr -= sizeof (ccid_header_t);
+		if (ret != 0)
+			return (EFAULT);
+		len -= tocopy;
+		if (len != 0) {
+			mp = mp->b_cont;
+			VERIFY3P(mp, !=, NULL);
+		}
+	}
+	uiop->uio_loffset = off;
+
+	return (0);
 }
 
 static int
@@ -2497,6 +2536,7 @@ ccid_write_copyin(struct uio *uiop, mblk_t **mpp)
 	mblk_t *mp;
 	int ret;
 	size_t len = uiop->uio_resid + sizeof (ccid_header_t);
+	offset_t off;
 
 	*mpp = NULL;
 	mp = allocb(len, 0);
@@ -2508,13 +2548,130 @@ ccid_write_copyin(struct uio *uiop, mblk_t **mpp)
 	/*
 	 * Copy in the buffer, leaving enough space for the ccid header.
 	 */
+	off = uiop->uio_loffset;
 	if ((ret = uiomove(mp->b_rptr + sizeof (ccid_header_t), uiop->uio_resid,
 	    UIO_WRITE, uiop)) != 0) {
 		freemsg(mp);
 		return (ret);
 	}
+	uiop->uio_loffset = off;
 	*mpp = mp;
 	return (0);
+}
+
+static int
+ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
+{
+	int ret;
+	ccid_minor_idx_t *idx;
+	ccid_minor_t *cmp;
+	ccid_slot_t *slot;
+	ccid_t *ccid;
+	ccid_command_t *cc;
+	ccid_reply_command_status_t crs;
+	ccid_reply_icc_status_t cis;
+	ccid_command_err_t cce;
+
+	if (uiop->uio_resid <= 0) {
+		return (EINVAL);
+	}
+
+	if ((idx = ccid_minor_find(getminor(dev))) == NULL) {
+		return (ENOENT);
+	}
+
+	if (idx->cmi_isslot) {
+		return (ENXIO);
+	}
+
+	cmp = idx->cmi_data.cmi_user;
+	slot = cmp->cm_slot;
+	ccid = slot->cs_ccid;
+
+	mutex_enter(&ccid->ccid_mutex);
+	/*
+	 * First, check if we have exclusive access. If not, we're done.
+	 */
+	if (!(cmp->cm_flags & CCID_MINOR_F_HASEXCL)) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (EACCES);
+	}
+
+	/*
+	 * While it's tempting to care if the slot is active, that actually
+	 * doesn't matter. All that matters is whether or not we have commands
+	 * here that are in progress or readable.
+	 *
+	 * The only unfortunate matter is that we can't check if the user can
+	 * read this command until one is available. Which means that someone
+	 * could be blocked for some time.
+	 */
+	while (slot->cs_command == NULL ||
+	    slot->cs_command->cc_state < CCID_COMMAND_COMPLETE) {
+		if (uiop->uio_fmode & FNONBLOCK) {
+			mutex_exit(&ccid->ccid_mutex);
+			return (EWOULDBLOCK);
+		}
+
+		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
+			mutex_exit(&ccid->ccid_mutex);
+			return (EINTR);
+		}
+	}
+
+	/*
+	 * Decode the status of the first command. If the command was
+	 * successful, we need to check the user's buffer size. Otherwise, we
+	 * can consume it all.
+	 *
+	 * XXX The command status logic may not be correct for TPDU.
+	 */
+	cc = slot->cs_command;
+	ccid_command_status_decode(cc, &crs, &cis, &cce);
+	if (crs == CCID_REPLY_STATUS_COMPLETE) {
+		size_t len;
+
+		/*
+		 * Note, as part of processing the reply, the driver has already
+		 * gone through and made sure that we have a message block large
+		 * enough for this command.
+		 */
+		len = ccid_command_resp_length(cc);
+		if (len > uiop->uio_resid) {
+			mutex_exit(&ccid->ccid_mutex);
+			return (EOVERFLOW);
+		}
+
+		/*
+		 * Copy out the resulting data.
+		 */
+		ret = ccid_read_copyout(uiop, cc, len);
+		if (ret != 0) {
+			mutex_exit(&ccid->ccid_mutex);
+			return (ret);
+		}
+	} else {
+		if (cis == CCID_REPLY_ICC_MISSING) {
+			ret = ENXIO;
+		} else {
+			/*
+			 * XXX There are a few more semantic things we can do
+			 * with the errors here that we're throwing out and
+			 * lumping as EIO. Oh well.
+			 */
+			ret = EIO;
+		}
+	}
+
+	/*
+	 * At this point, we consider this command queued to the user. XXX Mark
+	 * us writable.
+	 */
+	slot->cs_command = NULL;
+	mutex_exit(&ccid->ccid_mutex);
+	ccid_command_free(cc);
+
+	return (ret);
 }
 
 static int
@@ -2573,20 +2730,20 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	}
 	cc->cc_flags |= CCID_COMMAND_F_USER;
 
-	mutex_enter(&slot->cs_ccid->ccid_mutex);
+	mutex_enter(&ccid->ccid_mutex);
 
 	/*
 	 * Check if we have exclusive access and if there's a card present. If
 	 * not, both are errors.
 	 */
 	if (!(cmp->cm_flags & CCID_MINOR_F_HASEXCL)) {
-		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		mutex_exit(&ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (EACCES);
 	}
 
 	if (!(slot->cs_flags & CCID_SLOT_F_ACTIVE)) {
-		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		mutex_exit(&ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (ENXIO);
 	}
@@ -2596,7 +2753,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 */
 	if ((ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
 	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
-		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		mutex_exit(&ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (ENOTSUP);
 	}
@@ -2606,13 +2763,13 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * from the perspective of hardware and all those other fun things.
 	 */
 	if (slot->cs_command != NULL) {
-		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		mutex_exit(&ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (EBUSY);
 	}
 
 	slot->cs_command = cc;
-	mutex_exit(&slot->cs_ccid->ccid_mutex);
+	mutex_exit(&ccid->ccid_mutex);
 
 	/*
 	 * Now that the slot is set up. Try and queue on the command. After

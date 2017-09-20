@@ -216,14 +216,14 @@ typedef struct ccid_data_clock {
  * Macros and constants to take apart the slot status (in ch_param1) when a CCID
  * reply comes in.
  */
-#define	CCID_REPLY_SLOT(x)	(x & 0x3)
+#define	CCID_REPLY_ICC(x)	(x & 0x3)
 #define	CCID_REPLY_STATUS(x)	((x & 0xc0) >> 6)
 
 typedef enum {
-	CCID_REPLY_SLOT_ACTIVE = 0,
-	CCID_REPLY_SLOT_INACTIVE,
-	CCID_REPLY_SLOT_MISSING
-} ccid_reply_slot_status_t;
+	CCID_REPLY_ICC_ACTIVE = 0,
+	CCID_REPLY_ICC_INACTIVE,
+	CCID_REPLY_ICC_MISSING
+} ccid_reply_icc_status_t;
 
 typedef enum {
 	CCID_REPLY_STATUS_COMPLETE = 0,

@@ -89,6 +89,12 @@ typedef struct uccid_cmd_getatr32 {
  */
 #define	UCCID_CMD_GETATR	(UCCID_IOCTL | 0x4)
 
+
+/*
+ * The maximum size of a normal APDU.
+ */
+#define	UCCID_APDU_SIZE_MAX	261
+
 #ifdef __cplusplus
 }
 #endif
