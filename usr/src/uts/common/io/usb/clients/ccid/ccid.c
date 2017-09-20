@@ -190,6 +190,7 @@ typedef struct ccid_minor {
 	list_node_t		cm_minor_list;
 	list_node_t		cm_excl_list;
 	list_t			cm_read_commands;
+	kcondvar_t		cm_read_cv;
 	kcondvar_t		cm_excl_cv;
 	ccid_minor_flags_t	cm_flags;
 } ccid_minor_t;
@@ -346,6 +347,7 @@ static id_space_t *ccid_minors;
 static void ccid_intr_poll_init(ccid_t *);
 static void ccid_discover_request(ccid_t *);
 static void ccid_command_dispatch(ccid_t *);
+static void ccid_command_free(ccid_command_t *);
 static int ccid_bulkin_schedule(ccid_t *);
 
 static int
@@ -375,7 +377,7 @@ ccid_error(ccid_t *ccid, const char *fmt, ...)
 }
 
 static void
-ccid_minor_free(ccid_minor_idx_t *idx)
+ccid_minor_idx_free(ccid_minor_idx_t *idx)
 {
 	ccid_minor_idx_t *ip;
 
@@ -390,7 +392,7 @@ ccid_minor_free(ccid_minor_idx_t *idx)
 }
 
 static boolean_t
-ccid_minor_alloc(ccid_minor_idx_t *idx, boolean_t sleep)
+ccid_minor_idx_alloc(ccid_minor_idx_t *idx, boolean_t sleep)
 {
 	id_t id;
 	ccid_minor_idx_t *ip;
@@ -551,6 +553,44 @@ ccid_command_resp_length(ccid_command_t *cc)
 	return (len);
 }
 
+static void
+ccid_command_complete_user(ccid_t *ccid, ccid_command_t *cc)
+{
+	ccid_slot_t *slot;
+	ccid_minor_t *cmp;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+
+	slot = &ccid->ccid_slots[cc->cc_slot];
+
+	/*
+	 * This command should be the command that's on the slot as the
+	 * outstanding user command. If it's not, something has gone drastically
+	 * wrong.
+	 */
+	VERIFY3P(slot->cs_command, ==, cc);
+	slot->cs_command = NULL;
+
+	/*
+	 * This command was associated with a user request. We need to
+	 * append it to the minor so that we can read it. XXX The minor
+	 * may have been closed before this happened and this needs to
+	 * be discarded. If so, free the command.
+	 */
+	cmp = slot->cs_excl_minor;
+	if (cmp == NULL) {
+		ccid_command_free(cc);
+		return;
+	}
+
+	/*
+	 * Append this to the end of the list and wake up anyone who was blocked
+	 * or polling. At this point, we only need to signal readers, but we
+	 * need to wake up pollers for read and write.
+	 */
+	list_insert_tail(&cmp->cm_read_commands, cc);
+}
+
 /*
  * Complete a single command. The way that a command completes depends on the
  * kind of command that occurs. If this is commad is flagged as a user command,
@@ -569,14 +609,7 @@ ccid_command_complete(ccid_command_t *cc)
 	list_remove(&ccid->ccid_command_queue, cc);
 
 	if (cc->cc_flags & CCID_COMMAND_F_USER) {
-		ccid_slot_t *slot;
-		ccid_minor_t *cmp;
-		/*
-		 * This command was associated with a user request. We need to
-		 * append it to the minor so that we can read it. XXX The minor
-		 * may have been closed before this happened and this needs to
-		 * be discarded.
-		 */
+		ccid_command_complete_user(ccid, cc);
 	} else {
 		list_insert_tail(&ccid->ccid_complete_queue, cc);
 		cv_broadcast(&cc->cc_cv);
@@ -1948,7 +1981,7 @@ ccid_minors_fini(ccid_t *ccid)
 	for (i = 0; i < ccid->ccid_nslots; i++) {
 		if (ccid->ccid_slots[i].cs_idx.cmi_minor == CCID_MINOR_INVALID)
 			continue;
-		ccid_minor_free(&ccid->ccid_slots[i].cs_idx);
+		ccid_minor_idx_free(&ccid->ccid_slots[i].cs_idx);
 	}
 }
 
@@ -1960,7 +1993,7 @@ ccid_minors_init(ccid_t *ccid)
 	for (i = 0; i < ccid->ccid_nslots; i++) {
 		char buf[32];
 
-		(void) ccid_minor_alloc(&ccid->ccid_slots[i].cs_idx, B_TRUE);
+		(void) ccid_minor_idx_alloc(&ccid->ccid_slots[i].cs_idx, B_TRUE);
 
 		(void) snprintf(buf, sizeof (buf), "slot%d", i);
 		/* XXX I wonder if this should be a new DDI_NT type (ccid) */
@@ -2359,6 +2392,26 @@ ccid_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	return (DDI_SUCCESS);
 }
 
+static void
+ccid_minor_free(ccid_minor_t *cmp)
+{
+	ccid_command_t *cc;
+
+	/*
+	 * Clean up queued commands.
+	 */
+	VERIFY3U(cmp->cm_idx.cmi_minor, ==, CCID_MINOR_INVALID);
+	while ((cc = list_remove_head(&cmp->cm_read_commands)) != NULL) {
+		ccid_command_free(cc);
+	}
+	list_destroy(&cmp->cm_read_commands);
+	crfree(cmp->cm_opener);
+	cv_destroy(&cmp->cm_read_cv);
+	cv_destroy(&cmp->cm_excl_cv);
+	kmem_free(cmp, sizeof (ccid_minor_t));
+
+}
+
 static int
 ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 {
@@ -2404,11 +2457,12 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 	cmp->cm_idx.cmi_minor = CCID_MINOR_INVALID;
 	cmp->cm_idx.cmi_isslot = B_FALSE;
 	cmp->cm_idx.cmi_data.cmi_user = cmp;
-	if (!ccid_minor_alloc(&cmp->cm_idx, B_FALSE)) {
+	if (!ccid_minor_idx_alloc(&cmp->cm_idx, B_FALSE)) {
 		kmem_free(cmp, sizeof (ccid_minor_t));
 		return (ENOSPC);
 	}
 	cv_init(&cmp->cm_excl_cv, NULL, CV_DRIVER, NULL);
+	cv_init(&cmp->cm_read_cv, NULL, CV_DRIVER, NULL);
 	list_create(&cmp->cm_read_commands, sizeof (ccid_command_t),
 	    offsetof(ccid_command_t, cc_list_node));
 	cmp->cm_opener = crdup(credp);
@@ -2426,10 +2480,8 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 			mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 			ASSERT3S(ret, !=, EINPROGRESS);
-			ccid_minor_free(&cmp->cm_idx);
-			cv_destroy(&cmp->cm_excl_cv);
-			list_destroy(&cmp->cm_read_commands);
-			kmem_free(cmp, sizeof (ccid_minor_t));
+			ccid_minor_idx_free(&cmp->cm_idx);
+			ccid_minor_free(cmp);
 			return (ret);
 		}
 	}
@@ -2787,7 +2839,6 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	ccid_minor_idx_t *idx;
 	ccid_minor_t *cmp;
 	ccid_slot_t *slot;
-	ccid_command_t *cc;
 
 	idx = ccid_minor_find_user(getminor(dev));
 	if (idx == NULL) {
@@ -2799,7 +2850,7 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	 */
 	cmp = idx->cmi_data.cmi_user;
 	slot = cmp->cm_slot;
-	ccid_minor_free(idx);
+	ccid_minor_idx_free(idx);
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	if (cmp->cm_flags & CCID_MINOR_F_HASEXCL) {
@@ -2809,16 +2860,7 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	list_remove(&slot->cs_minors, cmp);
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
-	/*
-	 * Clean up queued commands.
-	 */
-	while ((cc = list_remove_head(&cmp->cm_read_commands)) != NULL) {
-		ccid_command_free(cc);
-	}
-	list_destroy(&cmp->cm_read_commands);
-	crfree(cmp->cm_opener);
-	cv_destroy(&cmp->cm_excl_cv);
-	kmem_free(cmp, sizeof (ccid_minor_t));
+	ccid_minor_free(cmp);
 
 	return (0);
 }
