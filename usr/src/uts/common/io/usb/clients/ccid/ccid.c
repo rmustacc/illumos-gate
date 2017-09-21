@@ -103,9 +103,6 @@
  * explicitly reactivate it as part of something or just make that a future
  * error?
  *  - Should we provide an ioctl to try to reactivate?
- *
- * o Should we default to powering off and on the device whenever someone gets
- * an exclusive transaction unless otherwise noted?
  */
 
 #include <sys/modctl.h>
@@ -191,8 +188,9 @@ typedef struct ccid_minor_idx {
 } ccid_minor_idx_t;
 
 typedef enum ccid_minor_flags {
-	CCID_MINOR_F_WAITING	= 1 << 0,
-	CCID_MINOR_F_HASEXCL	= 1 << 1
+	CCID_MINOR_F_WAITING		= 1 << 0,
+	CCID_MINOR_F_HAS_EXCL		= 1 << 1,
+	CCID_MINOR_F_TXN_RESET		= 1 << 2,
 } ccid_minor_flags_t;
 
 typedef struct ccid_minor {
@@ -208,11 +206,13 @@ typedef struct ccid_minor {
 } ccid_minor_t;
 
 typedef enum ccid_slot_flags {
-	CCID_SLOT_F_CHANGED	= 1 << 0,
-	CCID_SLOT_F_INTR_GONE	= 1 << 1,
-	CCID_SLOT_F_INTR_ADD	= 1 << 2,
-	CCID_SLOT_F_PRESENT	= 1 << 3,
-	CCID_SLOT_F_ACTIVE	= 1 << 4
+	CCID_SLOT_F_CHANGED		= 1 << 0,
+	CCID_SLOT_F_INTR_GONE		= 1 << 1,
+	CCID_SLOT_F_INTR_ADD		= 1 << 2,
+	CCID_SLOT_F_PRESENT		= 1 << 3,
+	CCID_SLOT_F_ACTIVE		= 1 << 4,
+	CCID_SLOT_F_DISCOVERING		= 1 << 5,
+	CCID_SLOT_F_TXN_RESETING	= 1 << 6
 } ccid_slot_flags_t;
 
 #define	CCID_SLOT_F_INTR_MASK	(CCID_SLOT_F_CHANGED | CCID_SLOT_F_INTR_GONE | \
@@ -478,7 +478,7 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	VERIFY3P(slot->cs_excl_minor, !=, NULL);
 
 	cmp = slot->cs_excl_minor;
-	cmp->cm_flags &= ~CCID_MINOR_F_HASEXCL;
+	cmp->cm_flags &= ~CCID_MINOR_F_HAS_EXCL;
 	slot->cs_excl_minor = NULL;
 
 	/*
@@ -488,9 +488,15 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	pollwakeup(&cmp->cm_pollhead, POLLERR);
 
 	/*
-	 * Wake up the next in the queue
+	 * If we've been asked to reset the device before handing it off,
+	 * schedule that. Otherwise, allow the next entry in the queue to get
+	 * woken up and given access to the device.
 	 */
-	ccid_slot_excl_signal(slot);
+	if (cmp->cm_flags & CCID_MINOR_F_TXN_RESET) {
+		/* XXX */
+	} else {
+		ccid_slot_excl_signal(slot);
+	}
 }
 
 static int
@@ -501,7 +507,7 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
 
 	if (slot->cs_excl_minor == cmp) {
-		VERIFY(cmp->cm_flags & CCID_MINOR_F_HASEXCL);
+		VERIFY(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL);
 		return (EEXIST);
 	}
 
@@ -548,7 +554,7 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 
 claim:
 	cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
-	cmp->cm_flags |= CCID_MINOR_F_HASEXCL;
+	cmp->cm_flags |= CCID_MINOR_F_HAS_EXCL;
 	slot->cs_excl_minor = cmp;
 	return (0);
 }
@@ -1252,6 +1258,7 @@ ccid_command_power_off(ccid_t *ccid, ccid_slot_t *cs)
 {
 	int ret;
 	ccid_command_t *cc;
+	ccid_reply_icc_status_t cis;
 	ccid_reply_command_status_t crs;
 
 	if ((ret = ccid_command_alloc(ccid, cs, B_TRUE, NULL, 0,
@@ -1271,9 +1278,13 @@ ccid_command_power_off(ccid_t *ccid, ccid_slot_t *cs)
 		goto done;
 	}
 
-	ccid_command_status_decode(cc, &crs, NULL, NULL);
-	if (cs != 0) {
-		ret = EIO;
+	ccid_command_status_decode(cc, &crs, &cis, NULL);
+	if (crs == CCID_REPLY_STATUS_FAILED) {
+		if (cis == CCID_REPLY_ICC_MISSING) {
+			ret = ENXIO;
+		} else {
+			ret = EIO;
+		}
 	} else {
 		ret = 0;
 	}
@@ -1334,7 +1345,7 @@ ccid_command_power_on(ccid_t *ccid, ccid_slot_t *cs, ccid_class_voltage_t volt,
 	ccid_command_status_decode(cc, &crs, &cis, &cce);
 	if (crs == CCID_REPLY_STATUS_FAILED) {
 		if (cis == CCID_REPLY_ICC_MISSING) {
-			ret = ENOENT;
+			ret = ENXIO;
 		} else if (cis == CCID_REPLY_ICC_INACTIVE &&
 		    cce == 7) {
 			/*
@@ -1568,7 +1579,7 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 			atr = NULL;
 
 			/*
-			 * If we got ENOENT, then we know that there is no CCID
+			 * If we got ENXIO, then we know that there is no CCID
 			 * present. This could happen for a number of reasons.
 			 * For example, we could have just started up and no
 			 * card was plugged in (we default to assuming that one
@@ -1577,14 +1588,24 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 			 * hence why we don't bother with doing a status check
 			 * and just try to power on.
 			 */
-			if (ret == ENOENT) {
+			if (ret == ENXIO) {
 				mutex_enter(&ccid->ccid_mutex);
 				slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
 				mutex_exit(&ccid->ccid_mutex);
 				return;
 			}
-			/* XXX we should probably worry about failure */
-			(void) ccid_command_power_off(ccid, slot);
+
+			/*
+			 * If we fail to power off the card, check to make sure
+			 * it hasn't been removed.
+			 */
+			ret = ccid_command_power_off(ccid, slot);
+			if (ret == ENXIO) {
+				mutex_enter(&ccid->ccid_mutex);
+				slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
+				mutex_exit(&ccid->ccid_mutex);
+				return;
+			}
 			continue;
 		}
 
@@ -1657,7 +1678,6 @@ ccid_discover(void *arg)
 		} else {
 			ccid_slot_inserted(ccid, slot);
 		}
-
 	}
 
 	mutex_enter(&ccid->ccid_mutex);
@@ -2591,7 +2611,7 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	/*
 	 * First, check if we have exclusive access. If not, we're done.
 	 */
-	if (!(cmp->cm_flags & CCID_MINOR_F_HASEXCL)) {
+	if (!(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL)) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (EACCES);
 	}
@@ -2715,15 +2735,12 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	ccid = slot->cs_ccid;
 
 	/*
-	 * XXX On failure, we should consider whether or not we want to advance
-	 * the resid or not.
-	 */
-
-	/*
 	 * Copy in the uio data into an mblk. For the iosize we use the actual
 	 * size of the data we care about. We put a ccid_header_t worth of data
 	 * in front of this so we have space for the header. Snapshot the size
-	 * before we do the uiomove().
+	 * before we do the uiomove(). If for some reason the I/O fails, we
+	 * don't worry about trying to restore the original resid, consumers
+	 * should ignore it on failure.
 	 */
 	len = uiop->uio_resid;
 	if ((ret = ccid_write_copyin(uiop, &mp)) != 0) {
@@ -2743,7 +2760,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * Check if we have exclusive access and if there's a card present. If
 	 * not, both are errors.
 	 */
-	if (!(cmp->cm_flags & CCID_MINOR_F_HASEXCL)) {
+	if (!(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL)) {
 		mutex_exit(&ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (EACCES);
@@ -2913,12 +2930,31 @@ ccid_ioctl_txn_begin(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mod
 
 	if (uct.uct_version != UCCID_VERSION_ONE)
 		return (EINVAL);
-	if ((uct.uct_flags & ~UCCID_TXN_DONT_BLOCK) != 0)
+	if ((uct.uct_flags & ~(UCCID_TXN_DONT_BLOCK | UCCID_TXN_END_RESET |
+	    UCCID_TXN_END_RELEASE)) != 0)
 		return (EINVAL);
+	if ((uct.uct_flags & UCCID_TXN_END_RESET) != 0 &&
+	    (uct.uct_flags & UCCID_TXN_END_RELEASE) != 0) {
+		return (EINVAL);
+	}
+
 	nowait = !!(uct.uct_flags & UCCID_TXN_DONT_BLOCK);
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	ret = ccid_slot_excl_req(slot, cmp, nowait);
+
+	/*
+	 * If successful, record whether or not we need to reset the ICC when
+	 * this transaction is ended (whether explicitly or implicitly). The
+	 * reason we have two flags in the ioctl, but only one here is to force
+	 * the consumer to make a concrious choice in which behavior they should
+	 * be using.
+	 */
+	if (ret == 0) {
+		if (uct.uct_flags & UCCID_TXN_END_RESET) {
+			uct.uct_flags |= CCID_MINOR_F_TXN_RESET;
+		}
+	}
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	return (ret);
@@ -2942,7 +2978,7 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENXIO);
 	}
-	VERIFY3S(cmp->cm_flags & CCID_MINOR_F_HASEXCL, !=, 0);
+	VERIFY3S(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL, !=, 0);
 	ccid_slot_excl_rele(slot);
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
@@ -3012,7 +3048,7 @@ ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 	ccid = slot->cs_ccid;
 
 	mutex_enter(&ccid->ccid_mutex);
-	if (!(cmp->cm_flags & CCID_MINOR_F_HASEXCL)) {
+	if (!(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL)) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (EACCES);
 	}
@@ -3057,7 +3093,7 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	ccid_minor_idx_free(idx);
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
-	if (cmp->cm_flags & CCID_MINOR_F_HASEXCL) {
+	if (cmp->cm_flags & CCID_MINOR_F_HAS_EXCL) {
 		ccid_slot_excl_rele(slot);
 	}
 

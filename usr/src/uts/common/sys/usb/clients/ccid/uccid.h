@@ -32,6 +32,9 @@ extern "C" {
 #define	UCCID_CURRENT_VERSION	UCCID_VERSION_ONE
 
 #define	UCCID_TXN_DONT_BLOCK	0x01
+#define	UCCID_TXN_END_RESET	0x02
+#define	UCCID_TXN_END_RELEASE	0x04
+
 typedef struct uccid_cmd_txn_begin {
 	uint32_t	uct_version;
 	uint32_t	uct_flags;
