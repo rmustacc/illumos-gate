@@ -14,7 +14,7 @@
  */
 
 /*
- * Verify that closing a device with an active transaction results in a POLLERR.
+ * Verify that closing a transaction while polling generates POLLERR.
  */
 
 #include <err.h>
@@ -36,6 +36,7 @@ main(int argc, char *argv[])
 {
 	int fd, port;
 	uccid_cmd_txn_end_t end;
+	uccid_cmd_txn_begin_t begin;
 	port_event_t pe;
 	timespec_t to;
 
@@ -52,6 +53,12 @@ main(int argc, char *argv[])
 		err(EXIT_FAILURE, "failed to open %s", argv[1]);
 	}
 
+	bzero(&begin, sizeof (begin));
+	begin.uct_version = UCCID_CURRENT_VERSION;
+	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
+		err(EXIT_FAILURE, "failed to issue begin ioctl");
+	}
+
 	if (port_associate(port, PORT_SOURCE_FD, fd, POLLIN, NULL) != 0) {
 		err(EXIT_FAILURE, "failed to associate");
 	}
@@ -60,7 +67,7 @@ main(int argc, char *argv[])
 	end.uct_version = UCCID_CURRENT_VERSION;
 
 	if (ioctl(fd, UCCID_CMD_TXN_END, &end) != 0) {
-		err(EXIT_FAILURE, "failed to issue begin ioctl");
+		err(EXIT_FAILURE, "failed to issue end ioctl");
 	}
 
 	bzero(&to, sizeof (timespec_t));

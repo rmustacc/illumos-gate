@@ -61,14 +61,17 @@ main(int argc, char *argv[])
 	VERIFY3S(errno, ==, EEXIST);
 
 	if (ioctl(fd, UCCID_CMD_TXN_END, &end) != 0) {
-		err(EXIT_FAILURE, "failed to issue begin ioctl");
+		err(EXIT_FAILURE, "failed to issue end ioctl");
 	}
 
 	VERIFY0(close(fd));
 
-	if ((fd = open(argv[1], O_RDWR | O_EXCL)) < 0) {
+	if ((fd = open(argv[1], O_RDWR)) < 0) {
 		err(EXIT_FAILURE, "failed to open %s", argv[1]);
 	}
+
+	ret = ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin);
+	VERIFY0(ret);
 
 	ret = ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin);
 	VERIFY3S(ret, ==, -1);

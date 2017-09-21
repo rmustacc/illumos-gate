@@ -40,11 +40,18 @@ main(int argc, char *argv[])
 		errx(EXIT_FAILURE, "missing required ccid path");
 	}
 
+	bzero(&begin, sizeof (begin));
+	begin.uct_version = UCCID_CURRENT_VERSION;
+
 	pid = fork();
 	if (pid == 0) {
-		fd = open(argv[1], O_RDWR | O_EXCL);
+		fd = open(argv[1], O_RDWR);
 		if (fd < 0) {
 			err(EXIT_FAILURE, "failed to open %s", argv[1]);
+		}
+
+		if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
+			err(EXIT_FAILURE, "failed to issue begin ioctl");
 		}
 
 		_exit(0);
@@ -64,9 +71,6 @@ main(int argc, char *argv[])
 	if (fd < 0) {
 		err(EXIT_FAILURE, "failed to open %s", argv[1]);
 	}
-
-	bzero(&begin, sizeof (begin));
-	begin.uct_version = UCCID_CURRENT_VERSION;
 
 	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
 		err(EXIT_FAILURE, "failed to issue begin ioctl");

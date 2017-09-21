@@ -56,7 +56,7 @@ main(int argc, char *argv[])
 		}
 
 		if (ioctl(fd, UCCID_CMD_TXN_END, &end) != 0) {
-			err(EXIT_FAILURE, "failed to issue begin ioctl");
+			err(EXIT_FAILURE, "failed to issue end ioctl");
 		}
 	}
 

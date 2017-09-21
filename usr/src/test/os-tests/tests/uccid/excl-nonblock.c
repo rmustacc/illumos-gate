@@ -51,19 +51,6 @@ nonblock_thread(void *arg)
 	return (NULL);
 }
 
-void *
-ndelay_thread(void *arg)
-{
-	int fd;
-	const char *path = arg;
-
-	fd = open(path, O_RDWR | O_EXCL | O_NDELAY);
-	VERIFY3S(fd, ==, -1);
-	VERIFY3S(errno, ==, EBUSY);
-
-	return (NULL);
-}
-
 int
 main(int argc, char *argv[])
 {
@@ -103,18 +90,8 @@ main(int argc, char *argv[])
 		err(EXIT_FAILURE, "failed to join therad");
 	}
 
-	if (thr_create(NULL, 0, ndelay_thread, argv[1], 0,
-	    &thr) != 0) {
-		err(EXIT_FAILURE, "failed to create thread");
-	}
-
-	if (thr_join(thr, NULL, NULL) != 0) {
-		err(EXIT_FAILURE, "failed to join therad");
-	}
-
-
 	if (ioctl(fda, UCCID_CMD_TXN_END, &end) != 0) {
-		err(EXIT_FAILURE, "failed to issue begin ioctl");
+		err(EXIT_FAILURE, "failed to issue end ioctl");
 	}
 
 	return (0);

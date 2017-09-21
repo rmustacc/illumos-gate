@@ -38,6 +38,7 @@ main(int argc, char *argv[])
 {
 	int fd, efd, ret;
 	uccid_cmd_status_t ucs;
+	uccid_cmd_txn_begin_t begin;
 	void *badaddr;
 
 	if (argc != 2) {
@@ -48,8 +49,14 @@ main(int argc, char *argv[])
 		err(EXIT_FAILURE, "failed to open %s", argv[1]);
 	}
 
-	if ((efd = open(argv[1], O_RDWR | O_EXCL)) < 0) {
+	if ((efd = open(argv[1], O_RDWR)) < 0) {
 		err(EXIT_FAILURE, "failed to open %s", argv[1]);
+	}
+
+	bzero(&begin, sizeof (begin));
+	begin.uct_version = UCCID_CURRENT_VERSION;
+	if (ioctl(efd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
+		err(EXIT_FAILURE, "failed to issue begin ioctl");
 	}
 
 	bzero(&ucs, sizeof (ucs));

@@ -2444,6 +2444,9 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 	if (crgetzoneid(credp) != GLOBAL_ZONEID)
 		return (ENOENT);
 
+	if (otyp & (FNDELAY | FEXCL))
+		return (EINVAL);
+
 	if (drv_priv(credp) != 0)
 		return (EPERM);
 
@@ -2451,9 +2454,6 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 		return (ENOTSUP);
 
 	if ((flag & (FREAD | FWRITE)) != (FREAD | FWRITE))
-		return (EINVAL);
-
-	if ((flag & FNDELAY) && !(flag & FEXCL))
 		return (EINVAL);
 
 	idx = ccid_minor_find(getminor(*devp));
@@ -2487,20 +2487,6 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	list_insert_tail(&slot->cs_minors, cmp);
-
-	if (flag & FEXCL) {
-		boolean_t nowait = !!(flag & FNDELAY);
-
-		if ((ret = ccid_slot_excl_req(slot, cmp, nowait)) != 0) {
-			list_remove(&slot->cs_minors, cmp);
-			mutex_exit(&slot->cs_ccid->ccid_mutex);
-
-			ASSERT3S(ret, !=, EINPROGRESS);
-			ccid_minor_idx_free(&cmp->cm_idx);
-			ccid_minor_free(cmp);
-			return (ret);
-		}
-	}
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	return (0);

@@ -34,13 +34,20 @@ main(int argc, char *argv[])
 {
 	int fd, ret;
 	struct pollfd pfds[1];
+	uccid_cmd_txn_begin_t begin;
 
 	if (argc != 2) {
 		errx(EXIT_FAILURE, "missing required ccid path");
 	}
 
-	if ((fd = open(argv[1], O_RDWR | O_EXCL)) < 0) {
+	if ((fd = open(argv[1], O_RDWR)) < 0) {
 		err(EXIT_FAILURE, "failed to open %s", argv[1]);
+	}
+
+	bzero(&begin, sizeof (begin));
+	begin.uct_version = UCCID_CURRENT_VERSION;
+	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
+		err(EXIT_FAILURE, "failed to issue begin ioctl");
 	}
 
 	pfds[0].fd = fd;
