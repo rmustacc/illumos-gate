@@ -23,7 +23,10 @@ PROGS = 		\
 	excl-close	\
 	excl-loop	\
 	excl-nonblock	\
+	notxn-poll	\
 	status		\
+	pollout		\
+	txn-pollerr	\
 	yk
 
 include $(SRC)/cmd/Makefile.cmd

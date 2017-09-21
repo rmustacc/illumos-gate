@@ -204,6 +204,7 @@ typedef struct ccid_minor {
 	kcondvar_t		cm_read_cv;
 	kcondvar_t		cm_excl_cv;
 	ccid_minor_flags_t	cm_flags;
+	struct pollhead		cm_pollhead;
 } ccid_minor_t;
 
 typedef enum ccid_slot_flags {
@@ -481,6 +482,12 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	slot->cs_excl_minor = NULL;
 
 	/*
+	 * Regardless of when we're polling, we need to go through and error
+	 * out.
+	 */
+	pollwakeup(&cmp->cm_pollhead, POLLERR);
+
+	/*
 	 * Wake up the next in the queue
 	 */
 	ccid_slot_excl_signal(slot);
@@ -593,9 +600,8 @@ ccid_command_complete_user(ccid_t *ccid, ccid_command_t *cc)
 	 * Append this to the end of the list and wake up anyone who was blocked
 	 * or polling. At this point, we only need to signal readers, but we
 	 * need to wake up pollers for read and write.
-	 *
-	 * XXX Raise portable
 	 */
+	pollwakeup(&cmp->cm_pollhead, POLLIN | POLLRDNORM);
 	cv_signal(&cmp->cm_read_cv);
 }
 
@@ -1497,6 +1503,9 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot)
 	slot->cs_voltage = 0;
 	freemsgchain(slot->cs_atr);
 	slot->cs_atr = NULL;
+	if (slot->cs_excl_minor != NULL) {
+		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLHUP);
+	}
 	mutex_exit(&ccid->ccid_mutex);
 }
 
@@ -2101,6 +2110,10 @@ ccid_disconnect_cb(dev_info_t *dip)
 		goto done;
 	VERIFY3P(dip, ==, ccid->ccid_dip);
 
+	/*
+	 * XXX We need to check this and throw errors throughout, throw out
+	 * poll, etc.
+	 */
 	mutex_enter(&ccid->ccid_mutex);
 	ccid->ccid_flags |= CCID_FLAG_DISCONNECTED;
 	mutex_exit(&ccid->ccid_mutex);
@@ -2627,6 +2640,16 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * XXX The command status logic may not be correct for TPDU.
 	 */
 	cc = slot->cs_command;
+
+	/*
+	 * If we didn't get a successful command, then we go ahead and consume
+	 * this and mark it as having generated an EIO.
+	 */
+	if (cc->cc_state != CCID_COMMAND_COMPLETE) {
+		ret = EIO;
+		goto consume;
+	}
+
 	ccid_command_status_decode(cc, &crs, &cis, &cce);
 	if (crs == CCID_REPLY_STATUS_COMPLETE) {
 		size_t len;
@@ -2663,10 +2686,8 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		}
 	}
 
-	/*
-	 * At this point, we consider this command queued to the user. XXX Mark
-	 * us writable.
-	 */
+consume:
+	pollwakeup(&cmp->cm_pollhead, POLLOUT);
 	slot->cs_command = NULL;
 	mutex_exit(&ccid->ccid_mutex);
 	ccid_command_free(cc);
@@ -2982,7 +3003,52 @@ static int
 ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
     struct pollhead **phpp)
 {
-	return (ENOTSUP);
+	short ready = 0;
+	ccid_minor_idx_t *idx;
+	ccid_minor_t *cmp;
+	ccid_slot_t *slot;
+	ccid_t *ccid;
+
+	idx = ccid_minor_find_user(getminor(dev));
+	if (idx == NULL) {
+		return (ENOENT);
+	}
+
+	if (idx->cmi_isslot) {
+		return (ENXIO);
+	}
+
+	/*
+	 * First tear down the global index entry.
+	 */
+	cmp = idx->cmi_data.cmi_user;
+	slot = cmp->cm_slot;
+	ccid = slot->cs_ccid;
+
+	mutex_enter(&ccid->ccid_mutex);
+	if (!(cmp->cm_flags & CCID_MINOR_F_HASEXCL)) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (EACCES);
+	}
+
+	if (slot->cs_command == NULL) {
+		ready |= POLLOUT;
+	} else if (slot->cs_command->cc_state >= CCID_COMMAND_COMPLETE) {
+		ready |= POLLIN | POLLRDNORM;
+	}
+
+	if (!(slot->cs_flags & CCID_SLOT_F_PRESENT)) {
+		ready |= POLLHUP;
+	}
+
+	*reventsp = ready & events;
+	if ((*reventsp == 0 && !anyyet) || (events & POLLET)) {
+		*phpp = &cmp->cm_pollhead;
+	}
+
+	mutex_exit(&ccid->ccid_mutex);
+
+	return (0);
 }
 
 static int
@@ -3012,6 +3078,7 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	list_remove(&slot->cs_minors, cmp);
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
+	pollhead_clean(&cmp->cm_pollhead);
 	ccid_minor_free(cmp);
 
 	return (0);
