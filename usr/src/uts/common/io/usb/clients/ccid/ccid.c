@@ -211,8 +211,6 @@ typedef enum ccid_slot_flags {
 	CCID_SLOT_F_INTR_ADD		= 1 << 2,
 	CCID_SLOT_F_PRESENT		= 1 << 3,
 	CCID_SLOT_F_ACTIVE		= 1 << 4,
-	CCID_SLOT_F_DISCOVERING		= 1 << 5,
-	CCID_SLOT_F_TXN_RESETING	= 1 << 6
 } ccid_slot_flags_t;
 
 #define	CCID_SLOT_F_INTR_MASK	(CCID_SLOT_F_CHANGED | CCID_SLOT_F_INTR_GONE | \
@@ -458,6 +456,24 @@ ccid_minor_find_user(minor_t m)
 	return (idx);
 }
 
+/*
+ * We're closing out a transaction and we've been called to reset the card. We
+ * reset this by doing a power off and then a power on to the saved power level.
+ * We must update the ATR as a result of this. Note, it's possible that while
+ * we're trying to do this, the card will be inserted or removed. These two
+ * actions will serialize on one another and wait for the other to complete
+ * before continuing.
+ */
+static void
+ccid_slot_excl_reset(ccid_slot_t *slot)
+{
+	ccid_t *ccid;
+
+	ccid = slot->cs_ccid;
+	mutex_enter(&ccid->ccid_mutex);
+	mutex_exit(&ccid->ccid_mutex);
+}
+
 static void
 ccid_slot_excl_signal(ccid_slot_t *slot)
 {
@@ -493,7 +509,13 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	 * woken up and given access to the device.
 	 */
 	if (cmp->cm_flags & CCID_MINOR_F_TXN_RESET) {
-		/* XXX */
+#if 0
+		slot->cs_flags |= CCID_SLOT_F_TXN_RESETING;
+		mutex_exit(&ccid->ccid_mutex);
+		(void) ddi_taskq_dispatch(ccid->ccid_taskq,
+		    ccid_slot_excl_signal, slot, DDI_SLEEP);
+		mutex_enter(&ccid->ccid_mutex);
+#endif
 	} else {
 		ccid_slot_excl_signal(slot);
 	}
@@ -1504,9 +1526,9 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot)
 	/*
 	 * Nothing to do right now.
 	 */
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	mutex_enter(&ccid->ccid_mutex);
 	if ((slot->cs_flags & CCID_SLOT_F_PRESENT) == 0) {
-		mutex_exit(&ccid->ccid_mutex);
 		return;
 	}
 	slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
@@ -1517,7 +1539,6 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot)
 	if (slot->cs_excl_minor != NULL) {
 		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLHUP);
 	}
-	mutex_exit(&ccid->ccid_mutex);
 }
 
 static void
@@ -1529,13 +1550,11 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 	ccid_class_voltage_t volts[4] = { CCID_CLASS_VOLT_AUTO,
 	    CCID_CLASS_VOLT_5_0, CCID_CLASS_VOLT_3_0, CCID_CLASS_VOLT_1_8 };
 
-	mutex_enter(&ccid->ccid_mutex);
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	if ((slot->cs_flags & CCID_SLOT_F_ACTIVE) != 0) {
-		mutex_exit(&ccid->ccid_mutex);
 		return;
 	}
 
-	slot->cs_flags |= CCID_SLOT_F_PRESENT;
 	mutex_exit(&ccid->ccid_mutex);
 
 	/* XXX Is this needed? */
@@ -1643,7 +1662,6 @@ ccid_discover(void *arg)
 	}
 	ccid->ccid_flags |= CCID_FLAG_DISCOVER_RUNNING;
 	ccid->ccid_flags &= ~CCID_FLAG_DISCOVER_REQUESTED;
-	mutex_exit(&ccid->ccid_mutex);
 
 	for (i = 0; i < ccid->ccid_nslots; i++) {
 		ccid_slot_t *slot = &ccid->ccid_slots[i];
@@ -1651,23 +1669,17 @@ ccid_discover(void *arg)
 		int ret;
 		uint_t flags;
 
-		mutex_enter(&slot->cs_ccid->ccid_mutex);
-
 		/*
 		 * Snapshot flags at this point in time before we start
 		 * processing. Note that the flags may change as soon as we drop
-		 * this lock the slot lock, which will happen as part or
-		 * processing the commands.
+		 * this lock. 
 		 */
 		flags = slot->cs_flags & CCID_SLOT_F_INTR_MASK;
 		slot->cs_flags &= ~CCID_SLOT_F_INTR_MASK;
 
 		if ((flags & CCID_SLOT_F_CHANGED) == 0) {
-			mutex_exit(&slot->cs_ccid->ccid_mutex);
 			continue;
 		}
-
-		mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 		/*
 		 * We either have a hardware notified insertion or removal or we
@@ -1680,7 +1692,6 @@ ccid_discover(void *arg)
 		}
 	}
 
-	mutex_enter(&ccid->ccid_mutex);
 	ccid->ccid_flags &= ~CCID_FLAG_DISCOVER_RUNNING;
 	if (ccid->ccid_flags & CCID_FLAG_DETACHING) {
 		mutex_exit(&ccid->ccid_mutex);
