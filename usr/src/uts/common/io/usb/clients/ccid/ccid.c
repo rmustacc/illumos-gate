@@ -1226,37 +1226,6 @@ ccid_command_poll(ccid_t *ccid, ccid_command_t *cc)
 }
 
 static int
-ccid_command_slot_status(ccid_t *ccid, ccid_slot_t *slot,
-    ccid_reply_icc_status_t *isp)
-{
-	int ret;
-	ccid_command_t *cc;
-
-	if ((ret = ccid_command_alloc(ccid, slot, B_TRUE, NULL, 0,
-	    CCID_REQUEST_SLOT_STATUS, 0, 0, 0, &cc)) != 0) {
-		return (ret);
-	}
-
-	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
-		ccid_command_free(cc);
-		return (ret);
-	}
-
-	ccid_command_poll(ccid, cc);
-
-	if (cc->cc_state != CCID_COMMAND_COMPLETE) {
-		ret = EIO;
-		goto done;
-	}
-
-	ccid_command_status_decode(cc, NULL, isp, NULL);
-	ret = 0;
-done:
-	ccid_command_free(cc);
-	return (ret);
-}
-
-static int
 ccid_command_power_off(ccid_t *ccid, ccid_slot_t *cs)
 {
 	int ret;
@@ -1539,10 +1508,6 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 	slot->cs_flags |= CCID_SLOT_F_PRESENT;
 	mutex_exit(&ccid->ccid_mutex);
 
-	/* XXX Is this needed? */
-	ccid_reply_icc_status_t ss;
-	(void) ccid_command_slot_status(ccid, slot, &ss);
-	(void) ccid_command_slot_status(ccid, slot, &ss);
 	/*
 	 * Now, we need to activate this ccid device before we can do anything
 	 * with it. First, power on the device. There are two hardware features
@@ -2682,6 +2647,11 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	ccid = slot->cs_ccid;
 
 	mutex_enter(&ccid->ccid_mutex);
+	if ((ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
 	/*
 	 * First, check if we have exclusive access. If not, we're done.
 	 */
@@ -2830,6 +2800,11 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	mutex_enter(&ccid->ccid_mutex);
 
+	if ((ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
 	/*
 	 * Check if we have exclusive access and if there's a card present. If
 	 * not, both are errors.
@@ -2909,6 +2884,11 @@ ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
 
 	ucs.ucs_status = 0;
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
+	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
 	if (slot->cs_flags & CCID_SLOT_F_PRESENT)
 		ucs.ucs_status |= UCCID_STATUS_F_CARD_PRESENT;
 	if (slot->cs_flags & CCID_SLOT_F_ACTIVE)
@@ -2947,6 +2927,11 @@ ccid_ioctl_getatr(ccid_slot_t *slot, intptr_t arg, int mode)
 		return (EINVAL);
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
+	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
 	if (slot->cs_atr == NULL) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENXIO);
@@ -3015,6 +3000,11 @@ ccid_ioctl_txn_begin(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mod
 	nowait = !!(uct.uct_flags & UCCID_TXN_DONT_BLOCK);
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
+	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
 	ret = ccid_slot_excl_req(slot, cmp, nowait);
 
 	/*
@@ -3048,6 +3038,11 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 		return (EINVAL);
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
+	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
 	if (slot->cs_excl_minor != cmp) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENXIO);
@@ -3122,6 +3117,11 @@ ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 	ccid = slot->cs_ccid;
 
 	mutex_enter(&ccid->ccid_mutex);
+	if ((ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
 	if (!(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL)) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (EACCES);
