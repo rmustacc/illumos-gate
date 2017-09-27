@@ -42,6 +42,7 @@ main(int argc, char *argv[])
 
 	bzero(&begin, sizeof (begin));
 	begin.uct_version = UCCID_CURRENT_VERSION;
+	begin.uct_flags = UCCID_TXN_END_RELEASE;
 
 	pid = fork();
 	if (pid == 0) {

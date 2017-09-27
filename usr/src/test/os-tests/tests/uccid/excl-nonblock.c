@@ -42,7 +42,7 @@ nonblock_thread(void *arg)
 	bzero(&begin, sizeof (begin));
 
 	begin.uct_version = UCCID_CURRENT_VERSION;
-	begin.uct_flags = UCCID_TXN_DONT_BLOCK;
+	begin.uct_flags = UCCID_TXN_DONT_BLOCK | UCCID_TXN_END_RELEASE;
 
 	ret = ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin);
 	VERIFY3S(ret, ==, -1);
@@ -75,6 +75,7 @@ main(int argc, char *argv[])
 	bzero(&end, sizeof (end));
 
 	begin.uct_version = UCCID_CURRENT_VERSION;
+	begin.uct_flags = UCCID_TXN_END_RELEASE;
 	end.uct_version = UCCID_CURRENT_VERSION;
 
 	if (ioctl(fda, UCCID_CMD_TXN_BEGIN, &begin) != 0) {

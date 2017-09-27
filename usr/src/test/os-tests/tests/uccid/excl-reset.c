@@ -14,8 +14,8 @@
  */
 
 /*
- * Attempt to open a YubiKey class device and get the basic information applet
- * through an APDU.
+ * Verify that we can grab a basic exclusive lock through an ioctl on the slot.
+ * Then that we can release it afterwards.
  */
 
 #include <err.h>
@@ -25,21 +25,16 @@
 #include <fcntl.h>
 #include <strings.h>
 #include <unistd.h>
-#include <errno.h>
 
 #include <sys/usb/clients/ccid/uccid.h>
-
-static const uint8_t yk_req[] = {
-	0x00, 0xa4, 0x04, 0x00, 0x07, 0xa0, 0x00, 0x00, 0x05, 0x27, 0x20, 0x01
-};
 
 int
 main(int argc, char *argv[])
 {
 	int fd;
-	ssize_t ret, i;
+	uint_t i;
 	uccid_cmd_txn_begin_t begin;
-	uint8_t buf[UCCID_APDU_SIZE_MAX];
+	uccid_cmd_txn_end_t end;
 
 	if (argc != 2) {
 		errx(EXIT_FAILURE, "missing required ccid path");
@@ -50,28 +45,19 @@ main(int argc, char *argv[])
 	}
 
 	bzero(&begin, sizeof (begin));
+	bzero(&end, sizeof (end));
+
 	begin.uct_version = UCCID_CURRENT_VERSION;
-	begin.uct_flags = UCCID_TXN_END_RELEASE;
+	begin.uct_flags = UCCID_TXN_END_RESET;
+	end.uct_version = UCCID_CURRENT_VERSION;
 
-	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
-		err(EXIT_FAILURE, "failed to issue begin ioctl");
-	}
+	for (i = 0; i < 10; i++) {
+		if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
+			err(EXIT_FAILURE, "failed to issue begin ioctl");
+		}
 
-	if ((ret = write(fd, yk_req, sizeof (yk_req))) < 0) {
-		err(EXIT_FAILURE, "failed to write data");
-	}
-
-	if ((ret = read(fd, buf, sizeof (buf))) < 0) {
-		err(EXIT_FAILURE, "failed to read data");
-	}
-
-	printf("read %d bytes\n", ret);
-	for (i = 0; i < ret; i++) {
-		printf("%02x", buf[i]);
-		if (i == (ret - 1) || (i % 16) == 15) {
-			printf("\n");
-		} else {
-			printf(" ");
+		if (ioctl(fd, UCCID_CMD_TXN_END, &end) != 0) {
+			err(EXIT_FAILURE, "failed to issue end ioctl");
 		}
 	}
 

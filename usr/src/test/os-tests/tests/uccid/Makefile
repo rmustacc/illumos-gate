@@ -23,6 +23,7 @@ PROGS = 		\
 	excl-close	\
 	excl-loop	\
 	excl-nonblock	\
+	excl-reset	\
 	notxn-poll	\
 	status		\
 	pollout		\

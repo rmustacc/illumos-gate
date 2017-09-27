@@ -50,6 +50,7 @@ main(int argc, char *argv[])
 	bzero(&end, sizeof (end));
 
 	begin.uct_version = UCCID_CURRENT_VERSION;
+	begin.uct_flags = UCCID_TXN_END_RELEASE;
 	end.uct_version = UCCID_CURRENT_VERSION;
 
 	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {

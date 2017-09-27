@@ -48,7 +48,7 @@
  * items early and that the follow up run is ignored.
  *
  * Two state flags are used to keep track of this dance:
- * CCID_FLAG_DISCOVER_REQUESTED and CCID_FLAG_DISCOVER_RUNNING. The first is used
+ * CCID_FLAG_WORKER_REQUESTED and CCID_FLAG_WORKER_RUNNING. The first is used
  * to indicate that discovery is desired. The second is to indicate that it is
  * actively running. When discovery is requested, the caller first checks to
  * make sure the current flags. If neither flag is set, then it knows that it
@@ -211,10 +211,13 @@ typedef enum ccid_slot_flags {
 	CCID_SLOT_F_INTR_ADD		= 1 << 2,
 	CCID_SLOT_F_PRESENT		= 1 << 3,
 	CCID_SLOT_F_ACTIVE		= 1 << 4,
+	CCID_SLOT_F_NEED_TXN_RESET	= 1 << 5
 } ccid_slot_flags_t;
 
 #define	CCID_SLOT_F_INTR_MASK	(CCID_SLOT_F_CHANGED | CCID_SLOT_F_INTR_GONE | \
     CCID_SLOT_F_INTR_ADD)
+#define	CCID_SLOT_F_WORK_MASK	(CCID_SLOT_F_INTR_MASK | \
+    CCID_SLOT_F_NEED_TXN_RESET)
 
 typedef struct ccid_slot {
 	ccid_minor_idx_t	cs_idx;		/* WO */
@@ -246,13 +249,13 @@ typedef enum ccid_attach_state {
 typedef enum ccid_flags {
 	CCID_FLAG_HAS_INTR		= 1 << 0,
 	CCID_FLAG_DETACHING		= 1 << 1,
-	CCID_FLAG_DISCOVER_REQUESTED	= 1 << 2,
-	CCID_FLAG_DISCOVER_RUNNING	= 1 << 3,
+	CCID_FLAG_WORKER_REQUESTED	= 1 << 2,
+	CCID_FLAG_WORKER_RUNNING	= 1 << 3,
 	CCID_FLAG_DISCONNECTED		= 1 << 4
 } ccid_flags_t;
 
-#define	CCID_FLAG_DISCOVER_MASK	(CCID_FLAG_DISCOVER_REQUESTED | \
-    CCID_FLAG_DISCOVER_RUNNING)
+#define	CCID_FLAG_WORKER_MASK	(CCID_FLAG_WORKER_REQUESTED | \
+    CCID_FLAG_WORKER_RUNNING)
 
 typedef struct ccid_stats {
 	uint64_t	cst_intr_errs;
@@ -355,7 +358,7 @@ static id_space_t *ccid_minors;
  * Required Forwards
  */
 static void ccid_intr_poll_init(ccid_t *);
-static void ccid_discover_request(ccid_t *);
+static void ccid_worker_request(ccid_t *);
 static void ccid_command_dispatch(ccid_t *);
 static void ccid_command_free(ccid_command_t *);
 static int ccid_bulkin_schedule(ccid_t *);
@@ -456,24 +459,6 @@ ccid_minor_find_user(minor_t m)
 	return (idx);
 }
 
-/*
- * We're closing out a transaction and we've been called to reset the card. We
- * reset this by doing a power off and then a power on to the saved power level.
- * We must update the ATR as a result of this. Note, it's possible that while
- * we're trying to do this, the card will be inserted or removed. These two
- * actions will serialize on one another and wait for the other to complete
- * before continuing.
- */
-static void
-ccid_slot_excl_reset(ccid_slot_t *slot)
-{
-	ccid_t *ccid;
-
-	ccid = slot->cs_ccid;
-	mutex_enter(&ccid->ccid_mutex);
-	mutex_exit(&ccid->ccid_mutex);
-}
-
 static void
 ccid_slot_excl_signal(ccid_slot_t *slot)
 {
@@ -481,16 +466,22 @@ ccid_slot_excl_signal(ccid_slot_t *slot)
 
 	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
 	VERIFY3P(slot->cs_excl_minor, ==, NULL);
+	VERIFY0(slot->cs_flags & CCID_SLOT_F_NEED_TXN_RESET);
+
 
 	cmp = list_head(&slot->cs_excl_waiters);
+	if (cmp == NULL)
+		return;
+	cv_signal(&cmp->cm_excl_cv);
 }
 
 static void
 ccid_slot_excl_rele(ccid_slot_t *slot)
 {
 	ccid_minor_t *cmp;
+	ccid_t *ccid = slot->cs_ccid;
 
-	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	VERIFY3P(slot->cs_excl_minor, !=, NULL);
 
 	cmp = slot->cs_excl_minor;
@@ -509,13 +500,8 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	 * woken up and given access to the device.
 	 */
 	if (cmp->cm_flags & CCID_MINOR_F_TXN_RESET) {
-#if 0
-		slot->cs_flags |= CCID_SLOT_F_TXN_RESETING;
-		mutex_exit(&ccid->ccid_mutex);
-		(void) ddi_taskq_dispatch(ccid->ccid_taskq,
-		    ccid_slot_excl_signal, slot, DDI_SLEEP);
-		mutex_enter(&ccid->ccid_mutex);
-#endif
+		slot->cs_flags |= CCID_SLOT_F_NEED_TXN_RESET;
+		ccid_worker_request(ccid);
 	} else {
 		ccid_slot_excl_signal(slot);
 	}
@@ -541,29 +527,24 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 	 * If we were asked to try and fail quickly, do that before the main
 	 * loop.
 	 */
-	if (slot->cs_excl_minor != NULL && nosleep) {
+	if (nosleep && slot->cs_excl_minor != NULL &&
+	    !(slot->cs_flags & CCID_SLOT_F_NEED_TXN_RESET)) {
 		return (EBUSY);
-	}
-
-	/*
-	 * If no one has it, go ahead and claim it and don't insert us into the
-	 * pending list.
-	 */
-	if (slot->cs_excl_minor == NULL) {
-		goto claim;
 	}
 
 	/*
 	 * Mark that we're waiting in case we race with another thread trying to
 	 * claim exclusive access for this. Insert ourselves on the wait list.
 	 * If for some reason we get a signal, then we can't know for certain if
-	 * we had a signal /  cv race. In such a case, we always wake up the
-	 * next person in the queue (potentially spuriously.
+	 * we had a signal / cv race. In such a case, we always wake up the
+	 * next person in the queue (potentially spuriously).
 	 */
 	cmp->cm_flags |= CCID_MINOR_F_WAITING;
 	list_insert_tail(&slot->cs_excl_waiters, cmp);
-	while (slot->cs_excl_minor != NULL) {
-		if (cv_wait_sig(&cmp->cm_excl_cv, &slot->cs_ccid->ccid_mutex) == 0) {
+	while (slot->cs_excl_minor != NULL ||
+	    slot->cs_flags & CCID_SLOT_F_NEED_TXN_RESET) {
+		if (cv_wait_sig(&cmp->cm_excl_cv, &slot->cs_ccid->ccid_mutex) ==
+		    0) {
 			list_remove(&slot->cs_excl_waiters, cmp);
 			cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
 			ccid_slot_excl_signal(slot);
@@ -572,9 +553,9 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 	}
 
 	VERIFY3P(cmp, ==, list_head(&slot->cs_excl_waiters));
+	VERIFY0(slot->cs_flags & CCID_SLOT_F_NEED_TXN_RESET);
 	list_remove(&slot->cs_excl_waiters, cmp);
 
-claim:
 	cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
 	cmp->cm_flags |= CCID_MINOR_F_HAS_EXCL;
 	slot->cs_excl_minor = cmp;
@@ -1470,10 +1451,10 @@ ccid_intr_pipe_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 			}
 		}
 
-		mutex_exit(&ccid->ccid_mutex);
 		if (change) {
-			ccid_discover_request(ccid);
+			ccid_worker_request(ccid);
 		}
+		mutex_exit(&ccid->ccid_mutex);
 		break;
 	case CCID_INTR_CODE_HW_ERROR:
 		mutex_enter(&ccid->ccid_mutex);
@@ -1521,14 +1502,14 @@ ccid_intr_pipe_except_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
  * The given CCID slot has been removed. Handle insertion.
  */
 static void
-ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot)
+ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
 {
 	/*
 	 * Nothing to do right now.
 	 */
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-	mutex_enter(&ccid->ccid_mutex);
 	if ((slot->cs_flags & CCID_SLOT_F_PRESENT) == 0) {
+		VERIFY0(slot->cs_flags & CCID_SLOT_F_ACTIVE);
 		return;
 	}
 	slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
@@ -1536,7 +1517,7 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot)
 	slot->cs_voltage = 0;
 	freemsgchain(slot->cs_atr);
 	slot->cs_atr = NULL;
-	if (slot->cs_excl_minor != NULL) {
+	if (slot->cs_excl_minor != NULL && notify) {
 		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLHUP);
 	}
 }
@@ -1555,6 +1536,7 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 		return;
 	}
 
+	slot->cs_flags |= CCID_SLOT_F_PRESENT;
 	mutex_exit(&ccid->ccid_mutex);
 
 	/* XXX Is this needed? */
@@ -1643,11 +1625,62 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 	slot->cs_voltage = volts[cvolt];
 	slot->cs_atr = atr;
 	slot->cs_flags |= CCID_SLOT_F_ACTIVE;
-	mutex_exit(&ccid->ccid_mutex);
 }
 
+static boolean_t
+ccid_slot_reset(ccid_t *ccid, ccid_slot_t *slot)
+{
+	int ret;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+	VERIFY(ccid->ccid_flags & CCID_SLOT_F_NEED_TXN_RESET);
+	VERIFY(ccid->ccid_flags & CCID_FLAG_WORKER_RUNNING);
+
+	mutex_exit(&ccid->ccid_mutex);
+	ret = ccid_command_power_off(ccid, slot);
+	mutex_enter(&ccid->ccid_mutex);
+
+	/*
+	 * If the CCID was removed, that's fine. We can actually just mark it as
+	 * removed and move onto the next user. Note, we don't opt to notify the
+	 * user as we'll wait for that to happen as part of our normal
+	 * transition, which should still occur here.
+	 */
+	if (ret != 0 && ret == ENXIO) {
+		ccid_slot_removed(ccid, slot, B_FALSE);
+		return (B_TRUE);
+	}
+
+	if (ret != 0) {
+		ccid_error(ccid, "failed to reset slot %d for next txn: %d; "
+		    "taking another lap", ret);
+		return (B_FALSE);
+	}
+
+	ccid->ccid_flags &= ~CCID_SLOT_F_ACTIVE;
+	freemsgchain(slot->cs_atr);
+	slot->cs_atr = NULL;
+
+	mutex_exit(&ccid->ccid_mutex);
+	/*
+	 * Attempt to insert this into the slot. Don't worry about success or
+	 * failure, because as far as we care for resetting it, we've done our
+	 * duty once we've powered it off successfully.
+	 */
+	ccid_slot_inserted(ccid, slot);
+	mutex_enter(&ccid->ccid_mutex);
+
+	return (B_TRUE);
+}
+
+/*
+ * We've been asked to perform some amount of work on the various slots that we
+ * have. This may be because the slot needs to be reset due to the completion of
+ * a transaction or it may be because an ICC inside of the slot has been
+ * removed.
+ */
 static void
-ccid_discover(void *arg)
+ccid_worker(void *arg)
 {
 	uint_t i;
 	ccid_t *ccid = arg;
@@ -1656,74 +1689,102 @@ ccid_discover(void *arg)
 	ccid->ccid_stats.cst_ndiscover++;
 	ccid->ccid_stats.cst_lastdiscover = gethrtime();
 	if (ccid->ccid_flags & CCID_FLAG_DETACHING) {
-		ccid->ccid_flags &= ~CCID_FLAG_DISCOVER_MASK;
+		ccid->ccid_flags &= ~CCID_FLAG_WORKER_MASK;
 		mutex_exit(&ccid->ccid_mutex);
 		return;
 	}
-	ccid->ccid_flags |= CCID_FLAG_DISCOVER_RUNNING;
-	ccid->ccid_flags &= ~CCID_FLAG_DISCOVER_REQUESTED;
+	ccid->ccid_flags |= CCID_FLAG_WORKER_RUNNING;
+	ccid->ccid_flags &= ~CCID_FLAG_WORKER_REQUESTED;
 
 	for (i = 0; i < ccid->ccid_nslots; i++) {
 		ccid_slot_t *slot = &ccid->ccid_slots[i];
 		ccid_reply_icc_status_t ss;
 		int ret;
 		uint_t flags;
+		boolean_t skip_reset;
+
+		VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 
 		/*
-		 * Snapshot flags at this point in time before we start
-		 * processing. Note that the flags may change as soon as we drop
-		 * this lock. 
+		 * Snapshot the flags before we start processing the worker. At
+		 * this time we clear out all of the change flags as we'll be
+		 * operating on the device. We do not clear the
+		 * CCID_SLOT_F_NEED_TXN_RESET flag, as we want to make sure that
+		 * this is maintained until we're done here.
 		 */
-		flags = slot->cs_flags & CCID_SLOT_F_INTR_MASK;
+		flags = slot->cs_flags & CCID_SLOT_F_WORK_MASK;
 		slot->cs_flags &= ~CCID_SLOT_F_INTR_MASK;
 
-		if ((flags & CCID_SLOT_F_CHANGED) == 0) {
-			continue;
+		if (flags & CCID_SLOT_F_CHANGED) {
+			if (flags & CCID_SLOT_F_INTR_GONE) {
+				ccid_slot_removed(ccid, slot, B_TRUE);
+			} else {
+				ccid_slot_inserted(ccid, slot);
+			}
+			VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 		}
 
-		/*
-		 * We either have a hardware notified insertion or removal or we
-		 * have something that we think might have been inserted.
-		 */
-		if (flags & CCID_SLOT_F_INTR_GONE) {
-			ccid_slot_removed(ccid, slot);
-		} else {
-			ccid_slot_inserted(ccid, slot);
+		if (flags & CCID_SLOT_F_NEED_TXN_RESET) {
+			/*
+			 * If the CCID_SLOT_F_PRESENT flag is set, then we
+			 * should attempt to power off and power on the ICC in
+			 * an attempt to reset it. If this fails, trigger
+			 * another worker that needs to operate.
+			 */
+			if (flags & CCID_SLOT_F_PRESENT) {
+				if (!ccid_slot_reset(ccid, slot)) {
+					ccid_worker_request(ccid);
+					continue;
+				}
+			}
+
+			slot->cs_flags &= ~CCID_SLOT_F_NEED_TXN_RESET;
+			ccid_slot_excl_signal(slot);
+			VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 		}
 	}
 
-	ccid->ccid_flags &= ~CCID_FLAG_DISCOVER_RUNNING;
+	/*
+	 * If we have a request to operate again, delay before we consider this,
+	 * to make sure we don't do too much work ourselves.
+	 */
+	if (ccid->ccid_flags & CCID_FLAG_WORKER_REQUESTED) {
+		mutex_exit(&ccid->ccid_mutex);
+		delay(drv_usectohz(1000) * 10);
+		mutex_enter(&ccid->ccid_mutex);
+	}
+
+	ccid->ccid_flags &= ~CCID_FLAG_WORKER_RUNNING;
 	if (ccid->ccid_flags & CCID_FLAG_DETACHING) {
 		mutex_exit(&ccid->ccid_mutex);
 		return;
 	}
 
-	if ((ccid->ccid_flags & CCID_FLAG_DISCOVER_REQUESTED) != 0 &&
-	    (ccid->ccid_flags & CCID_FLAG_DETACHING) == 0) {
-		(void) ddi_taskq_dispatch(ccid->ccid_taskq, ccid_discover, ccid,
+	if ((ccid->ccid_flags & CCID_FLAG_WORKER_REQUESTED) != 0) {
+		(void) ddi_taskq_dispatch(ccid->ccid_taskq, ccid_worker, ccid,
 		    DDI_SLEEP);
 	}
 	mutex_exit(&ccid->ccid_mutex);
 }
 
 static void
-ccid_discover_request(ccid_t *ccid)
+ccid_worker_request(ccid_t *ccid)
 {
 	boolean_t run;
 
-	mutex_enter(&ccid->ccid_mutex);
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	if (ccid->ccid_flags & CCID_FLAG_DETACHING) {
-		mutex_exit(&ccid->ccid_mutex);
 		return;
 	}
 
-	run = (ccid->ccid_flags & CCID_FLAG_DISCOVER_MASK) == 0; 
-	ccid->ccid_flags |= CCID_FLAG_DISCOVER_REQUESTED;
+	run = (ccid->ccid_flags & CCID_FLAG_WORKER_MASK) == 0; 
+	ccid->ccid_flags |= CCID_FLAG_WORKER_REQUESTED;
 	if (run) {
-		(void) ddi_taskq_dispatch(ccid->ccid_taskq, ccid_discover, ccid,
+		mutex_exit(&ccid->ccid_mutex);
+		(void) ddi_taskq_dispatch(ccid->ccid_taskq, ccid_worker, ccid,
 		    DDI_SLEEP);
+		mutex_enter(&ccid->ccid_mutex);
 	}
-	mutex_exit(&ccid->ccid_mutex);
 }
 
 static void
@@ -2195,7 +2256,7 @@ ccid_cleanup(dev_info_t *dip)
 	if (ccid->ccid_attach & CCID_ATTACH_ACTIVE) {
 		ddi_taskq_wait(ccid->ccid_taskq);
 		mutex_enter(&ccid->ccid_mutex);
-		VERIFY0(ccid->ccid_flags & CCID_FLAG_DISCOVER_MASK);
+		VERIFY0(ccid->ccid_flags & CCID_FLAG_WORKER_MASK);
 		mutex_exit(&ccid->ccid_mutex);
 		ccid->ccid_attach &= ~CCID_ATTACH_ACTIVE;
 	}
@@ -2388,7 +2449,9 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	 * point.
 	 */
 	ccid->ccid_attach |= CCID_ATTACH_ACTIVE;
-	ccid_discover_request(ccid);
+	mutex_enter(&ccid->ccid_mutex);
+	ccid_worker_request(ccid);
+	mutex_exit(&ccid->ccid_mutex);
 
 	return (DDI_SUCCESS);
 
@@ -2963,7 +3026,7 @@ ccid_ioctl_txn_begin(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mod
 	 */
 	if (ret == 0) {
 		if (uct.uct_flags & UCCID_TXN_END_RESET) {
-			uct.uct_flags |= CCID_MINOR_F_TXN_RESET;
+			cmp->cm_flags |= CCID_MINOR_F_TXN_RESET;
 		}
 	}
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
