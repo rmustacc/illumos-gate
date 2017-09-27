@@ -312,7 +312,8 @@ typedef enum ccid_command_state {
 } ccid_command_state_t;
 
 typedef enum ccid_command_flags {
-	CCID_COMMAND_F_USER	= 1 << 0
+	CCID_COMMAND_F_USER	= 1 << 0,
+	CCID_COMMAND_F_ABANDON	= 1 << 1,
 } ccid_command_flags_t;
 
 typedef struct ccid_command {
@@ -489,6 +490,25 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	slot->cs_excl_minor = NULL;
 
 	/*
+	 * If we have an outstanding command left by the user when they've
+	 * closed the slot, we need to clean up this command. If the command has
+	 * completed, as in the user never called read, then we can simply free
+	 * this command. Otherwise, we must tag this command as being abandoned,
+	 * which will cause it to be cleaned up when the command is completed.
+	 * This does mean that if a user releases the slot and then someone else
+	 * gets it, they may not be able to write initially as the slot is still
+	 * busy.
+	 */
+	if (slot->cs_command != NULL) {
+		if (slot->cs_command->cc_state < CCID_COMMAND_COMPLETE) {
+			slot->cs_command->cc_flags |= CCID_COMMAND_F_ABANDON;
+		} else {
+			ccid_command_free(slot->cs_command);
+			slot->cs_command = NULL;
+		}
+	}
+
+	/*
 	 * Regardless of when we're polling, we need to go through and error
 	 * out.
 	 */
@@ -592,16 +612,26 @@ ccid_command_complete_user(ccid_t *ccid, ccid_command_t *cc)
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 
 	slot = &ccid->ccid_slots[cc->cc_slot];
+	VERIFY3P(slot->cs_command, ==, cc);
 
 	/*
-	 * This command was associated with a user request. We need to
-	 * append it to the minor so that we can read it. XXX The minor
-	 * may have been closed before this happened and this needs to
-	 * be discarded. If so, free the command.
+	 * If we somehow lost the minor associated with this command, free it.
 	 */
 	cmp = slot->cs_excl_minor;
 	if (cmp == NULL) {
+		slot->cs_command = NULL;
 		ccid_command_free(cc);
+		return;
+	}
+
+	/*
+	 * If this was abandoned, free the command and signal that the slot is
+	 * writable again.
+	 */
+	if (cc->cc_flags & CCID_COMMAND_F_ABANDON) {
+		slot->cs_command = NULL;
+		ccid_command_free(cc);
+		pollwakeup(&cmp->cm_pollhead, POLLOUT);
 		return;
 	}
 
@@ -2001,6 +2031,11 @@ ccid_slots_fini(ccid_t *ccid)
 	for (i = 0; i < ccid->ccid_nslots; i++) {
 		VERIFY3U(ccid->ccid_slots[i].cs_slotno, ==, i);
 
+		if (ccid->ccid_slots[i].cs_command != NULL) {
+			ccid_command_free(ccid->ccid_slots[i].cs_command);
+			ccid->ccid_slots[i].cs_command = NULL;
+		}
+
 		freemsgchain(ccid->ccid_slots[i].cs_atr);
 		list_destroy(&ccid->ccid_slots[i].cs_minors);
 		list_destroy(&ccid->ccid_slots[i].cs_excl_waiters);
@@ -2209,23 +2244,6 @@ ccid_cleanup(dev_info_t *dip)
 	ccid->ccid_flags |= CCID_FLAG_DETACHING;
 	mutex_exit(&ccid->ccid_mutex);
 
-	/*
-	 * XXX we need to handle outstanding commands before detaching or
-	 * refuse.
-	 */
-
-	/*
-	 * Now, let's make sure that we stop any ongoing discovery. The
-	 * detaching flag will make sure that nothing else schedules anything.
-	 */
-	if (ccid->ccid_attach & CCID_ATTACH_ACTIVE) {
-		ddi_taskq_wait(ccid->ccid_taskq);
-		mutex_enter(&ccid->ccid_mutex);
-		VERIFY0(ccid->ccid_flags & CCID_FLAG_WORKER_MASK);
-		mutex_exit(&ccid->ccid_mutex);
-		ccid->ccid_attach &= ~CCID_ATTACH_ACTIVE;
-	}
-
 	if (ccid->ccid_attach & CCID_ATTACH_MINORS) {
 		ccid_minors_fini(ccid);
 		ccid->ccid_attach &= ~CCID_ATTACH_MINORS;
@@ -2234,6 +2252,18 @@ ccid_cleanup(dev_info_t *dip)
 	if (ccid->ccid_attach & CCID_ATTACH_INTR_ACTIVE) {
 		ccid_intr_poll_fini(ccid);
 		ccid->ccid_attach &= ~CCID_ATTACH_INTR_ACTIVE;
+	}
+
+	/*
+	 * At this point, we have shut down the interrupt pipe, the last place
+	 * aside from a user that could have kicked off I/O. So finally wait for
+	 * any worker threads.
+	 */
+	if (ccid->ccid_taskq != NULL) {
+		ddi_taskq_wait(ccid->ccid_taskq);
+		mutex_enter(&ccid->ccid_mutex);
+		VERIFY0(ccid->ccid_flags & CCID_FLAG_WORKER_MASK);
+		mutex_exit(&ccid->ccid_mutex);
 	}
 
 	if (ccid->ccid_attach & CCID_ATTACH_HOTPLUG_CB) {
@@ -2277,9 +2307,18 @@ ccid_cleanup(dev_info_t *dip)
 	ccid_cleanup_bulkin(ccid);
 
 	if (ccid->ccid_attach & CCID_ATTACH_CMD_LIST) {
-		VERIFY(list_is_empty(&ccid->ccid_command_queue));
+		ccid_command_t *cc;
+
+		while ((cc = list_remove_head(&ccid->ccid_command_queue)) !=
+		    NULL) {
+			ccid_command_free(cc);
+		}
 		list_destroy(&ccid->ccid_command_queue);
-		VERIFY(list_is_empty(&ccid->ccid_complete_queue));
+
+		while ((cc = list_remove_head(&ccid->ccid_complete_queue)) !=
+		    NULL) {
+			ccid_command_free(cc);
+		}
 		list_destroy(&ccid->ccid_complete_queue);
 	}
 
@@ -2447,10 +2486,6 @@ ccid_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	VERIFY3P(dip, ==, ccid->ccid_dip);
 
 	mutex_enter(&ccid->ccid_mutex);
-
-	/*
-	 * If we still have open minors, make sure we fail.
-	 */
 
 	/*
 	 * If the device hasn't been disconnected from a USB sense, refuse to
