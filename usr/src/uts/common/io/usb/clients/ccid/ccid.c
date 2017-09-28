@@ -48,7 +48,7 @@
  * items early and that the follow up run is ignored.
  *
  * Two state flags are used to keep track of this dance:
- * CCID_FLAG_WORKER_REQUESTED and CCID_FLAG_WORKER_RUNNING. The first is used
+ * CCID_F_WORKER_REQUESTED and CCID_F_WORKER_RUNNING. The first is used
  * to indicate that discovery is desired. The second is to indicate that it is
  * actively running. When discovery is requested, the caller first checks to
  * make sure the current flags. If neither flag is set, then it knows that it
@@ -246,15 +246,18 @@ typedef enum ccid_attach_state {
 } ccid_attach_state_t;
 
 typedef enum ccid_flags {
-	CCID_FLAG_HAS_INTR		= 1 << 0,
-	CCID_FLAG_DETACHING		= 1 << 1,
-	CCID_FLAG_WORKER_REQUESTED	= 1 << 2,
-	CCID_FLAG_WORKER_RUNNING	= 1 << 3,
-	CCID_FLAG_DISCONNECTED		= 1 << 4
+	CCID_F_HAS_INTR		= 1 << 0,
+	CCID_F_NEEDS_PPS	= 1 << 1,
+	CCID_F_NEEDS_PARAMS	= 1 << 2,
+	CCID_F_IO_NOTSUP	= 1 << 3,
+	CCID_F_DETACHING	= 1 << 4,
+	CCID_F_WORKER_REQUESTED	= 1 << 5,
+	CCID_F_WORKER_RUNNING	= 1 << 6,
+	CCID_F_DISCONNECTED	= 1 << 7
 } ccid_flags_t;
 
-#define	CCID_FLAG_WORKER_MASK	(CCID_FLAG_WORKER_REQUESTED | \
-    CCID_FLAG_WORKER_RUNNING)
+#define	CCID_F_WORKER_MASK	(CCID_F_WORKER_REQUESTED | \
+    CCID_F_WORKER_RUNNING)
 
 typedef struct ccid_stats {
 	uint64_t	cst_intr_errs;
@@ -921,7 +924,7 @@ ccid_bulkin_cache_refresh(ccid_t *ccid)
 
 		mutex_enter(&ccid->ccid_mutex);
 		if (ccid->ccid_bulkin_alloced >= CCID_BULK_NALLOCED ||
-		    (ccid->ccid_flags & CCID_FLAG_DETACHING)) {
+		    (ccid->ccid_flags & CCID_F_DETACHING)) {
 			mutex_exit(&ccid->ccid_mutex);
 			usb_free_bulk_req(ubrp);
 			return;
@@ -982,7 +985,7 @@ ccid_command_dispatch(ccid_t *ccid)
 	while ((cc = list_head(&ccid->ccid_command_queue)) != NULL) {
 		int ret;
 
-		if (ccid->ccid_flags & CCID_FLAG_DETACHING)
+		if (ccid->ccid_flags & CCID_F_DETACHING)
 			return;
 
 		/*
@@ -1606,6 +1609,7 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 	}
 
 
+	mutex_enter(&ccid->ccid_mutex);
 	if (cvolt >= nvolts) {
 		ccid_error(ccid, "!failed to activate and power on ICC, no "
 		    "supported voltages found");
@@ -1613,7 +1617,6 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 	}
 
 
-	mutex_enter(&ccid->ccid_mutex);
 	slot->cs_voltage = volts[cvolt];
 	slot->cs_atr = atr;
 	slot->cs_flags |= CCID_SLOT_F_ACTIVE;
@@ -1626,7 +1629,7 @@ ccid_slot_reset(ccid_t *ccid, ccid_slot_t *slot)
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	VERIFY(ccid->ccid_flags & CCID_SLOT_F_NEED_TXN_RESET);
-	VERIFY(ccid->ccid_flags & CCID_FLAG_WORKER_RUNNING);
+	VERIFY(ccid->ccid_flags & CCID_F_WORKER_RUNNING);
 
 	mutex_exit(&ccid->ccid_mutex);
 	ret = ccid_command_power_off(ccid, slot);
@@ -1680,13 +1683,13 @@ ccid_worker(void *arg)
 	mutex_enter(&ccid->ccid_mutex);
 	ccid->ccid_stats.cst_ndiscover++;
 	ccid->ccid_stats.cst_lastdiscover = gethrtime();
-	if (ccid->ccid_flags & CCID_FLAG_DETACHING) {
-		ccid->ccid_flags &= ~CCID_FLAG_WORKER_MASK;
+	if (ccid->ccid_flags & CCID_F_DETACHING) {
+		ccid->ccid_flags &= ~CCID_F_WORKER_MASK;
 		mutex_exit(&ccid->ccid_mutex);
 		return;
 	}
-	ccid->ccid_flags |= CCID_FLAG_WORKER_RUNNING;
-	ccid->ccid_flags &= ~CCID_FLAG_WORKER_REQUESTED;
+	ccid->ccid_flags |= CCID_F_WORKER_RUNNING;
+	ccid->ccid_flags &= ~CCID_F_WORKER_REQUESTED;
 
 	for (i = 0; i < ccid->ccid_nslots; i++) {
 		ccid_slot_t *slot = &ccid->ccid_slots[i];
@@ -1740,19 +1743,19 @@ ccid_worker(void *arg)
 	 * If we have a request to operate again, delay before we consider this,
 	 * to make sure we don't do too much work ourselves.
 	 */
-	if (ccid->ccid_flags & CCID_FLAG_WORKER_REQUESTED) {
+	if (ccid->ccid_flags & CCID_F_WORKER_REQUESTED) {
 		mutex_exit(&ccid->ccid_mutex);
 		delay(drv_usectohz(1000) * 10);
 		mutex_enter(&ccid->ccid_mutex);
 	}
 
-	ccid->ccid_flags &= ~CCID_FLAG_WORKER_RUNNING;
-	if (ccid->ccid_flags & CCID_FLAG_DETACHING) {
+	ccid->ccid_flags &= ~CCID_F_WORKER_RUNNING;
+	if (ccid->ccid_flags & CCID_F_DETACHING) {
 		mutex_exit(&ccid->ccid_mutex);
 		return;
 	}
 
-	if ((ccid->ccid_flags & CCID_FLAG_WORKER_REQUESTED) != 0) {
+	if ((ccid->ccid_flags & CCID_F_WORKER_REQUESTED) != 0) {
 		(void) ddi_taskq_dispatch(ccid->ccid_taskq, ccid_worker, ccid,
 		    DDI_SLEEP);
 	}
@@ -1765,12 +1768,12 @@ ccid_worker_request(ccid_t *ccid)
 	boolean_t run;
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-	if (ccid->ccid_flags & CCID_FLAG_DETACHING) {
+	if (ccid->ccid_flags & CCID_F_DETACHING) {
 		return;
 	}
 
-	run = (ccid->ccid_flags & CCID_FLAG_WORKER_MASK) == 0; 
-	ccid->ccid_flags |= CCID_FLAG_WORKER_REQUESTED;
+	run = (ccid->ccid_flags & CCID_F_WORKER_MASK) == 0; 
+	ccid->ccid_flags |= CCID_F_WORKER_REQUESTED;
 	if (run) {
 		mutex_exit(&ccid->ccid_mutex);
 		(void) ddi_taskq_dispatch(ccid->ccid_taskq, ccid_worker, ccid,
@@ -1785,7 +1788,7 @@ ccid_intr_restart_timeout(void *arg)
 	ccid_t *ccid = arg;
 
 	mutex_enter(&ccid->ccid_mutex);
-	if (ccid->ccid_flags & CCID_FLAG_DETACHING) {
+	if (ccid->ccid_flags & CCID_F_DETACHING) {
 		ccid->ccid_poll_timeout = NULL;
 		mutex_exit(&ccid->ccid_mutex);
 	}
@@ -1852,6 +1855,7 @@ ccid_supported(ccid_t *ccid)
 {
 	usb_client_dev_data_t *dp;
 	usb_alt_if_data_t *alt;
+	ccid_class_features_t feat;
 	uint16_t ver = ccid->ccid_class.ccd_bcdCCID;
 
 	if (CCID_VERSION_MAJOR(ver) != CCID_VERSION_ONE) {
@@ -1871,10 +1875,10 @@ ccid_supported(ccid_t *ccid)
 	alt = &dp->dev_curr_cfg->cfg_if[dp->dev_curr_if].if_alt[0];
 	switch (alt->altif_descr.bNumEndpoints) {
 	case 2:
-		ccid->ccid_flags &= ~CCID_FLAG_HAS_INTR;
+		ccid->ccid_flags &= ~CCID_F_HAS_INTR;
 		break;
 	case 3:
-		ccid->ccid_flags |= CCID_FLAG_HAS_INTR;
+		ccid->ccid_flags |= CCID_F_HAS_INTR;
 		break;
 	default:
 		ccid_error(ccid, "refusing to attach to CCID with unsupported "
@@ -1899,16 +1903,33 @@ ccid_supported(ccid_t *ccid)
 	 * activation or automatic ICC voltage. These are handled automatically
 	 * by the system.
 	 */
+	feat = ccid->ccid_class.ccd_dwFeatures;
+
+	/*
+	 * If the reader uses TPDU transports then we must check whether or not
+	 * we're required to set the parameters and thus parse the ATR or
+	 * whether or not we're going to need to send a PPS. The CCID
+	 * specification requires that devices that support APDU transfers do
+	 * some of this.
+	 *
+	 * XXX Some of this probably applies to character transfers.
+	 */
+	if ((feat & CCID_CLASS_F_TPDU_XCHG) != 0) {
+		if ((feat & (CCID_CLASS_F_AUTO_PARAM_NEG |
+		    CCID_CLASS_F_AUTO_PPS)) == 0) {
+			ccid->ccid_flags |= CCID_F_NEEDS_PPS;
+		}
+	}
 
 	/*
 	 * Explicitly require some form of APDU support. Note, at this time we
-	 * check for this when performing writes, but warn about it here.
-	 * 
-	 * XXX We should figure out whether we should fail attach or not here.
-	 * Maybe not for some kind of ugen thing?
+	 * check for this when performing writes, but warn about it here. We
+	 * don't want to fail attach so that way some useful information can
+	 * still be given about the device.
 	 */
-	if ((ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
+	if ((feat & (CCID_CLASS_F_SHORT_APDU_XCHG |
 	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
+		ccid->ccid_flags |= CCID_F_IO_NOTSUP;
 		ccid_error(ccid, "CCID does not support required APDU transfer "
 		    "capabilities");
 	}
@@ -1956,7 +1977,7 @@ ccid_open_pipes(ccid_t *ccid)
 		return (B_FALSE);
 	}
 
-	if (ccid->ccid_flags & CCID_FLAG_HAS_INTR) {
+	if (ccid->ccid_flags & CCID_F_HAS_INTR) {
 		ep = usb_lookup_ep_data(ccid->ccid_dip, data, data->dev_curr_if,
 		    0, 0, USB_EP_ATTR_INTR, USB_EP_DIR_IN);
 		if (ep == NULL) {
@@ -2000,7 +2021,7 @@ ccid_open_pipes(ccid_t *ccid)
 		return (B_FALSE);
 	}
 
-	if (ccid->ccid_flags & CCID_FLAG_HAS_INTR) {
+	if (ccid->ccid_flags & CCID_F_HAS_INTR) {
 		if ((ret = usb_pipe_xopen(ccid->ccid_dip,
 		    &ccid->ccid_intrin_xdesc, &policy, USB_FLAGS_SLEEP,
 		    &ccid->ccid_intrin_pipe)) != USB_SUCCESS) {
@@ -2118,7 +2139,7 @@ ccid_minors_init(ccid_t *ccid)
 static void
 ccid_intr_poll_fini(ccid_t *ccid)
 {
-	if (ccid->ccid_flags & CCID_FLAG_HAS_INTR) {
+	if (ccid->ccid_flags & CCID_F_HAS_INTR) {
 		timeout_id_t tid;
 		mutex_enter(&ccid->ccid_mutex);
 		tid = ccid->ccid_poll_timeout;
@@ -2147,7 +2168,7 @@ ccid_intr_poll_init(ccid_t *ccid)
 	uirp->intr_exc_cb = ccid_intr_pipe_except_cb;
 
 	mutex_enter(&ccid->ccid_mutex);
-	if (ccid->ccid_flags & CCID_FLAG_DETACHING) {
+	if (ccid->ccid_flags & CCID_F_DETACHING) {
 		mutex_exit(&ccid->ccid_mutex);
 		usb_free_intr_req(uirp);
 		return;
@@ -2204,7 +2225,7 @@ ccid_disconnect_cb(dev_info_t *dip)
 	 * poll, etc.
 	 */
 	mutex_enter(&ccid->ccid_mutex);
-	ccid->ccid_flags |= CCID_FLAG_DISCONNECTED;
+	ccid->ccid_flags |= CCID_F_DISCONNECTED;
 	mutex_exit(&ccid->ccid_mutex);
 
 done:
@@ -2238,7 +2259,7 @@ ccid_cleanup(dev_info_t *dip)
 	 * background knows to stop.
 	 */
 	mutex_enter(&ccid->ccid_mutex);
-	ccid->ccid_flags |= CCID_FLAG_DETACHING;
+	ccid->ccid_flags |= CCID_F_DETACHING;
 	mutex_exit(&ccid->ccid_mutex);
 
 	if (ccid->ccid_attach & CCID_ATTACH_MINORS) {
@@ -2259,7 +2280,7 @@ ccid_cleanup(dev_info_t *dip)
 	if (ccid->ccid_taskq != NULL) {
 		ddi_taskq_wait(ccid->ccid_taskq);
 		mutex_enter(&ccid->ccid_mutex);
-		VERIFY0(ccid->ccid_flags & CCID_FLAG_WORKER_MASK);
+		VERIFY0(ccid->ccid_flags & CCID_F_WORKER_MASK);
 		mutex_exit(&ccid->ccid_mutex);
 	}
 
@@ -2286,7 +2307,7 @@ ccid_cleanup(dev_info_t *dip)
 		usb_pipe_close(dip, ccid->ccid_bulkout_pipe, USB_FLAGS_SLEEP,
 		    NULL, NULL);
 		ccid->ccid_bulkout_pipe = NULL;
-		if (ccid->ccid_flags & CCID_FLAG_HAS_INTR) {
+		if (ccid->ccid_flags & CCID_F_HAS_INTR) {
 			usb_pipe_close(dip, ccid->ccid_intrin_pipe,
 			    USB_FLAGS_SLEEP, NULL, NULL);
 			ccid->ccid_intrin_pipe = NULL;
@@ -2431,7 +2452,7 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	 */
 	ccid_bulkin_cache_refresh(ccid);
 
-	if (ccid->ccid_flags & CCID_FLAG_HAS_INTR) {
+	if (ccid->ccid_flags & CCID_F_HAS_INTR) {
 		ccid_intr_poll_init(ccid);
 	}
 	ccid->ccid_attach |= CCID_ATTACH_INTR_ACTIVE;
@@ -2484,7 +2505,7 @@ ccid_detach(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	 * detach. Otherwise, there's no way to guarantee that the ccid
 	 * driver will be attached when a user hotplugs an ICC.
 	 */
-	if ((ccid->ccid_flags & CCID_FLAG_DISCONNECTED) == 0) {
+	if ((ccid->ccid_flags & CCID_F_DISCONNECTED) == 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (DDI_FAILURE);
 	}
@@ -2674,7 +2695,7 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	ccid = slot->cs_ccid;
 
 	mutex_enter(&ccid->ccid_mutex);
-	if ((ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+	if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -2827,7 +2848,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 
 	mutex_enter(&ccid->ccid_mutex);
 
-	if ((ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+	if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -2851,8 +2872,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	/*
 	 * Make sure that we have a supported short APDU form.
 	 */
-	if ((ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
-	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
+	if ((ccid->ccid_flags & CCID_F_IO_NOTSUP) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		ccid_command_free(cc);
 		return (ENOTSUP);
@@ -2911,7 +2931,7 @@ ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
 
 	ucs.ucs_status = 0;
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
-	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -3014,7 +3034,7 @@ ccid_ioctl_getatr(ccid_slot_t *slot, intptr_t arg, int mode)
 		return (EINVAL);
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
-	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -3055,7 +3075,7 @@ ccid_ioctl_getprodstr(ccid_slot_t *slot, intptr_t arg, int mode)
 
 	ccid = slot->cs_ccid;
 	mutex_enter(&ccid->ccid_mutex);
-	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -3096,7 +3116,7 @@ ccid_ioctl_getserial(ccid_slot_t *slot, intptr_t arg, int mode)
 
 	ccid = slot->cs_ccid;
 	mutex_enter(&ccid->ccid_mutex);
-	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -3143,7 +3163,7 @@ ccid_ioctl_txn_begin(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mod
 	nowait = !!(uct.uct_flags & UCCID_TXN_DONT_BLOCK);
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
-	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -3181,7 +3201,7 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 		return (EINVAL);
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
-	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -3264,7 +3284,7 @@ ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 	ccid = slot->cs_ccid;
 
 	mutex_enter(&ccid->ccid_mutex);
-	if ((ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+	if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENODEV);
 	}
