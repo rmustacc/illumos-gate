@@ -272,6 +272,23 @@ ccidadm_atr_print(uint8_t *buf, size_t nbytes)
 	}
 
 	if (i % 16 != 0) {
+		size_t last = i;
+		int j;
+		for (i = (last % 16); i <= 16; i++) {
+			if (i % 4 == 0 && i % 16 != 0) {
+				(void) printf(" ");
+			}
+
+			(void) printf("  ");
+		}
+		for (j = last - (last % 16); j < last; j++) {
+			if (!isprint(buf[j])) {
+				(void) printf(".");
+			} else {
+				(void) printf("%c", buf[j]);
+			}
+
+		}
 		(void) printf("\n");
 	}
 }
