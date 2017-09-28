@@ -69,19 +69,19 @@ typedef struct uccid_cmd_status {
  */
 #define	UCCID_CMD_STATUS	(UCCID_IOCTL | 0x3)
 
-typedef struct uccid_cmd_getatr {
+typedef struct uccid_cmd_getbuf {
 	uint32_t	ucg_version;
 	uint32_t	ucg_buflen;
 	/* XXX should this just be a static buffer with a likely maximum size? */
 	void		*ucg_buffer;
-} uccid_cmd_getatr_t;
+} uccid_cmd_getbuf_t;
 
 #ifdef	_KERNEL
-typedef struct uccid_cmd_getatr32 {
+typedef struct uccid_cmd_getbuf32 {
 	uint32_t	ucg_version;
 	uint32_t	ucg_buflen;
 	uintptr32_t	ucg_buffer;
-} uccid_cmd_getatr32_t;
+} uccid_cmd_getbuf32_t;
 #endif
 
 /*
@@ -91,6 +91,13 @@ typedef struct uccid_cmd_getatr32 {
  * buffer.
  */
 #define	UCCID_CMD_GETATR	(UCCID_IOCTL | 0x4)
+
+/*
+ * Get the USB product string or serial if available. Follows the same semantics
+ * as the ATR.
+ */
+#define	UCCID_CMD_GETPRODSTR	(UCCID_IOCTL | 0x5)
+#define	UCCID_CMD_GETSERIAL	(UCCID_IOCTL | 0x6)
 
 
 /*

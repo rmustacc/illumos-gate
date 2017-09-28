@@ -243,7 +243,6 @@ typedef enum ccid_attach_state {
 	CCID_ATTACH_HOTPLUG_CB	= 1 << 7,
 	CCID_ATTACH_INTR_ACTIVE	= 1 << 8,
 	CCID_ATTACH_MINORS	= 1 << 9,
-	CCID_ATTACH_ACTIVE	= 1 << 10
 } ccid_attach_state_t;
 
 typedef enum ccid_flags {
@@ -1587,7 +1586,6 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 			if (ret == ENXIO) {
 				mutex_enter(&ccid->ccid_mutex);
 				slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
-				mutex_exit(&ccid->ccid_mutex);
 				return;
 			}
 
@@ -1599,7 +1597,6 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 			if (ret == ENXIO) {
 				mutex_enter(&ccid->ccid_mutex);
 				slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
-				mutex_exit(&ccid->ccid_mutex);
 				return;
 			}
 			continue;
@@ -2448,11 +2445,6 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	}
 	ccid->ccid_attach |= CCID_ATTACH_MINORS;
 
-	/*
-	 * Before we kick off discovery, mark that we're fully active at this
-	 * point.
-	 */
-	ccid->ccid_attach |= CCID_ATTACH_ACTIVE;
 	mutex_enter(&ccid->ccid_mutex);
 	ccid_worker_request(ccid);
 	mutex_exit(&ccid->ccid_mutex);
@@ -2936,26 +2928,86 @@ ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
 	return (0);
 }
 
+static boolean_t
+ccid_ioctl_copyin_buf(intptr_t arg, int mode, uccid_cmd_getbuf_t *ucg)
+{
+	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
+		uccid_cmd_getbuf32_t ucg32;
+
+		if (ddi_copyin((void *)arg, &ucg32, sizeof (ucg32),
+		    mode & FKIOCTL) != 0)
+			return (B_FALSE);
+		ucg->ucg_version = ucg32.ucg_version;
+		ucg->ucg_buflen = ucg32.ucg_buflen;
+		ucg->ucg_buffer = (void *)(uintptr_t)ucg32.ucg_buffer;
+	} else {
+		if (ddi_copyin((void *)arg, ucg, sizeof (*ucg),
+		    mode & FKIOCTL) != 0)
+			return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+static boolean_t
+ccid_ioctl_copyout_buf(intptr_t arg, int mode, uccid_cmd_getbuf_t *ucg)
+{
+	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
+		uccid_cmd_getbuf32_t ucg32;
+
+		ucg32.ucg_version = ucg->ucg_version;
+		ucg32.ucg_buflen = (uint32_t)ucg->ucg_buflen;
+		ucg32.ucg_buffer = (uintptr32_t)(uintptr_t)ucg->ucg_buffer;
+
+		if (ddi_copyout(&ucg32, (void *)arg, sizeof (ucg32),
+		    mode & FKIOCTL) != 0)
+			return (B_FALSE);
+	} else {
+		if (ddi_copyout(ucg, (void *)arg, sizeof (ucg),
+		    mode & FKIOCTL) != 0)
+			return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+static boolean_t
+ccid_ioctl_copyout_bufdata(void *data, size_t len, uccid_cmd_getbuf_t *ucg,
+    int mode, int *errp)
+{
+	int ret;
+
+	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
+		if (len > UINT32_MAX) {
+			*errp = ERANGE;
+			return (B_FALSE);
+		}
+	}
+
+	if (ucg->ucg_buflen >= len) {
+		if (ddi_copyout(data, ucg->ucg_buffer, len,
+		    mode & FKIOCTL) != 0) {
+			*errp = EFAULT;
+			return (B_FALSE);
+		}
+		*errp = 0;
+	} else {
+		*errp = EOVERFLOW;
+	}
+
+	ucg->ucg_buflen = len;
+	return (B_TRUE);
+}
+
 static int
 ccid_ioctl_getatr(ccid_slot_t *slot, intptr_t arg, int mode)
 {
 	int ret;
 	size_t atrlen;
-	uccid_cmd_getatr_t ucg;
+	uccid_cmd_getbuf_t ucg;
 
-	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
-		uccid_cmd_getatr32_t ucg32;
-
-		if (ddi_copyin((void *)arg, &ucg32, sizeof (ucg32),
-		    mode & FKIOCTL) != 0)
-			return (EFAULT);
-		ucg.ucg_version = ucg32.ucg_version;
-		ucg.ucg_buflen = ucg32.ucg_buflen;
-		ucg.ucg_buffer = (void *)(uintptr_t)ucg32.ucg_buffer;
-	} else {
-		if (ddi_copyin((void *)arg, &ucg, sizeof (ucg),
-		    mode & FKIOCTL) != 0)
-			return (EFAULT);
+	if (!ccid_ioctl_copyin_buf(arg, mode, &ucg)) {
+		return (EFAULT);
 	}
 
 	if (ucg.ucg_version != UCCID_VERSION_ONE)
@@ -2973,40 +3025,96 @@ ccid_ioctl_getatr(ccid_slot_t *slot, intptr_t arg, int mode)
 	}
 
 	atrlen = msgsize(slot->cs_atr);
-	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
-		if (atrlen > UINT32_MAX) {
-			mutex_exit(&slot->cs_ccid->ccid_mutex);
-			return (ERANGE);
-		}
+	if (!ccid_ioctl_copyout_bufdata(slot->cs_atr->b_rptr, atrlen, &ucg,
+	    mode, &ret)) {
+		return (ret);
 	}
-
-	if (ucg.ucg_buflen >= atrlen) {
-		if (ddi_copyout(slot->cs_atr->b_rptr, ucg.ucg_buffer, atrlen,
-		    mode & FKIOCTL) != 0) {
-			mutex_exit(&slot->cs_ccid->ccid_mutex);
-			return (EFAULT);
-		}
-		ret = 0;
-	} else {
-		ret = EOVERFLOW;
-	}
-	ucg.ucg_buflen = atrlen;
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
-	if (ddi_model_convert_from(mode & FMODELS) == DDI_MODEL_ILP32) {
-		uccid_cmd_getatr32_t ucg32;
+	if (!ccid_ioctl_copyout_buf(arg, mode, &ucg)) {
+		return (EFAULT);
+	}
 
-		ucg32.ucg_version = ucg.ucg_version;
-		ucg32.ucg_buflen = (uint32_t)ucg.ucg_buflen;
-		ucg32.ucg_buffer = (uintptr32_t)(uintptr_t)ucg.ucg_buffer;
+	return (ret);
+}
 
-		if (ddi_copyout(&ucg32, (void *)arg, sizeof (ucg32),
-		    mode & FKIOCTL) != 0)
-			return (EFAULT);
-	} else {
-		if (ddi_copyout(&ucg, (void *)arg, sizeof (ucg),
-		    mode & FKIOCTL) != 0)
-			return (EFAULT);
+static int
+ccid_ioctl_getprodstr(ccid_slot_t *slot, intptr_t arg, int mode)
+{
+	int ret;
+	size_t len;
+	uccid_cmd_getbuf_t ucg;
+	ccid_t *ccid;
+
+	if (!ccid_ioctl_copyin_buf(arg, mode, &ucg)) {
+		return (EFAULT);
+	}
+
+	if (ucg.ucg_version != UCCID_VERSION_ONE)
+		return (EINVAL);
+
+	ccid = slot->cs_ccid;
+	mutex_enter(&ccid->ccid_mutex);
+	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
+	if (ccid->ccid_dev_data->dev_product == NULL) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (ENOENT);
+	}
+
+	len = strlen(ccid->ccid_dev_data->dev_product) + 1;
+	if (!ccid_ioctl_copyout_bufdata(ccid->ccid_dev_data->dev_product, len,
+	    &ucg, mode, &ret)) {
+		return (ret);
+	}
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
+
+	if (!ccid_ioctl_copyout_buf(arg, mode, &ucg)) {
+		return (EFAULT);
+	}
+
+	return (ret);
+}
+
+static int
+ccid_ioctl_getserial(ccid_slot_t *slot, intptr_t arg, int mode)
+{
+	int ret;
+	size_t len;
+	uccid_cmd_getbuf_t ucg;
+	ccid_t *ccid;
+
+	if (!ccid_ioctl_copyin_buf(arg, mode, &ucg)) {
+		return (EFAULT);
+	}
+
+	if (ucg.ucg_version != UCCID_VERSION_ONE)
+		return (EINVAL);
+
+	ccid = slot->cs_ccid;
+	mutex_enter(&ccid->ccid_mutex);
+	if ((slot->cs_ccid->ccid_flags & CCID_FLAG_DETACHING) != 0) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
+	if (ccid->ccid_dev_data->dev_serial == NULL) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (ENOENT);
+	}
+
+	len = strlen(ccid->ccid_dev_data->dev_serial) + 1;
+	if (!ccid_ioctl_copyout_bufdata(ccid->ccid_dev_data->dev_serial, len,
+	    &ucg, mode, &ret)) {
+		return (ret);
+	}
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
+
+	if (!ccid_ioctl_copyout_buf(arg, mode, &ucg)) {
+		return (EFAULT);
 	}
 
 	return (ret);
@@ -3118,6 +3226,10 @@ ccid_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp, int
 		return (ccid_ioctl_status(slot, arg, mode));
 	case UCCID_CMD_GETATR:
 		return (ccid_ioctl_getatr(slot, arg, mode));
+	case UCCID_CMD_GETPRODSTR:
+		return (ccid_ioctl_getprodstr(slot, arg, mode));
+	case UCCID_CMD_GETSERIAL:
+		return (ccid_ioctl_getserial(slot, arg, mode));
 	default:
 		break;
 	}
