@@ -1915,10 +1915,24 @@ ccid_supported(ccid_t *ccid)
 	 * XXX Some of this probably applies to character transfers.
 	 */
 	if ((feat & CCID_CLASS_F_TPDU_XCHG) != 0) {
+		/*
+		 * The footnote for these two bits in CCID r1.1.0 indicates that
+		 * when neither are missing we have to do the PPS negotiation
+		 * ourselves.
+		 */
 		if ((feat & (CCID_CLASS_F_AUTO_PARAM_NEG |
 		    CCID_CLASS_F_AUTO_PPS)) == 0) {
 			ccid->ccid_flags |= CCID_F_NEEDS_PPS;
 		}
+
+		if ((feat & CCID_CLASS_F_AUTO_PARAM_NEG) == 0) {
+			ccid->ccid_flags |= CCID_F_NEEDS_PARAMS;
+		}
+
+		/*
+		 * XXX We probably need to figure out the IFSD negotiation and
+		 * if that matters or not.
+		 */
 	}
 
 	/*

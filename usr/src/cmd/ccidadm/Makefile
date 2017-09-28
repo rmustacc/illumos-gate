@@ -21,8 +21,9 @@ include ../Makefile.ctf
 ROOTCMDDIR = $(ROOTLIB)/ccid
 CFLAGS += $(CCVERBOSE)
 LDLIBS += -lofmt
-SRCS = ccidadm.o
+SRCS = ccidadm.o atr.o
 OBJS = $(SRCS:%.c=%.o)
+CPPFLAGS += -I$(SRC)/common/ccid
 
 ROOTCCIDFILES = $(PROG:%=$(ROOTCMDDIR)/%)
 
@@ -33,6 +34,10 @@ $(PROG): $(OBJS)
 	$(POST_PROCESS)
 
 %.o: %.c
+	$(COMPILE.c) $<
+	$(POST_PROCESS_O)
+
+%.o: $(SRC)/common/ccid/%.c
 	$(COMPILE.c) $<
 	$(POST_PROCESS_O)
 
