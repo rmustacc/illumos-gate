@@ -228,7 +228,7 @@ ccidadm_list_usage(FILE *out)
 }
 
 static void
-ccidadm_atr_print(uint8_t *buf, size_t nbytes)
+ccidadm_atr_hexdump(const uint8_t *buf, size_t nbytes)
 {
 	size_t i;
 	static boolean_t first = B_TRUE;
@@ -295,11 +295,27 @@ ccidadm_atr_print(uint8_t *buf, size_t nbytes)
 }
 
 static void
+ccidadm_atr_print(const uint8_t *buf, size_t len)
+{
+	int ret;
+	atr_data_t *data;
+
+	if ((data = atr_data_alloc()) == NULL) {
+		err(EXIT_FAILURE, "failed to allocate memory for "
+		    "ATR data");
+	}
+
+	ret = atr_parse(buf, len, data);
+	printf("parse results: %s (%d)\n", atr_strerror(ret), ret);
+
+	atr_data_free(data);
+}
+
+static void
 ccidadm_atr_fetch(int fd, const char *name)
 {
 	uccid_cmd_getbuf_t ucg;
 	uint8_t *buf;
-	int ret;
 
 	bzero(&ucg, sizeof (ucg));
 	ucg.ucg_version = UCCID_CURRENT_VERSION;
@@ -333,9 +349,8 @@ ccidadm_atr_fetch(int fd, const char *name)
 	}
 
 	(void) printf("ATR for %s (%u bytes)\n", name, ucg.ucg_buflen);
+	ccidadm_atr_hexdump(ucg.ucg_buffer, ucg.ucg_buflen);
 	ccidadm_atr_print(ucg.ucg_buffer, ucg.ucg_buflen);
-	ret = atr_parse(ucg.ucg_buffer, ucg.ucg_buflen);
-	printf("parse results: %s (%d)\n", atr_strerror(ret), ret);
 	free(buf);
 }
 
