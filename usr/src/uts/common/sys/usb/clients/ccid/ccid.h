@@ -27,28 +27,44 @@ extern "C" {
 #endif
 
 /*
- * These values come from CCID r1.1.0 Table 5.1-1 'Smart Card Device
- * Descriptors'
+ * Values for various Hardware, Mechanical, and Pin features. These come from
+ * the device's class descriptor.
  */
-#define	CCID_DESCR_TYPE		0x21
-#define	CCID_DESCR_LENGTH	0x36
-
-/*
- * Definitions for the supported versions of the CCID specification. The version
- * is encoded in binary encoded decimal. The major version is in the upper 8
- * bits and the minor version is in the lower 8 bits. We currently check for the
- * major version to match.
- */
-#define	CCID_VERSION_MAJOR(ver)	(((ver) & 0xff00) >> 8)
-#define	CCID_VERSION_MINOR(ver)	((ver) & 0x00ff)
-#define	CCID_VERSION_ONE	0x01
-
 typedef enum ccid_class_voltage {
 	CCID_CLASS_VOLT_AUTO	= 0x00,
 	CCID_CLASS_VOLT_5_0	= 0x01,
 	CCID_CLASS_VOLT_3_0	= 0x02,
 	CCID_CLASS_VOLT_1_8	= 0x04
 } ccid_class_voltage_t;
+
+typedef enum ccid_class_mechanical {
+	CCID_CLASS_MECH_CARD_ACCEPT	= 0x01,
+	CCID_CLASS_MECH_CARD_EJECT	= 0x02,
+	CCID_CLASS_MECH_CARD_CAPTURE	= 0x04,
+	CCID_CLASS_MECH_CARD_LOCK	= 0x08
+} ccid_class_mechanical_t;
+
+typedef enum ccid_class_features {
+	CCID_CLASS_F_AUTO_PARAM_ATR	= 0x00000002,
+	CCID_CLASS_F_AUTO_ICC_ACTIVATE	= 0x00000004,
+	CCID_CLASS_F_AUTO_ICC_VOLTAGE	= 0x00000008,
+	CCID_CLASS_F_AUTO_ICC_CLOCK	= 0x00000010,
+	CCID_CLASS_F_AUTO_BAUD		= 0x00000020,
+	CCID_CLASS_F_AUTO_PARAM_NEG	= 0x00000040,
+	CCID_CLASS_F_AUTO_PPS		= 0x00000080,
+	CCID_CLASS_F_ICC_CLOCK_STOP	= 0x00000100,
+	CCID_CLASS_F_ALTNAD_SUP		= 0x00000200,
+	CCID_CLASS_F_AUTO_IFSD		= 0x00000400,
+	CCID_CLASS_F_TPDU_XCHG		= 0x00010000,
+	CCID_CLASS_F_SHORT_APDU_XCHG	= 0x00020000,
+	CCID_CLASS_F_EXT_APDU_XCHG	= 0x00040000,
+	CCID_CLASS_F_WAKE_UP		= 0x00100000
+} ccid_class_features_t;
+
+typedef enum ccid_class_pin {
+	CCID_CLASS_PIN_VERIFICATION	= 0x01,
+	CCID_CLASS_PIN_MODIFICATION	= 0x02
+} ccid_class_pin_t;
 
 /*
  * CCID Class Descriptor
@@ -81,6 +97,30 @@ typedef struct ccid_class_descr {
 	uint8_t		ccd_bPinSupport;
 	uint8_t		ccd_bMaxCCIDBusySlots;
 } ccid_class_descr_t;
+
+/*
+ * Definitions for the supported versions of the CCID specification. The version
+ * is encoded in binary encoded decimal. The major version is in the upper 8
+ * bits and the minor version is in the lower 8 bits. We currently check for the
+ * major version to match.
+ */
+#define	CCID_VERSION_MAJOR(ver)	(((ver) & 0xff00) >> 8)
+#define	CCID_VERSION_MINOR(ver)	((ver) & 0x00ff)
+#define	CCID_VERSION_ONE	0x01
+
+
+/*
+ * Everything below this point is reserved for the kernel.
+ */
+#ifdef	_KERNEL
+
+/*
+ * These values come from CCID r1.1.0 Table 5.1-1 'Smart Card Device
+ * Descriptors'
+ */
+#define	CCID_DESCR_TYPE		0x21
+#define	CCID_DESCR_LENGTH	0x36
+
 
 /*
  * Minimum and maximum value for a sequence number in the CCID specification.
@@ -232,6 +272,8 @@ typedef enum ccid_command_err {
 #define	CCID_APDU_LEN_MAX	261
 
 #pragma pack()
+
+#endif	/* _KERNEL */
 
 #ifdef __cplusplus
 }

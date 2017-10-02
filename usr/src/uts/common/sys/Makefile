@@ -1044,6 +1044,7 @@ UGENHDRS=           \
 	usb_ugen.h
 
 USBCCIDHDRS = \
+	ccid.h \
 	uccid.h
 
 HOTPLUGHDRS=	\

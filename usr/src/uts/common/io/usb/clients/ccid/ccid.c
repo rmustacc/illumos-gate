@@ -2574,6 +2574,7 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 	if (otyp & OTYP_BLK || !(otyp & OTYP_CHR))
 		return (ENOTSUP);
 
+	/* XXX We should maybe reduce this for just getting the status */
 	if ((flag & (FREAD | FWRITE)) != (FREAD | FWRITE))
 		return (EINVAL);
 
@@ -2964,12 +2965,7 @@ ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
 		ucs.ucs_atrlen = 0;
 	}
 
-	/*
-	 * Data from the class descriptor
-	 */
-	ucs.ucs_hwfeatures = ccid->ccid_class.ccd_dwFeatures;
-	ucs.ucs_mechfeatures = ccid->ccid_class.ccd_dwMechanical;
-	ucs.ucs_pinfeatures = ccid->ccid_class.ccd_bPinSupport;
+	bcopy(&ccid->ccid_class, &ucs.ucs_class, sizeof (ucs.ucs_class));
 
 	if (ccid->ccid_dev_data->dev_product != NULL) {
 		(void) strlcpy(ucs.ucs_product, ccid->ccid_dev_data->dev_product,

@@ -20,7 +20,7 @@ include ../Makefile.ctf
 
 ROOTCMDDIR = $(ROOTLIB)/ccid
 CFLAGS += $(CCVERBOSE)
-LDLIBS += -lofmt
+LDLIBS += -lofmt -lcmdutils
 SRCS = ccidadm.o atr.o
 OBJS = $(SRCS:%.c=%.o)
 CPPFLAGS += -I$(SRC)/common/ccid

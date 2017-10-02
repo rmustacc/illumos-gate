@@ -30,6 +30,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <libcmdutils.h>
 
 #include <sys/usb/clients/ccid/uccid.h>
 #include <atr.h>
@@ -46,11 +47,66 @@ typedef enum {
 	CCIDADM_LIST_STATE
 } ccidadm_list_index_t;
 
+typedef struct ccidadm_pair {
+	uint32_t	ccp_val;
+	const char	*ccp_name;
+} ccidadm_pair_t;
+
 typedef struct ccid_list_ofmt_arg {
 	struct dirent		*cloa_ccid;
 	struct dirent		*cloa_slot;
 	uccid_cmd_status_t	*cloa_status;
 } ccid_list_ofmt_arg_t;
+
+/*
+ * Attempt to open a CCID slot specified by a user. In general, we exepect that
+ * users will use a path like "ccid0/slot0". However, they may also specify a
+ * full path. If the card boolean is set to true, that means that they may have
+ * just specified "ccid0", so we need to try to open up the default slot.
+ */
+static int
+ccidadm_open(const char *base, boolean_t card)
+{
+	int fd;
+	char buf[PATH_MAX];
+
+	/*
+	 * For an absolute path, just try the base path. If it doesn't match our
+	 * prefix, simulate ENOENT.
+	 */
+	if (strncmp(base, CCID_ROOT, strlen(CCID_ROOT)) == 0) {
+		return (open(base, O_RDWR));
+	} else if (base[0] == '/') {
+		errno = ENOENT;
+		return (-1);
+	}
+
+	/*
+	 * For a card, try to append slot0 first.
+	 */
+	if (card) {
+		if (snprintf(buf, sizeof (buf), "%s/%s/slot0", CCID_ROOT,
+		    base) >= sizeof (buf)) {
+			errno = ENAMETOOLONG;
+			return (-1);
+		}
+
+		if ((fd = open(buf, O_RDWR)) >= 0) {
+			return (fd);
+		}
+
+		if (errno != ENOENT && errno != ENOTDIR) {
+			return (fd);
+		}
+	}
+
+	if (snprintf(buf, sizeof (buf), "%s/%s", CCID_ROOT, base) >= sizeof (buf)) {
+		errno = ENAMETOOLONG;
+		return (-1);
+	}
+
+	return (open(buf, O_RDWR));
+}
 
 static void
 ccidadm_list_slot_status_str(uccid_cmd_status_t *ucs, char *buf, uint_t buflen)
@@ -292,11 +348,14 @@ ccidadm_atr_props(uccid_cmd_status_t *ucs)
 	}
 
 	/*
-	 * For each supported protocol, figure out parameters we would negoiate
+	 * For each supported protocol, figure out parameters we would negoiate.
+	 * We only need to warn about auto-negotiation if this is TPDU and
+	 * specific bits are missing. XXX Mask for TDPU and maybe character?
 	 */
-	if ((ucs->ucs_hwfeatures & (CCID_CLASS_F_AUTO_PARAM_NEG |
+	if ((ucs->ucs_class.ccd_dwFeatures & (CCID_CLASS_F_AUTO_PARAM_NEG |
 	    CCID_CLASS_F_AUTO_PPS)) == 0) {
-		(void) printf("CCID/ICC require explicit parameter/PPS negotiation\n");
+		(void) printf("CCID/ICC require explicit TPDU parameter/PPS "
+		    "negotiation\n");
 	}
 
 	if (prots & ATR_P_T0) {
@@ -344,7 +403,7 @@ ccidadm_atr_props(uccid_cmd_status_t *ucs)
 		    atr_clock_stop_to_string(clock));
 		(void) printf("  + IFSC: %u\n", atr_t1_ifsc(data));
 		(void) printf("  + CCID Supports NAD: %s\n",
-		    ucs->ucs_hwfeatures & CCID_CLASS_F_ALTNAD_SUP ?
+		    ucs->ucs_class.ccd_dwFeatures & CCID_CLASS_F_ALTNAD_SUP ?
 		    "yes" : "no");
 	}
 
@@ -436,19 +495,18 @@ ccidadm_do_atr(int argc, char *argv[])
 	}
 
 	if (!do_verbose && !do_props && !do_hex) {
-		do_hex = B_TRUE;
+		do_props = B_TRUE;
 	}
 
 	argc -= optind;
 	argv += optind;
 
+	/* XXX argc == 0, dump all */
+
 	for (i = 0; i < argc; i++) {
 		int fd;
-		char path[PATH_MAX];
 
-		(void) snprintf(path, sizeof (path), "%s/%s", CCID_ROOT,
-		    argv[i]);
-		if ((fd = open(path, O_RDWR)) < 0) {
+		if ((fd = ccidadm_open(argv[i], B_FALSE)) < 0) {
 			warn("failed to open %s", argv[i]);
 			errx(EXIT_FAILURE, "valid CCID slot?");
 		}
@@ -464,7 +522,194 @@ ccidadm_do_atr(int argc, char *argv[])
 static void
 ccidadm_atr_usage(FILE *out)
 {
-	(void) fprintf(stderr, "\tatr\tdevice ...\n");
+	(void) fprintf(stderr, "\tatr [-pvx]\tdevice ...\n");
+}
+
+static void
+ccidadm_print_pairs(uint32_t val, ccidadm_pair_t *ccp)
+{
+	while (ccp->ccp_name != NULL) {
+		if ((val & ccp->ccp_val) == ccp->ccp_val) {
+			(void) printf("    + %s\n", ccp->ccp_name);
+		}
+		ccp++;
+	}
+}
+
+static ccidadm_pair_t ccidadm_p_protocols[] = {
+	{ 0x01, "T=0" },
+	{ 0x02, "T=1" },
+	{ 0x0, NULL }
+};
+
+static ccidadm_pair_t ccidadm_p_voltages[] = {
+	{ CCID_CLASS_VOLT_5_0,	"5.0 V" },
+	{ CCID_CLASS_VOLT_3_0, "3.0 V" },
+	{ CCID_CLASS_VOLT_1_8, "1.8 V" },
+	{ 0x0, NULL }
+};
+
+static ccidadm_pair_t ccidadm_p_syncprots[] = {
+	{ 0x01, "2-Wire Support" },
+	{ 0x02, "3-Wire Support" },
+	{ 0x04, "I2C Support" },
+	{ 0x0, NULL }
+};
+
+static ccidadm_pair_t ccidadm_p_mechanical[] = {
+	{ CCID_CLASS_MECH_CARD_ACCEPT, "Card Accept Mechanism" },
+	{ CCID_CLASS_MECH_CARD_EJECT, "Card Eject Mechanism" },
+	{ CCID_CLASS_MECH_CARD_CAPTURE, "Card Capture Mechanism" },
+	{ CCID_CLASS_MECH_CARD_LOCK, "Card Lock/Unlock Mechanism" },
+	{ 0x0, NULL }
+};
+
+static ccidadm_pair_t ccidadm_p_features[] = {
+	{ CCID_CLASS_F_AUTO_PARAM_ATR, "Automatic parameter configuration based on ATR data" },
+	{ CCID_CLASS_F_AUTO_ICC_ACTIVATE, "Automatic activation on ICC insertion" },
+	{ CCID_CLASS_F_AUTO_ICC_VOLTAGE, "Automatic ICC voltage selection" },
+	{ CCID_CLASS_F_AUTO_ICC_CLOCK, "Automatic ICC clock frequency change" },
+	{ CCID_CLASS_F_AUTO_BAUD, "Automatic baud rate change" },
+	{ CCID_CLASS_F_AUTO_PARAM_NEG, "Automatic parameter negotiation by CCID" },
+	{ CCID_CLASS_F_AUTO_PPS, "Automatic PPS made by CCID" },
+	{ CCID_CLASS_F_ICC_CLOCK_STOP, "CCID can set ICC in clock stop mode" },
+	{ CCID_CLASS_F_ALTNAD_SUP, "NAD value other than zero accepted" },
+	{ CCID_CLASS_F_AUTO_IFSD, "Automatic IFSD exchange" },
+	{ CCID_CLASS_F_TPDU_XCHG, "TPDU support" },
+	{ CCID_CLASS_F_SHORT_APDU_XCHG, "Short APDU support" },
+	{ CCID_CLASS_F_EXT_APDU_XCHG, "Short and Extended APDU support" },
+	{ CCID_CLASS_F_WAKE_UP, "USB Wake Up signaling support" },
+	{ 0x0, NULL }
+};
+
+static ccidadm_pair_t ccidadm_p_pin[] = {
+	{ CCID_CLASS_PIN_VERIFICATION, "PIN verification" },
+	{ CCID_CLASS_PIN_MODIFICATION, "PIN modification" },
+	{ 0x0, NULL }
+};
+
+static void
+ccidadm_reader_print(int fd, const char *name)
+{
+	uccid_cmd_status_t ucs;
+	ccid_class_descr_t *cd;
+	char nnbuf[NN_NUMBUF_SZ];
+
+	bzero(&ucs, sizeof (uccid_cmd_status_t));
+	ucs.ucs_version = UCCID_VERSION_ONE;
+
+	if (ioctl(fd, UCCID_CMD_STATUS, &ucs) != 0) {
+		err(EXIT_FAILURE, "failed to issue status ioctl to %s",
+		    name);
+	}
+
+	cd = &ucs.ucs_class;
+	(void) printf("Reader %s, CCID class v%u.%u device:\n", name,
+	    CCID_VERSION_MAJOR(cd->ccd_bcdCCID),
+	    CCID_VERSION_MINOR(cd->ccd_bcdCCID));
+
+	if ((ucs.ucs_status & UCCID_STATUS_F_PRODUCT_VALID) == 0) {
+		(void) strlcpy(ucs.ucs_product, "<unknown>",
+		    sizeof (ucs.ucs_product));
+	}
+
+	if ((ucs.ucs_status & UCCID_STATUS_F_SERIAL_VALID) == 0) {
+		(void) strlcpy(ucs.ucs_serial, "<unknown>",
+		    sizeof (ucs.ucs_serial));
+	}
+
+	(void) printf("  Product: %s\n", ucs.ucs_product);
+	(void) printf("  Serial: %s\n", ucs.ucs_serial);
+	(void) printf("  Slots Present: %u\n", cd->ccd_bMaxSlotIndex + 1);
+	(void) printf("  Maximum Busy Slots: %u\n", cd->ccd_bMaxCCIDBusySlots);
+	(void) printf("  Supported Voltages:\n");
+	ccidadm_print_pairs(cd->ccd_bVoltageSupport, ccidadm_p_voltages);
+	(void) printf("  Supported Protocols:\n");
+	ccidadm_print_pairs(cd->ccd_dwProtocols, ccidadm_p_protocols);
+	/* XXX Add spaces for nicenum */
+	nicenum_scale(cd->ccd_dwDefaultClock, 1000, nnbuf,
+	    sizeof (nnbuf), NN_DIVISOR_1000);
+	(void) printf("  Default Clock: %sHz\n", nnbuf);
+	nicenum_scale(cd->ccd_dwMaximumClock, 1000, nnbuf,
+	    sizeof (nnbuf), NN_DIVISOR_1000);
+	(void) printf("  Maximum Clock: %sHz\n", nnbuf);
+	(void) printf("  Supported Clock Rates: %u\n",
+	    cd->ccd_bNumClockSupported);
+	nicenum_scale(cd->ccd_dwDataRate, 1000, nnbuf,
+	    sizeof (nnbuf), NN_DIVISOR_1000);
+	(void) printf("  Default Data Rate: %sbps\n", nnbuf);
+	nicenum_scale(cd->ccd_dwMaxDataRate, 1000, nnbuf,
+	    sizeof (nnbuf), NN_DIVISOR_1000);
+	(void) printf("  Maximum Data Rate: %sbps\n", nnbuf);
+	(void) printf("  Supported Data Rates: %u\n",
+	    cd->ccd_bNumDataRatesSupported);
+	(void) printf("  Maximum IFSD (T=1 only): %u\n", cd->ccd_dwMaxIFSD);
+	if (cd->ccd_dwSyncProtocols != 0) {
+		(void) printf("  Synchronous Protocols Supported:\n");
+		ccidadm_print_pairs(cd->ccd_dwSyncProtocols, ccidadm_p_syncprots);
+	}
+	if (cd->ccd_dwMechanical != 0) {
+		(void) printf("  Mechanical Features:\n");
+		ccidadm_print_pairs(cd->ccd_dwMechanical, ccidadm_p_mechanical);
+	}
+	if (cd->ccd_dwFeatures != 0) {
+		(void) printf("  Device Features:\n");
+		ccidadm_print_pairs(cd->ccd_dwFeatures, ccidadm_p_features);
+	}
+	(void) printf("  Maximum Message Length: %u bytes\n",
+	    cd->ccd_dwMaxCCIDMessageLength);
+	if (cd->ccd_dwFeatures & CCID_CLASS_F_EXT_APDU_XCHG) {
+		if (cd->ccd_bClassGetResponse == 0xff) {
+			(void) printf("  Default Get Response Class: echo\n");
+		} else {
+			(void) printf("  Default Get Response Class: %u\n",
+			    cd->ccd_bClassGetResponse);
+		}
+		if (cd->ccd_bClassEnvelope == 0xff) {
+			(void) printf("  Default Envelope Class: echo\n");
+		} else {
+			(void) printf("  Default Envelope Class: %u\n",
+			    cd->ccd_bClassEnvelope);
+		}
+	}
+	if (cd->ccd_wLcdLayout != 0) {
+		(void) printf("  %2ux%2u LCD present\n",
+		    cd->ccd_wLcdLayout >> 16, cd->ccd_wLcdLayout & 0xff);
+	}
+
+	if (cd->ccd_bPinSupport) {
+		(void) printf("  Pin Support:\n");
+		ccidadm_print_pairs(cd->ccd_bPinSupport, ccidadm_p_pin);
+	}
+}
+
+static void
+ccidadm_do_reader(int argc, char *argv[])
+{
+	int i;
+
+	/* XXX argc == 0, dump all */
+
+	for (i = 0; i < argc; i++) {
+		int fd;
+
+		if ((fd = ccidadm_open(argv[i], B_TRUE)) < 0) {
+			warn("failed to open %s", argv[i]);
+			errx(EXIT_FAILURE, "valid ccid reader");
+		}
+
+		ccidadm_reader_print(fd, argv[i]);
+		(void) close(fd);
+		if (i + 1 < argc) {
+			(void) printf("\n");
+		}
+	}
+}
+
+static void
+ccidadm_reader_usage(FILE *out)
+{
+	(void) fprintf(out, "\treader\treader ...\n");
 }
 
 typedef struct ccidadm_cmdtab {
@@ -476,6 +721,7 @@ typedef struct ccidadm_cmdtab {
 static ccidadm_cmdtab_t ccidadm_cmds[] = {
 	{ "list", ccidadm_do_list, ccidadm_list_usage },
 	{ "atr", ccidadm_do_atr, ccidadm_atr_usage },
+	{ "reader", ccidadm_do_reader, ccidadm_reader_usage },
 	{ NULL }
 };
 
