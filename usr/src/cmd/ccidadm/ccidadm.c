@@ -50,7 +50,6 @@ typedef struct ccid_list_ofmt_arg {
 	struct dirent		*cloa_ccid;
 	struct dirent		*cloa_slot;
 	uccid_cmd_status_t	*cloa_status;
-	char			*cloa_product;
 } ccid_list_ofmt_arg_t;
 
 static void
@@ -82,7 +81,7 @@ ccidadm_list_ofmt_cb(ofmt_arg_t *ofmt, char *buf, uint_t buflen)
 		}
 		break;
 	case CCIDADM_LIST_PRODUCT:
-		if (snprintf(buf, buflen, "%s", cloa->cloa_product) >=
+		if (snprintf(buf, buflen, "%s", cloa->cloa_status->ucs_product) >=
 		    buflen) {
 			return (B_FALSE);
 		}
@@ -95,36 +94,6 @@ ccidadm_list_ofmt_cb(ofmt_arg_t *ofmt, char *buf, uint_t buflen)
 	}
 
 	return (B_TRUE);
-}
-
-static char *
-ccidadm_list_slot_product(int slotfd)
-{
-	uccid_cmd_getbuf_t ucg;
-	char *buf;
-
-	bzero(&ucg, sizeof (ucg));
-	ucg.ucg_version = UCCID_CURRENT_VERSION;
-	ucg.ucg_buflen = 0;
-
-	(void) ioctl(slotfd, UCCID_CMD_GETPRODSTR, &ucg);
-	switch (errno) {
-	case ENOENT:
-		return (strdup("<unknown>"));
-	case EOVERFLOW:
-		break;
-	default:
-		return (NULL);
-	}
-
-	buf = malloc(ucg.ucg_buflen);
-	ucg.ucg_buffer = buf;
-	if (ioctl(slotfd, UCCID_CMD_GETPRODSTR, &ucg) == -1) {
-		free(buf);
-		return (NULL);
-	}
-
-	return (buf);
 }
 
 static void
@@ -146,16 +115,16 @@ ccidadm_list_slot(ofmt_handle_t ofmt, int ccidfd, struct dirent *cciddir, struct
 		err(EXIT_FAILURE, "failed to issue status ioctl to %s/%s",
 		    cciddir->d_name, slotdir->d_name);
 	}
+
+	if ((ucs.ucs_status & UCCID_STATUS_F_PRODUCT_VALID) == 0) {
+		(void) strlcpy(ucs.ucs_product, "<unknown>",
+		    sizeof (ucs.ucs_product));
+	}
+
 	cloa.cloa_ccid = cciddir;
 	cloa.cloa_slot = slotdir;
 	cloa.cloa_status = &ucs;
-	if ((cloa.cloa_product = ccidadm_list_slot_product(slotfd)) == NULL) {
-		err(EXIT_FAILURE, "failed to retrieve product string from "
-		    "%s/%s", cciddir->d_name, slotdir->d_name);
-	}
-
 	ofmt_print(ofmt, &cloa);
-	free(cloa.cloa_product);
 	(void) close(slotfd);
 }
 
@@ -314,44 +283,24 @@ ccidadm_atr_print(const uint8_t *buf, size_t len)
 static void
 ccidadm_atr_fetch(int fd, const char *name)
 {
-	uccid_cmd_getbuf_t ucg;
-	uint8_t *buf;
+	uccid_cmd_status_t ucs;
 
-	bzero(&ucg, sizeof (ucg));
-	ucg.ucg_version = UCCID_CURRENT_VERSION;
-	ucg.ucg_buflen = 0;
+	bzero(&ucs, sizeof (ucs));
+	ucs.ucs_version = UCCID_CURRENT_VERSION;
 
-	/*
-	 * This will fail.
-	 */
-	(void) ioctl(fd, UCCID_CMD_GETATR, &ucg);
-	switch (errno) {
-	case ENXIO:
-		warn("slot %s has no card inserted or activated", name);
+	if (ioctl(fd, UCCID_CMD_STATUS, &ucs) != 0) {
+		err(EXIT_FAILURE, "failed to issue status ioctl to %s",
+		    name);
+	}
+
+	if (ucs.ucs_atrlen == 0) {
+		warnx("slot %s has no card inserted or activated", name);
 		return;
-	case EOVERFLOW:
-		break;
-	default:
-		err(EXIT_FAILURE, "failed to get ATR from %s", name);
 	}
 
-	buf = malloc(ucg.ucg_buflen);
-	ucg.ucg_buffer = buf;
-
-	if (ioctl(fd, UCCID_CMD_GETATR, &ucg) == -1) {
-		switch (errno) {
-		case ENXIO:
-			warn("slot %s has no card inserted or activated", name);
-			return;
-		default:
-			err(EXIT_FAILURE, "failed to get ATR from %s", name);
-		}
-	}
-
-	(void) printf("ATR for %s (%u bytes)\n", name, ucg.ucg_buflen);
-	ccidadm_atr_hexdump(ucg.ucg_buffer, ucg.ucg_buflen);
-	ccidadm_atr_print(ucg.ucg_buffer, ucg.ucg_buflen);
-	free(buf);
+	(void) printf("ATR for %s (%u bytes)\n", name, ucs.ucs_atrlen);
+	ccidadm_atr_hexdump(ucs.ucs_atr, ucs.ucs_atrlen);
+	ccidadm_atr_print(ucs.ucs_atr, ucs.ucs_atrlen);
 }
 
 static void
