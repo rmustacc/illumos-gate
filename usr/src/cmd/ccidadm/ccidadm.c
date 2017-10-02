@@ -53,7 +53,7 @@ typedef struct ccid_list_ofmt_arg {
 } ccid_list_ofmt_arg_t;
 
 static void
-ccid_list_slot_status_str(uccid_cmd_status_t *ucs, char *buf, uint_t buflen)
+ccidadm_list_slot_status_str(uccid_cmd_status_t *ucs, char *buf, uint_t buflen)
 {
 	if (!(ucs->ucs_status & UCCID_STATUS_F_CARD_PRESENT)) {
 		(void) snprintf(buf, buflen, "missing");
@@ -87,7 +87,7 @@ ccidadm_list_ofmt_cb(ofmt_arg_t *ofmt, char *buf, uint_t buflen)
 		}
 		break;
 	case CCIDADM_LIST_STATE:
-		ccid_list_slot_status_str(cloa->cloa_status, buf, buflen);
+		ccidadm_list_slot_status_str(cloa->cloa_status, buf, buflen);
 		break;
 	default:
 		return (B_FALSE);
@@ -196,24 +196,24 @@ ccidadm_list_usage(FILE *out)
 	(void) fprintf(out, "\tlist\n");
 }
 
+/* XXX Probably fold this back into the atr common code */
 static void
 ccidadm_atr_hexdump(const uint8_t *buf, size_t nbytes)
 {
 	size_t i;
-	static boolean_t first = B_TRUE;
 
-	if (first) {
-		(void) printf("%*s    0", 4, "");
-		for (i = 1; i < 16; i++) {
-			if (i % 4 == 0 && i % 16 != 0) {
-				(void) printf(" ");
-			}
-
-			(void) printf("%2x", i);
+	/* Print out the header */
+	(void) printf("%*s    0", 4, "");
+	for (i = 1; i < 16; i++) {
+		if (i % 4 == 0 && i % 16 != 0) {
+			(void) printf(" ");
 		}
-		(void) printf("  v123456789abcdef\n");
-		first = B_FALSE;
+
+		(void) printf("%2x", i);
 	}
+	(void) printf("  0123456789abcdef\n");
+
+	/* Print out data */
 	for (i = 0; i < nbytes; i++) {
 
 		if (i % 16 == 0) {
@@ -224,12 +224,18 @@ ccidadm_atr_hexdump(const uint8_t *buf, size_t nbytes)
 			(void) printf(" ");
 		}
 
-
 		(void) printf("%02x", buf[i]);
 
-		if (i % 16 == 15) {
+		if (i % 16 == 15 || i + 1 == nbytes) {
 			int j;
-			(void) printf("  ");
+			for (j = (i % 16); j <= 16; j++) {
+				if (j % 4 == 0 && j % 16 != 0) {
+					(void) printf(" ");
+				}
+
+				(void) printf("  ");
+			}
+
 			for (j = i - (i % 16); j <= i; j++) {
 				if (!isprint(buf[j])) {
 					(void) printf(".");
@@ -240,31 +246,113 @@ ccidadm_atr_hexdump(const uint8_t *buf, size_t nbytes)
 			(void) printf("\n");
 		}
 	}
+}
 
-	if (i % 16 != 0) {
-		size_t last = i;
-		int j;
-		for (i = (last % 16); i <= 16; i++) {
-			if (i % 4 == 0 && i % 16 != 0) {
-				(void) printf(" ");
-			}
+/*
+ * Print out logical information about the ICC's ATR. This includes information
+ * about what protocols it supports, required negotiation, etc.
+ */
+static void
+ccidadm_atr_props(uccid_cmd_status_t *ucs)
+{
+	int ret;
+	atr_data_t *data;
+	atr_protocol_t prots, defprot;
+	boolean_t negotiate;
 
-			(void) printf("  ");
-		}
-		for (j = last - (last % 16); j < last; j++) {
-			if (!isprint(buf[j])) {
-				(void) printf(".");
-			} else {
-				(void) printf("%c", buf[j]);
-			}
-
-		}
-		(void) printf("\n");
+	if ((data = atr_data_alloc()) == NULL) {
+		err(EXIT_FAILURE, "failed to allocate memory for "
+		    "ATR data");
 	}
+
+	ret = atr_parse(ucs->ucs_atr, ucs->ucs_atrlen, data);
+	if (ret != ATR_CODE_OK) {
+		errx(EXIT_FAILURE, "failed to parse ATR data: %s",
+		    atr_strerror(ret));
+	}
+
+	prots = atr_supported_protocols(data);
+	(void) printf("ICC supports protocol(s): ");
+	if (prots == ATR_P_NONE) {
+		(void) printf("none\n");
+		return;
+	}
+
+	(void) printf("%s\n", atr_protocol_to_string(prots));
+
+	negotiate = atr_params_negotiable(data);
+	defprot = atr_default_protocol(data);
+
+	if (negotiate) {
+		(void) printf("Card protocol is negotiable; starts with "
+		    "default %s parameters\n", atr_protocol_to_string(defprot));
+	} else {
+		(void) printf("Card protocol is not negotiable; starts with "
+		    "specific %s parameters\n", atr_protocol_to_string(defprot));
+	}
+
+	/*
+	 * For each supported protocol, figure out parameters we would negoiate
+	 */
+	if ((ucs->ucs_hwfeatures & (CCID_CLASS_F_AUTO_PARAM_NEG |
+	    CCID_CLASS_F_AUTO_PPS)) == 0) {
+		(void) printf("CCID/ICC require explicit parameter/PPS negotiation\n");
+	}
+
+	if (prots & ATR_P_T0) {
+		uint8_t fi, di;
+		atr_convention_t conv;
+		atr_clock_stop_t clock;
+
+		fi = atr_fi_index(data);
+		di = atr_di_index(data);
+		conv = atr_convention(data);
+		clock = atr_clock_stop(data);
+		(void) printf("T=0 properties that would be negotiated:\n");
+		(void) printf("  + Fi/Fmax Index: %u (Fi %s/Fmax %s MHz)\n",
+		    fi, atr_fi_index_to_string(fi),
+		    atr_fmax_index_to_string(fi));
+		(void) printf("  + Di Index: %u (Di %s)\n", di,
+		    atr_di_index_to_string(di));
+		(void) printf("  + Clock Convention: %u (%s)\n", conv,
+		    atr_convention_to_string(conv));
+		(void) printf("  + Extra Guardtime: %u\n",
+		    atr_extra_guardtime(data));
+		(void) printf("  + WI: %u\n", atr_t0_wi(data));
+		(void) printf("  + Clock Stop: %u (%s)\n", clock,
+		    atr_clock_stop_to_string(clock));
+	}
+
+	if (prots & ATR_P_T1) {
+		uint8_t fi, di;
+		atr_clock_stop_t clock;
+
+		fi = atr_fi_index(data);
+		di = atr_di_index(data);
+		clock = atr_clock_stop(data);
+		(void) printf("T=1 properties that would be negotiated:\n");
+		(void) printf("  + Fi/Fmax Index: %u (Fi %s/Fmax %s MHz)\n",
+		    fi, atr_fi_index_to_string(fi),
+		    atr_fmax_index_to_string(fi));
+		(void) printf("  + Di Index: %u (Di %s)\n", di,
+		    atr_di_index_to_string(di));
+		(void) printf("  + Extra Guardtime: %u\n",
+		    atr_extra_guardtime(data));
+		(void) printf("  + BWI: %u\n", atr_t1_bwi(data));
+		(void) printf("  + CWI: %u\n", atr_t1_cwi(data));
+		(void) printf("  + Clock Stop: %u (%s)\n", clock,
+		    atr_clock_stop_to_string(clock));
+		(void) printf("  + IFSC: %u\n", atr_t1_ifsc(data));
+		(void) printf("  + CCID Supports NAD: %s\n",
+		    ucs->ucs_hwfeatures & CCID_CLASS_F_ALTNAD_SUP ?
+		    "yes" : "no");
+	}
+
+	atr_data_free(data);
 }
 
 static void
-ccidadm_atr_print(const uint8_t *buf, size_t len)
+ccidadm_atr_verbose(uccid_cmd_status_t *ucs)
 {
 	int ret;
 	atr_data_t *data;
@@ -274,14 +362,18 @@ ccidadm_atr_print(const uint8_t *buf, size_t len)
 		    "ATR data");
 	}
 
-	ret = atr_parse(buf, len, data);
-	printf("parse results: %s (%d)\n", atr_strerror(ret), ret);
-
+	ret = atr_parse(ucs->ucs_atr, ucs->ucs_atrlen, data);
+	if (ret != ATR_CODE_OK) {
+		errx(EXIT_FAILURE, "failed to parse ATR data: %s",
+		    atr_strerror(ret));
+	}
+	atr_data_dump(data, stdout);
 	atr_data_free(data);
 }
 
 static void
-ccidadm_atr_fetch(int fd, const char *name)
+ccidadm_atr_fetch(int fd, const char *name, boolean_t hex, boolean_t props,
+    boolean_t verbose)
 {
 	uccid_cmd_status_t ucs;
 
@@ -299,18 +391,56 @@ ccidadm_atr_fetch(int fd, const char *name)
 	}
 
 	(void) printf("ATR for %s (%u bytes)\n", name, ucs.ucs_atrlen);
-	ccidadm_atr_hexdump(ucs.ucs_atr, ucs.ucs_atrlen);
-	ccidadm_atr_print(ucs.ucs_atr, ucs.ucs_atrlen);
+	if (props) {
+		ccidadm_atr_props(&ucs);
+	}
+
+	if (hex) {
+		ccidadm_atr_hexdump(ucs.ucs_atr, ucs.ucs_atrlen);
+	}
+
+	if (verbose) {
+		ccidadm_atr_verbose(&ucs);
+	}
 }
 
 static void
 ccidadm_do_atr(int argc, char *argv[])
 {
 	uint_t i;
+	int c;
+	boolean_t do_verbose, do_props, do_hex;
 
 	if (argc < 1) {
 		errx(EXIT_USAGE, "missing device name");
 	}
+
+	do_verbose = do_props = do_hex = B_FALSE;
+	optind = 0;
+	while ((c = getopt(argc, argv, "vpx")) != -1) {
+		switch (c) {
+		case 'v':
+			do_verbose = B_TRUE;
+			break;
+		case 'p':
+			do_props = B_TRUE;
+			break;
+		case 'x':
+			do_hex = B_TRUE;
+			break;
+		case ':':
+			errx(EXIT_USAGE, "Option -%c requires an argument\n", optopt);
+		case '?':
+			errx(EXIT_USAGE, "Unknown option: -%c\n", optopt);
+		}
+	}
+
+	if (!do_verbose && !do_props && !do_hex) {
+		do_hex = B_TRUE;
+	}
+
+	argc -= optind;
+	argv += optind;
 
 	for (i = 0; i < argc; i++) {
 		int fd;
@@ -323,8 +453,11 @@ ccidadm_do_atr(int argc, char *argv[])
 			errx(EXIT_FAILURE, "valid CCID slot?");
 		}
 
-		ccidadm_atr_fetch(fd, argv[i]);
+		ccidadm_atr_fetch(fd, argv[i], do_hex, do_props, do_verbose);
 		(void) close(fd);
+		if (i + 1 < argc) {
+			(void) printf("\n");
+		}
 	}
 }
 

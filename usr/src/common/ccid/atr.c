@@ -31,6 +31,7 @@
 #include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <ctype.h>
 #endif
 
 /*
@@ -66,6 +67,13 @@
 #define	ATR_TC_MASK	0x4
 #define	ATR_TD_MASK	0x8
 
+#define	ATR_TA1_FTABLE(x)	(((x) & 0xf0) >> 4)
+#define	ATR_TA1_DITABLE(x)	((x) & 0x0f)
+
+#define	ATR_TA2_CANCHANGE(x)	(((x) & 0x80) == 0)
+#define	ATR_TA2_HONORTA1(x)	(((x) & 0x10) == 0)
+#define	ATR_TA2_PROTOCOL(x)	((x) & 0x0f)
+
 /*
  * When the checksum is required in the ATR, each byte must XOR to zero.
  */
@@ -91,6 +99,11 @@
  */
 #define	ATR_PROTOCOL_T0		0
 #define	ATR_PROTOCOL_T1		1
+
+#define	ATR_T1_TB0_CWI(x)	((x) & 0x0f)
+#define	ATR_T1_TB0_BWI(x)	(((x) & 0xf0) > 4)
+#define	ATR_T1_TC0_CRC(x)	(((x) & 0x01) != 0)
+
 /*
  * T=2 and T=3 are reserved for future full-duplex operation.
  * T=4 is reserved for enhacned half-duplex character transmission.
@@ -98,6 +111,56 @@
  * T=14 is for protocols not standardized by ISO/IEC JTC 1/SC 17.
  */
 #define	ATR_PROTOCOL_T15	15
+
+#define	ATR_T15_TA0_CLOCK(x)	(((x) & 0xc) >> 6)
+#define	ATR_T15_TA0_VOLTAGE(x)	((x) & 0x3f)
+
+#define	ATR_T15_TB0_SPU_STANDARD(x)	(((x & 0x80)) != 0)
+
+/*
+ * Various definitions for the configuration of historical data. This comes from
+ * ISO/IEC 7816-4:2013 Section 12.1.1.
+ */
+
+/*
+ * The first historical byte is used to indicate the encoding of the data. Only
+ * values 0x00, 0x80-0x8f are defined. All others are proprietary. 0x81-0x8f are
+ * reserved for future use.
+ */
+#define	ATR_HIST_CAT_MAND_STATUS	0x00
+#define	ATR_HIST_CAT_TLV_STATUS		0x80
+#define	ATR_HIST_CAT_RFU_MIN		0x81
+#define	ATR_HIST_CAT_RFU_MAX		0x8f
+
+/*
+ * From ISO/IEC 7816-3:2006 Section 8.3.
+ *
+ * The default value for Fi is 372 which is table entry 1. The default value for
+ * Di is 1, which is table entry 1.
+ */
+#define	ATR_FI_DEFAULT_INDEX	1
+#define	ATR_DI_DEFAULT_INDEX	1
+#define	ATR_EXTRA_GUARDTIME_DEFAULT	0
+
+/*
+ * From ISO/IEC 7816-3:2006 Section 10.2.
+ */
+#define	ATR_T0_WI_DEFAULT	10
+
+/*
+ * From ISO/IEC 7816-3:2006 Section 11.4.3.
+ */
+#define	ATR_T1_CWI_DEFAULT	13
+
+/*
+ * From ISO/IEC 7816-3:2006 Section 11.4.3.
+ */
+#define	ATR_T1_BWI_DEFAULT	4
+
+/*
+ * From ISO/IEC 7816-3:2006 Section 11.4.2.
+ */
+#define	ATR_T1_IFSC_DEFAULT	32
 
 /*
  * This enum and subsequent structure is used to represent a single level of
@@ -107,16 +170,19 @@
 typedef enum atr_ti_flags {
 	ATR_TI_HAVE_TA	= 1 << 0,
 	ATR_TI_HAVE_TB	= 1 << 1,
-	ATR_TI_HAVE_TC	= 1 << 2
+	ATR_TI_HAVE_TC	= 1 << 2,
+	ATR_TI_HAVE_TD	= 1 << 3,
 } atr_ti_flags_t;
 
 typedef struct atr_ti {
 	uint8_t		atrti_protocol;
 	uint8_t		atrti_ti_val;
+	uint8_t		atrti_td_idx;
 	atr_ti_flags_t	atrti_flags;
 	uint8_t		atrti_ta;
 	uint8_t		atrti_tb;
 	uint8_t		atrti_tc;
+	uint8_t		atrti_td;
 } atr_ti_t;
 
 typedef enum atr_flags {
@@ -134,7 +200,155 @@ struct atr_data {
 	uint8_t		atr_nhistoric;
 	uint8_t		atr_historic[ATR_HISTORICAL_MAX];
 	uint8_t 	atr_cksum;
+	uint8_t		atr_raw[ATR_LEN_MAX];
+	uint8_t		atr_nraw;
 };
+
+/*
+ * This table maps the bit values for Fi from 7816-3:2006 section 8.3 Table 7.
+ */
+static const char *atr_fi_table[16] = {
+	"372",		/* 0000 */
+	"372",		/* 0001 */
+	"558",		/* 0010 */
+	"744",		/* 0011 */
+	"1116",		/* 0100 */
+	"1488",		/* 0101 */
+	"1860",		/* 0110 */
+	"RFU",		/* 0111 */
+	"RFU",		/* 1000 */
+	"512",		/* 1001 */
+	"768",		/* 1010 */
+	"1024",		/* 1011 */
+	"1536",		/* 1100 */
+	"2048",		/* 1101 */
+	"RFU",		/* 1110 */
+	"RFU",		/* 1111 */
+};
+
+/*
+ * This table maps the bit values for Fi from 7816-3:2006 section 8.3 Table 7.
+ */
+static const char *atr_fmax_table[16] = {
+	"4",		/* 0000 */
+	"5",		/* 0001 */
+	"6",		/* 0010 */
+	"8",		/* 0011 */
+	"12",		/* 0100 */
+	"16",		/* 0101 */
+	"20",		/* 0110 */
+	"-",		/* 0111 */
+	"-",		/* 1000 */
+	"5",		/* 1001 */
+	"7.5",		/* 1010 */
+	"10",		/* 1011 */
+	"15",		/* 1100 */
+	"20",		/* 1101 */
+	"-",		/* 1110 */
+	"-",		/* 1111 */
+};
+
+/*
+ * This table maps the bit values for Fi from 7816-3:2006 section 8.3 Table 8.
+ */
+static const char *atr_di_table[16] = {
+	"RFU",		/* 0000 */
+	"1",		/* 0001 */
+	"2",		/* 0010 */
+	"4",		/* 0011 */
+	"8",		/* 0100 */
+	"16",		/* 0101 */
+	"32",		/* 0110 */
+	"64",		/* 0111 */
+	"12",		/* 1000 */
+	"20",		/* 1001 */
+	"RFU",		/* 1010 */
+	"RFU",		/* 1011 */
+	"RFU",		/* 1100 */
+	"RFU",		/* 1101 */
+	"RFU",		/* 1110 */
+	"RFU",		/* 1111 */
+};
+
+/*
+ * This table maps the bit values for Fi from 7816-3:2006 section 8.3 Table 9.
+ */
+static const char *atr_clock_table[4] = {
+	"disallowed",		/* 00 */
+	"signal low",		/* 01 */
+	"signal high",		/* 10 */
+	"signal low or high"	/* 11 */
+};
+
+const char *
+atr_fi_index_to_string(uint8_t val)
+{
+	if (val >= sizeof (atr_fi_table) / sizeof (atr_fi_table[0])) {
+		return ("<invalid>");
+	}
+
+	return (atr_fi_table[val]);
+}
+
+const char *
+atr_fmax_index_to_string(uint8_t val)
+{
+	if (val >= sizeof (atr_fmax_table) / sizeof (atr_fmax_table[0])) {
+		return ("<invalid>");
+	}
+
+	return (atr_fmax_table[val]);
+}
+
+const char *
+atr_di_index_to_string(uint8_t val)
+{
+	if (val >= sizeof (atr_di_table) / sizeof (atr_di_table[0])) {
+		return ("<invalid>");
+	}
+
+	return (atr_di_table[val]);
+}
+
+const char *
+atr_clock_stop_to_string(atr_clock_stop_t val)
+{
+	if (val >= sizeof (atr_clock_table) / sizeof (atr_clock_table[0])) {
+		return ("<invalid>");
+	}
+
+	return (atr_clock_table[val]);
+}
+
+const char *
+atr_protocol_to_string(atr_protocol_t prot)
+{
+	if (prot == ATR_P_NONE) {
+		return ("none");
+	}
+
+	if ((prot & ATR_P_T0) == ATR_P_T0) {
+		return ("T=0");
+	} else if (prot & ATR_P_T1) {
+		return ("T=1");
+	} else {
+		return ("T=0, T=1");
+	}
+
+	return ("<invalid protocol>");
+}
+
+const char *
+atr_convention_to_string(atr_convention_t conv)
+{
+	if (conv == ATR_CONVENTION_DIRECT) {
+		return ("direct");
+	} else if (conv == ATR_CONVENTION_INVERSE) {
+		return ("inverse");
+	} else {
+		return ("<invalid convention>");
+	}
+}
 
 const char *
 atr_strerror(atr_parsecode_t code)
@@ -206,6 +420,9 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 		return (ATR_CODE_INVALID_TS);
 	}
 
+	bcopy(buf, data->atr_raw, len);
+	data->atr_nraw = len;
+
 	if (buf[ATR_TS_IDX] == ATR_TS_DIRECT) {
 		data->atr_flags |= ATR_F_USES_DIRECT;
 	} else {
@@ -263,7 +480,8 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 		 * At the moment we opt to ignore reserved protocols.
 		 */
 		atp->atrti_protocol = prot;
-		atp->atrti_ti_val = Ti;
+		atp->atrti_ti_val = Ti;	
+		atp->atrti_td_idx = idx - 1;
 
 		if (cbits & ATR_TA_MASK) {
 			atp->atrti_flags |= ATR_TI_HAVE_TA;
@@ -284,6 +502,8 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 		}
 
 		if (cbits & ATR_TD_MASK) {
+			atp->atrti_flags |= ATR_TI_HAVE_TD;
+			atp->atrti_td = buf[idx];
 			cbits = ATR_TD_NBITS(buf[idx]);
 			prot = ATR_TD_PROT(buf[idx]);
 			ncbits = atr_count_cbits(cbits);
@@ -370,10 +590,10 @@ atr_supported_protocols(atr_data_t *data)
 	for (i = 0; i < data->atr_nti; i++) {
 		switch (data->atr_ti[i].atrti_protocol) {
 		case ATR_PROTOCOL_T0:
-			prot |= ATR_PROTOCOL_T0;
+			prot |= ATR_P_T0;
 			break;
 		case ATR_PROTOCOL_T1:
-			prot |= ATR_PROTOCOL_T1;
+			prot |= ATR_P_T1;
 			break;
 		default:
 			continue;
@@ -382,6 +602,246 @@ atr_supported_protocols(atr_data_t *data)
 
 	return (prot);
 }
+
+boolean_t
+atr_params_negotiable(atr_data_t *data)
+{
+	/* If for some reason we're called with invalid data, assume it's not */
+	if ((data->atr_flags & ATR_F_VALID) == 0)
+		return (B_FALSE);
+
+	if (data->atr_nti < 2) {
+		return (B_FALSE);
+	}
+
+	/*
+	 * Whether or not we're negotiable is in the second global page, so atr
+	 * index 1. If TA2 is missing, then the card always is negotiable.
+	 */
+	if ((data->atr_ti[1].atrti_flags & ATR_TI_HAVE_TA) == 0) {
+		return (B_TRUE);
+	}
+
+	if (ATR_TA2_CANCHANGE(data->atr_ti[1].atrti_ta)) {
+		return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
+atr_protocol_t
+atr_default_protocol(atr_data_t *data)
+{
+	uint8_t prot;
+
+	if ((data->atr_flags & ATR_F_VALID) == 0)
+		return (ATR_P_NONE);
+	/*
+	 * If we don't have an TA2 byte, then the system defaults to T=0.
+	 */
+	if (data->atr_nti < 2) {
+		return (ATR_P_T0);
+	}
+
+	/*
+	 * If TA2 is present, then it encodes the default protocol. Ohterwise,
+	 * we have to grab the protocol value from TD1, which is called the
+	 * 'first offered protocol'.
+	 */
+	if ((data->atr_ti[1].atrti_flags & ATR_TI_HAVE_TA) != 0) {
+		prot = ATR_TA2_PROTOCOL(data->atr_ti[1].atrti_ta);
+	} else {
+		prot = data->atr_ti[1].atrti_protocol;
+	}
+
+	switch (prot) {
+	case ATR_PROTOCOL_T0:
+		return (ATR_P_T0);
+	case ATR_PROTOCOL_T1:
+		return (ATR_P_T1);
+	default:
+		return (ATR_P_NONE);
+	}
+}
+
+uint8_t
+atr_fi_index(atr_data_t *data)
+{
+	if (data->atr_nti < 1) {
+		return (ATR_FI_DEFAULT_INDEX);
+	}
+
+	/*
+	 * If TA is specified, it is present in TA1. TA2 may override its
+	 * presence, so if it is here, check that first to determine whether or
+	 * not we should check TA1.
+	 */
+	if (data->atr_nti >= 2 &&
+	    (data->atr_ti[1].atrti_flags & ATR_TI_HAVE_TA) != 0) {
+		if (!ATR_TA2_HONORTA1(data->atr_ti[1].atrti_ta)) {
+			return (ATR_FI_DEFAULT_INDEX);
+		}
+	}
+
+	if ((data->atr_ti[0].atrti_flags & ATR_TI_HAVE_TA) != 0) {
+		return (ATR_TA1_FTABLE(data->atr_ti[0].atrti_ta));
+	}
+
+	return (ATR_FI_DEFAULT_INDEX);
+}
+
+uint8_t
+atr_di_index(atr_data_t *data)
+{
+	if (data->atr_nti < 1) {
+		return (ATR_DI_DEFAULT_INDEX);
+	}
+
+	/*
+	 * If TA is specified, it is present in TA1. TA2 may override its
+	 * presence, so if it is here, check that first to determine whether or
+	 * not we should check TA1.
+	 */
+	if (data->atr_nti >= 2 &&
+	    (data->atr_ti[1].atrti_flags & ATR_TI_HAVE_TA) != 0) {
+		if (!ATR_TA2_HONORTA1(data->atr_ti[1].atrti_ta)) {
+			return (ATR_DI_DEFAULT_INDEX);
+		}
+	}
+
+	if ((data->atr_ti[0].atrti_flags & ATR_TI_HAVE_TA) != 0) {
+		return (ATR_TA1_DITABLE(data->atr_ti[0].atrti_ta));
+	}
+
+	return (ATR_DI_DEFAULT_INDEX);
+}
+
+atr_convention_t
+atr_convention(atr_data_t *data)
+{
+	if ((data->atr_flags & ATR_F_USES_DIRECT) != 0) {
+		return (ATR_CONVENTION_DIRECT);
+	}
+	return (ATR_CONVENTION_INVERSE);
+}
+
+uint8_t
+atr_extra_guardtime(atr_data_t *data)
+{
+	if ((data->atr_flags & ATR_F_VALID) == 0)
+		return (ATR_EXTRA_GUARDTIME_DEFAULT);
+
+	if (data->atr_nti >= 1 &&
+	    (data->atr_ti[0].atrti_flags & ATR_TI_HAVE_TC) != 0) {
+		return (data->atr_ti[0].atrti_tc);
+	}
+
+	return (ATR_EXTRA_GUARDTIME_DEFAULT);
+}
+
+uint8_t
+atr_t0_wi(atr_data_t *data)
+{
+	if ((data->atr_flags & ATR_F_VALID) == 0)
+		return (ATR_T0_WI_DEFAULT);
+
+	/*
+	 * This is stored in the optional global byte in TC2; however, it only
+	 * applies to T=0.
+	 */
+	if (data->atr_nti >= 2 &&
+	    data->atr_ti[1].atrti_protocol == ATR_PROTOCOL_T0 &&
+	    (data->atr_ti[1].atrti_flags & ATR_TI_HAVE_TC) != 0) {
+		return (data->atr_ti[0].atrti_tc);
+	}
+
+	return (ATR_T0_WI_DEFAULT);
+}
+
+uint8_t
+atr_t1_cwi(atr_data_t *data)
+{
+	uint8_t i;
+
+	if (data->atr_nti <= 2) {
+		return (ATR_T1_CWI_DEFAULT);
+	}
+
+	for (i = 2; i < data->atr_nti; i++) {
+		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T1) {
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TB) != 0) {
+				return (ATR_T1_TB0_CWI(data->atr_ti[i].atrti_tb));
+			}
+
+			return (ATR_T1_CWI_DEFAULT);
+		}
+	}
+
+	return (ATR_T1_CWI_DEFAULT);
+}
+
+atr_clock_stop_t
+atr_clock_stop(atr_data_t *data)
+{
+	uint8_t i;
+
+	for (i = 0; i < data->atr_nti; i++) {
+		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T15) {
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TA) != 0) {
+				return (ATR_T15_TA0_CLOCK(data->atr_ti[i].atrti_ta));
+			}
+
+			return (ATR_CLOCK_STOP_NONE);
+		}
+	}
+
+	return (ATR_CLOCK_STOP_NONE);
+}
+
+uint8_t
+atr_t1_bwi(atr_data_t *data)
+{
+	uint8_t i;
+
+	if (data->atr_nti <= 2) {
+		return (ATR_T1_BWI_DEFAULT);
+	}
+
+	for (i = 2; i < data->atr_nti; i++) {
+		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T1) {
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TB) != 0) {
+				return (ATR_T1_TB0_BWI(data->atr_ti[i].atrti_tb));
+			}
+
+			return (ATR_T1_BWI_DEFAULT);
+		}
+	}
+
+	return (ATR_T1_BWI_DEFAULT);
+}
+
+uint8_t
+atr_t1_ifsc(atr_data_t *data)
+{
+	uint8_t i;
+
+	if (data->atr_nti <= 2) {
+		return (ATR_T1_IFSC_DEFAULT);
+	}
+
+	for (i = 2; i < data->atr_nti; i++) {
+		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T1) {
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TA) != 0) {
+				return (data->atr_ti[i].atrti_ta);
+			}
+
+			return (ATR_T1_IFSC_DEFAULT);
+		}
+	}
+
+	return (ATR_T1_IFSC_DEFAULT);
+}
+
 
 #ifdef	_KERNEL
 atr_data_t *
@@ -414,12 +874,308 @@ atr_data_free(atr_data_t *data)
 	free(data);
 }
 
+/*
+ * This table maps the bit values for Fi from 7816-3:2006 section 8.3 Table 9.
+ * The table is up to 6 bits wide. Entries not present are RFU. We use NULL as a
+ * sentinel to indicate that.
+ */
+static const char *atr_voltage_table[64] = {
+	NULL,			/* 00 0000 */
+	"5V",			/* 00 0001 */
+	"3V",			/* 00 0010 */
+	"5V, 3V",		/* 00 0011 */
+	"1.5V",			/* 00 0100 */
+	NULL,			/* 00 0101 */
+	"3V, 1.5V",		/* 00 0110 */
+	"5V, 3V, 1.5V"		/* 00 0111 */
+};
+
+static void
+atr_data_dump_ta(atr_ti_t *atp, FILE *out, uint_t level)
+{
+	uint8_t ta;
+
+	if (!(atp->atrti_flags & ATR_TI_HAVE_TA)) {
+		return;
+	}
+
+	ta = atp->atrti_ta;
+	(void) fprintf(out, "   %c%c%c+-> TA%u 0x%02x",
+	    atp->atrti_flags & ATR_TI_HAVE_TD ? '|' : ' ',
+	    atp->atrti_flags & ATR_TI_HAVE_TC ? '|' : ' ',
+	    atp->atrti_flags & ATR_TI_HAVE_TB ? '|' : ' ',
+	    atp->atrti_ti_val, ta);
+	switch (atp->atrti_ti_val) {
+	case 1:
+		(void) fprintf(out, "; Fi: %s, F(max): %s MHz, Di: %s",
+		    atr_fi_table[ATR_TA1_FTABLE(ta)],
+		    atr_fmax_table[ATR_TA1_FTABLE(ta)],
+		    atr_di_table[ATR_TA1_DITABLE(ta)]);
+		break;
+	case 2:
+		(void) fprintf(out, "; ICC in %s mode; %shonoring TA1; default "
+		    "T=%u",
+		    ATR_TA2_CANCHANGE(ta) ? "negotiable" : "specific",
+		    ATR_TA2_HONORTA1(ta) ? "" : "not ",
+		    ATR_TA2_PROTOCOL(ta));
+		break;
+	default:
+		switch (atp->atrti_protocol) {
+		case ATR_PROTOCOL_T1:
+			if (level != 0)
+				break;
+			if (ta == 0 || ta == 0xff) {
+				(void) fprintf(out, "; IFSC: RFU");
+			} else {
+				(void) fprintf(out, "; IFSC: %u", ta);
+			}
+			break;
+		case ATR_PROTOCOL_T15:
+			if (level != 0)
+				break;
+			(void) fprintf(out, "; Clock stop: %s, Supported "
+			    "Voltage: %s",
+			    atr_clock_table[ATR_T15_TA0_CLOCK(ta)],
+			    atr_voltage_table[ATR_T15_TA0_VOLTAGE(ta)] == NULL ?
+			    atr_voltage_table[ATR_T15_TA0_VOLTAGE(ta)] : "RFU");
+			break;
+		default:
+			break;
+		}
+	}
+	(void) fprintf(out, "\n");
+}
+
+static void
+atr_data_dump_tb(atr_ti_t *atp, FILE *out, uint_t level)
+{
+	uint8_t tb;
+
+	if (!(atp->atrti_flags & ATR_TI_HAVE_TB)) {
+		return;
+	}
+
+	tb = atp->atrti_tb;
+	(void) fprintf(out, "   %c%c+--> TB%u 0x%02x",
+	    atp->atrti_flags & ATR_TI_HAVE_TD ? '|' : ' ',
+	    atp->atrti_flags & ATR_TI_HAVE_TC ? '|' : ' ',
+	    atp->atrti_ti_val, tb);
+	switch (atp->atrti_ti_val) {
+	case 1:
+	case 2:
+		(void) fprintf(out, "; deprecated");
+		break;
+	default:
+		switch (atp->atrti_protocol) {
+		case ATR_PROTOCOL_T1:
+			if (level != 0)
+				break;
+			(void) fprintf(out, "; CWI: %u, BWI: %u\n",
+			    ATR_T1_TB0_CWI(tb),
+			    ATR_T1_TB0_BWI(tb));
+			break;
+		case ATR_PROTOCOL_T15:
+			if (level != 0)
+				break;
+			/* XXX Find how to decode these */
+			(void) fprintf(out, "; SPU: %s",
+			    ATR_T15_TB0_SPU_STANDARD(tb) ? "standard" :
+			    "proprietary");
+			break;
+		default:
+			break;
+		}
+	}
+	(void) fprintf(out, "\n");
+}
+
+static void
+atr_data_dump_tc(atr_ti_t *atp, FILE *out, uint_t level)
+{
+	uint8_t tc;
+
+	if (!(atp->atrti_flags & ATR_TI_HAVE_TC)) {
+		return;
+	}
+
+	tc = atp->atrti_tc;
+	(void) fprintf(out, "   %c+---> TC%u 0x%02x",
+	    atp->atrti_flags & ATR_TI_HAVE_TD ? '|' : ' ',
+	    atp->atrti_ti_val, tc);
+
+	switch (atp->atrti_ti_val) {
+	case 1:
+		(void) fprintf(out, "; Extra Guard Time Integer: %u", tc);
+		break;
+	case 2:
+		if (atp->atrti_protocol != ATR_PROTOCOL_T0) {
+			(void) fprintf(out, "; illegal value -- only valid for "
+			    "T=0");
+		} else {
+			(void) fprintf(out, "; Waiting Time Integer: %u", tc);
+		}
+		break;
+	default:
+		switch (atp->atrti_protocol) {
+		case ATR_PROTOCOL_T1:
+			if (level != 0)
+				break;
+			(void) fprintf(out, "; Error Detection Code: %s",
+			    ATR_T1_TC0_CRC(tc) ? "CRC" : "LRC");
+			break;
+		default:
+			break;
+		}
+	}
+	(void) fprintf(out, "\n");
+}
+
+static void
+atr_data_hexdump_historical(atr_data_t *data, FILE *out)
+{
+	size_t i;
+	(void) fprintf(out, "Dumping raw historical bytes\n");
+
+	/* Print out the header */
+	(void) printf("%*s    0", 4, "");
+	for (i = 1; i < 16; i++) {
+		if (i % 4 == 0 && i % 16 != 0) {
+			(void) printf(" ");
+		}
+
+		(void) printf("%2x", i);
+	}
+	(void) printf("  0123456789abcdef\n");
+
+	for (i = 0; i < data->atr_nhistoric; i++) {
+
+		if (i % 16 == 0) {
+			(void) printf("%04x:  ", i);
+		}
+
+		if (i % 4 == 0 && i % 16 != 0) {
+			(void) printf(" ");
+		}
+
+		(void) printf("%02x", data->atr_historic[i]);
+	}
+
+	for (; (i % 16) != 0; i++) {
+		if (i % 4 == 0 && i % 16 != 0) {
+			(void) printf(" ");
+		}
+		(void) printf("--");
+	}
+
+	(void) printf("  ");
+	for (i = 0; i < data->atr_nhistoric; i++) {
+		if (!isprint(data->atr_historic[i])) {
+			(void) printf(".");
+		} else {
+			(void) printf("%c", data->atr_historic[i]);
+		}
+	}
+	(void) printf("\n");
+}
+
+static void
+atr_data_dump_historical(atr_data_t *data, FILE *out)
+{
+	uint8_t cat;
+
+	(void) fprintf(out, "Historic Data: %u bytes", data->atr_nhistoric);
+	if (data->atr_nhistoric == 0) {
+		(void) fprintf(out, "\n");
+		return;
+	}
+
+	cat = data->atr_historic[0];
+	(void) fprintf(out, "; format (0x%02x) ", cat);
+	if (cat == ATR_HIST_CAT_MAND_STATUS) {
+
+	} else if (cat == ATR_HIST_CAT_TLV_STATUS) {
+
+	} else if (cat >= ATR_HIST_CAT_RFU_MIN && cat <= ATR_HIST_CAT_RFU_MAX) {
+		(void) fprintf(out, "reserved\n");
+		atr_data_hexdump_historical(data, out);
+		return;
+	} else {
+		(void) fprintf(out, "proprietary\n");
+		atr_data_hexdump_historical(data, out);
+		return;
+	}
+
+	/*
+	 * XXX Process one or more TLVs.
+	 */
+}
+
 void
 atr_data_dump(atr_data_t *data, FILE *out)
 {
+	uint8_t i, level;
 	if ((data->atr_flags & ATR_F_VALID) == 0)
 		return;
 
+	(void) fprintf(out, "TS  0x%02u - ", data->atr_raw[0]);
+	if (data->atr_flags & ATR_F_USES_DIRECT) {
+		(void) fprintf(out, "direct convention\n");
+	} else {
+		(void) fprintf(out, "inverse convention\n");
+	}
+
+	level = 0;
+	for (i = 0; i < data->atr_nti; i++) {
+		atr_ti_t *atp = &data->atr_ti[i];
+
+		/*
+		 * Various protocols may appear multiple times, indicating
+		 * different sets of bits each time. When dealing with T0 and
+		 * TD1, the protocol doesn't matter. Otherwise if we have the
+		 * same value, we should increment this.
+		 */
+		if (i <= 2) {
+			level = 0;
+		} else if (atp->atrti_protocol == data->atr_ti[i - 1].atrti_protocol) {
+			level++;
+		} else {
+			level = 0;
+		}
+
+		if (i == 0) {
+			(void) fprintf(out, "T0  ");
+		} else {
+			(void) fprintf(out, "TD%u ", i);
+		}
+		(void) fprintf(out, "0x%02x\n", data->atr_raw[atp->atrti_td_idx]);
+		(void) fprintf(out, "      |+-> ");
+		if (i == 0) {
+			(void) fprintf(out, "%u historical bytes\n", data->atr_nhistoric);
+		} else {
+			(void) fprintf(out, "protocol T=%u\n", atp->atrti_protocol);
+		}
+		(void) fprintf(out, "      v\n");
+		(void) fprintf(out, " 0r%u%u%u%u\n",
+		    atp->atrti_flags & ATR_TI_HAVE_TD ? 1 : 0,
+		    atp->atrti_flags & ATR_TI_HAVE_TC ? 1 : 0,
+		    atp->atrti_flags & ATR_TI_HAVE_TB ? 1 : 0,
+		    atp->atrti_flags & ATR_TI_HAVE_TA ? 1 : 0);
+
+		atr_data_dump_ta(atp, out, level);
+		atr_data_dump_tb(atp, out, level);
+		atr_data_dump_tc(atp, out, level);
+		if (atp->atrti_flags & ATR_TI_HAVE_TD) {
+			(void) fprintf(out, "   v\n");
+		}
+	}
+
+	atr_data_dump_historical(data, out);
+
+	if (data->atr_flags & ATR_F_HAS_CHECKSUM) {
+		(void) fprintf(out, "TCK  0x%2x\n", data->atr_cksum);
+	} else {
+		(void) fprintf(out, "TCK  ----; Checksum not present\n");
+	}
 
 }
 #endif	/* _KERNEL */
