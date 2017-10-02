@@ -128,38 +128,6 @@ typedef struct uccid_cmd_status {
  */
 #define	UCCID_CMD_STATUS	(UCCID_IOCTL | 0x3)
 
-#if 0
-typedef struct uccid_cmd_getbuf {
-	uint32_t	ucg_version;
-	uint32_t	ucg_buflen;
-	/* XXX should this just be a static buffer with a likely maximum size? */
-	void		*ucg_buffer;
-} uccid_cmd_getbuf_t;
-
-#ifdef	_KERNEL
-typedef struct uccid_cmd_getbuf32 {
-	uint32_t	ucg_version;
-	uint32_t	ucg_buflen;
-	uintptr32_t	ucg_buffer;
-} uccid_cmd_getbuf32_t;
-#endif
-
-/*
- * Obtain the answer to reset for the slot. If ucs_buflen is zero, then the
- * value in ucs_buffer will be ignored and ucs_buflen will be filled in with the
- * size of the ATR. Otherwise, if large enough, it will be written to the
- * buffer.
- */
-#define	UCCID_CMD_GETATR	(UCCID_IOCTL | 0x4)
-
-/*
- * Get the USB product string or serial if available. Follows the same semantics
- * as the ATR.
- */
-#define	UCCID_CMD_GETPRODSTR	(UCCID_IOCTL | 0x5)
-#define	UCCID_CMD_GETSERIAL	(UCCID_IOCTL | 0x6)
-#endif
-
 #ifdef __cplusplus
 }
 #endif
