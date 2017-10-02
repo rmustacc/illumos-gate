@@ -31,6 +31,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <libcmdutils.h>
+#include <fts.h>
 
 #include <sys/usb/clients/ccid/uccid.h>
 #include <atr.h>
@@ -108,82 +109,53 @@ ccidadm_open(const char *base, boolean_t card)
 }
 
 static void
-ccidadm_iter(boolean_t readeronly,  boolean_t newline,
+ccidadm_iter(boolean_t readeronly, boolean_t newline,
     void(*cb)(int, const char *, void *), void *arg)
 {
-	int rootfd;
-	struct dirent *d;
-	DIR *rootdir;
+	FTS *fts;
+	FTSENT *ent;
+	char *const paths[] = { CCID_ROOT, NULL };
+	int fd;
 	boolean_t first = B_TRUE;
 
-	if ((rootfd = open(CCID_ROOT, O_RDONLY)) < 0) {
-		err(EXIT_FAILURE, "failed to open %s", CCID_ROOT);
+	fts = fts_open(paths, FTS_LOGICAL | FTS_NOCHDIR, NULL);
+	if (fts == NULL) {
+		err(EXIT_FAILURE, "failed to create directory stream");
 	}
 
-	rootdir = fdopendir(rootfd);
-	if (rootdir == NULL) {
-		err(EXIT_FAILURE, "failed to open %s", CCID_ROOT);
-	}
+	while ((ent = fts_read(fts)) != NULL) {
+		const char *name;
 
-	while ((d = readdir(rootdir)) != NULL) {
-		int readerfd, slotfd;
-		DIR *readerdir;
-		struct dirent *rent;
-
-		if (strcmp(".", d->d_name) == 0 || strcmp("..", d->d_name) == 0)
+		/* Skip the root and post-order dirs */
+		if (ent->fts_level == 0 || ent->fts_info == FTS_DP) {
 			continue;
-
-		if (readeronly) {
-			if ((slotfd = ccidadm_open(d->d_name, B_TRUE)) < 0) {
-				err(EXIT_FAILURE, "failed to open %s", d->d_name);
-			}
-
-			if (!first && newline) {
-				(void) printf("\n");
-			}
-			first = B_FALSE;
-
-			cb(slotfd, d->d_name, arg);
-			(void) close(slotfd);
+		}
+		if (readeronly && ent->fts_level != 1) {
+			continue;
+		} else if (!readeronly && ent->fts_level != 2) {
 			continue;
 		}
 
-		if ((readerfd = openat(rootfd, d->d_name, O_RDONLY)) < 0) {
-			err(EXIT_FAILURE, "Failed to open ccid %s", d->d_name);
+		if (ent->fts_info == FTS_ERR || ent->fts_info == FTS_NS) {
+			warn("skipping %s, failed to get information: %s", ent->fts_name,
+			    strerror(ent->fts_errno));
+			continue;
 		}
 
-		if ((readerdir = fdopendir(readerfd)) == NULL) {
-			err(EXIT_FAILURE, "Failed to open ccid %s", d->d_name);
+		name = ent->fts_path + strlen(CCID_ROOT);
+		if ((fd = ccidadm_open(name, readeronly)) < 0) {
+			err(EXIT_FAILURE, "failed to open %s", name);
 		}
 
-		while ((rent = readdir(readerdir)) != NULL) {
-			char *buf = NULL;
-
-			if (strcmp(".", rent->d_name) == 0 || strcmp("..", rent->d_name) == 0)
-				continue;
-
-			if (asprintf(&buf, "%s/%s", d->d_name, rent->d_name) ==
-			    NULL) {
-				err(EXIT_FAILURE, "failed to construct dir name");
-			}
-
-			if ((slotfd = ccidadm_open(d->d_name, B_TRUE)) < 0) {
-				err(EXIT_FAILURE, "failed to open %s", buf);
-			}
-
-			if (!first && newline) {
-				(void) printf("\n");
-			}
-			first = B_FALSE;
-
-			cb(slotfd, buf, arg);
-			(void) close(slotfd);
-			free(buf);
+		if (!first && newline) {
+			(void) printf("\n");
 		}
-		closedir(readerdir);
+		first = B_FALSE;
+		cb(fd, name, arg);
+		(void) close(fd);
 	}
 
-	closedir(rootdir);
+	(void) fts_close(fts);
 }
 
 static void
