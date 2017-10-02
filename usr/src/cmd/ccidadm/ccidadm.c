@@ -20,7 +20,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <dirent.h>
 #include <err.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -525,7 +524,7 @@ ccidadm_do_atr(int argc, char *argv[])
 static void
 ccidadm_atr_usage(FILE *out)
 {
-	(void) fprintf(stderr, "\tatr [-pvx]\tdevice ...\n");
+	(void) fprintf(stderr, "\tatr [-pvx]\t[device] ...\n");
 }
 
 static void
@@ -629,7 +628,6 @@ ccidadm_reader_print(int fd, const char *name, void *unused)
 	ccidadm_print_pairs(cd->ccd_bVoltageSupport, ccidadm_p_voltages);
 	(void) printf("  Supported Protocols:\n");
 	ccidadm_print_pairs(cd->ccd_dwProtocols, ccidadm_p_protocols);
-	/* XXX Add spaces for nicenum */
 	nicenum_scale(cd->ccd_dwDefaultClock, 1000, nnbuf,
 	    sizeof (nnbuf), NN_DIVISOR_1000 | NN_UNIT_SPACE);
 	(void) printf("  Default Clock: %sHz\n", nnbuf);
@@ -715,7 +713,7 @@ ccidadm_do_reader(int argc, char *argv[])
 static void
 ccidadm_reader_usage(FILE *out)
 {
-	(void) fprintf(out, "\treader\treader ...\n");
+	(void) fprintf(out, "\treader\t[reader] ...\n");
 }
 
 typedef struct ccidadm_cmdtab {
