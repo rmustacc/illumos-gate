@@ -1197,6 +1197,10 @@ $(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/usb/clients/ccid/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)
 
+$(OBJS_DIR)/%.o:		$(COMMONBASE)/ccid/%.c
+	$(COMPILE.c) -o $@ $<
+	$(CTFCONVERT_O)
+
 $(OBJS_DIR)/%.o:		$(UTSBASE)/common/io/usb/clients/usbskel/%.c
 	$(COMPILE.c) -o $@ $<
 	$(CTFCONVERT_O)
