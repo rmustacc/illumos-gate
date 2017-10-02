@@ -53,8 +53,7 @@ typedef struct ccidadm_pair {
 } ccidadm_pair_t;
 
 typedef struct ccid_list_ofmt_arg {
-	struct dirent		*cloa_ccid;
-	struct dirent		*cloa_slot;
+	const char		*cloa_name;
 	uccid_cmd_status_t	*cloa_status;
 } ccid_list_ofmt_arg_t;
 
@@ -109,6 +108,85 @@ ccidadm_open(const char *base, boolean_t card)
 }
 
 static void
+ccidadm_iter(boolean_t readeronly,  boolean_t newline,
+    void(*cb)(int, const char *, void *), void *arg)
+{
+	int rootfd;
+	struct dirent *d;
+	DIR *rootdir;
+	boolean_t first = B_TRUE;
+
+	if ((rootfd = open(CCID_ROOT, O_RDONLY)) < 0) {
+		err(EXIT_FAILURE, "failed to open %s", CCID_ROOT);
+	}
+
+	rootdir = fdopendir(rootfd);
+	if (rootdir == NULL) {
+		err(EXIT_FAILURE, "failed to open %s", CCID_ROOT);
+	}
+
+	while ((d = readdir(rootdir)) != NULL) {
+		int readerfd, slotfd;
+		DIR *readerdir;
+		struct dirent *rent;
+
+		if (strcmp(".", d->d_name) == 0 || strcmp("..", d->d_name) == 0)
+			continue;
+
+		if (readeronly) {
+			if ((slotfd = ccidadm_open(d->d_name, B_TRUE)) < 0) {
+				err(EXIT_FAILURE, "failed to open %s", d->d_name);
+			}
+
+			if (!first && newline) {
+				(void) printf("\n");
+			}
+			first = B_FALSE;
+
+			cb(slotfd, d->d_name, arg);
+			(void) close(slotfd);
+			continue;
+		}
+
+		if ((readerfd = openat(rootfd, d->d_name, O_RDONLY)) < 0) {
+			err(EXIT_FAILURE, "Failed to open ccid %s", d->d_name);
+		}
+
+		if ((readerdir = fdopendir(readerfd)) == NULL) {
+			err(EXIT_FAILURE, "Failed to open ccid %s", d->d_name);
+		}
+
+		while ((rent = readdir(readerdir)) != NULL) {
+			char *buf = NULL;
+
+			if (strcmp(".", rent->d_name) == 0 || strcmp("..", rent->d_name) == 0)
+				continue;
+
+			if (asprintf(&buf, "%s/%s", d->d_name, rent->d_name) ==
+			    NULL) {
+				err(EXIT_FAILURE, "failed to construct dir name");
+			}
+
+			if ((slotfd = ccidadm_open(d->d_name, B_TRUE)) < 0) {
+				err(EXIT_FAILURE, "failed to open %s", buf);
+			}
+
+			if (!first && newline) {
+				(void) printf("\n");
+			}
+			first = B_FALSE;
+
+			cb(slotfd, buf, arg);
+			(void) close(slotfd);
+			free(buf);
+		}
+		closedir(readerdir);
+	}
+
+	closedir(rootdir);
+}
+
+static void
 ccidadm_list_slot_status_str(uccid_cmd_status_t *ucs, char *buf, uint_t buflen)
 {
 	if (!(ucs->ucs_status & UCCID_STATUS_F_CARD_PRESENT)) {
@@ -131,8 +209,7 @@ ccidadm_list_ofmt_cb(ofmt_arg_t *ofmt, char *buf, uint_t buflen)
 
 	switch (ofmt->ofmt_id) {
 	case CCIDADM_LIST_DEVICE:
-		if (snprintf(buf, buflen, "%s/%s", cloa->cloa_ccid->d_name,
-		    cloa->cloa_slot->d_name) >= buflen) {
+		if (snprintf(buf, buflen, "%s", cloa->cloa_name) >= buflen) {
 			return (B_FALSE);
 		}
 		break;
@@ -153,23 +230,17 @@ ccidadm_list_ofmt_cb(ofmt_arg_t *ofmt, char *buf, uint_t buflen)
 }
 
 static void
-ccidadm_list_slot(ofmt_handle_t ofmt, int ccidfd, struct dirent *cciddir, struct dirent *slotdir)
+ccidadm_list_slot(int slotfd, const char *name, void *arg)
 {
-	int slotfd;
 	uccid_cmd_status_t ucs;
+	ofmt_handle_t ofmt = arg;
 	ccid_list_ofmt_arg_t cloa;
-
-	if ((slotfd = openat(ccidfd, slotdir->d_name, O_RDWR)) < 0) {
-		err(EXIT_FAILURE, "failed to open cccid slot %s/%s",
-		    cciddir->d_name, slotdir->d_name);
-	}
 
 	bzero(&ucs, sizeof (ucs));
 	ucs.ucs_version = UCCID_CURRENT_VERSION;
 
 	if (ioctl(slotfd, UCCID_CMD_STATUS, &ucs) != 0) {
-		err(EXIT_FAILURE, "failed to issue status ioctl to %s/%s",
-		    cciddir->d_name, slotdir->d_name);
+		err(EXIT_FAILURE, "failed to issue status ioctl to %s", name);
 	}
 
 	if ((ucs.ucs_status & UCCID_STATUS_F_PRODUCT_VALID) == 0) {
@@ -177,35 +248,9 @@ ccidadm_list_slot(ofmt_handle_t ofmt, int ccidfd, struct dirent *cciddir, struct
 		    sizeof (ucs.ucs_product));
 	}
 
-	cloa.cloa_ccid = cciddir;
-	cloa.cloa_slot = slotdir;
+	cloa.cloa_name = name;
 	cloa.cloa_status = &ucs;
 	ofmt_print(ofmt, &cloa);
-	(void) close(slotfd);
-}
-
-static void
-ccidadm_list_ccid(ofmt_handle_t ofmt, int dirfd, struct dirent *ccidd)
-{
-	int ccidfd;
-	DIR *instdir;
-	struct dirent *d;
-
-	if ((ccidfd = openat(dirfd, ccidd->d_name, O_RDONLY)) < 0) {
-		err(EXIT_FAILURE, "failed to open ccid %s", ccidd->d_name);
-	}
-
-	if ((instdir = fdopendir(ccidfd)) == NULL) {
-		err(EXIT_FAILURE, "failed to open ccid %s", ccidd->d_name);
-	}
-
-	while ((d = readdir(instdir)) != NULL) {
-		if (strcmp(".", d->d_name) == 0 || strcmp("..", d->d_name) == 0)
-			continue;
-		ccidadm_list_slot(ofmt, ccidfd, ccidd, d);
-	}
-
-	closedir(instdir);
 }
 
 static ofmt_field_t ccidadm_list_fields[] = {
@@ -218,31 +263,13 @@ static ofmt_field_t ccidadm_list_fields[] = {
 static void
 ccidadm_do_list(int argc, char *argv[])
 {
-	int fd;
-	DIR *cr;
-	struct dirent *d;
 	ofmt_handle_t ofmt;
-
-	if ((fd = open(CCID_ROOT, O_RDONLY)) < 0) {
-		err(EXIT_FAILURE, "failed to open %s", CCID_ROOT);
-	}
-
-	cr = fdopendir(fd);
-	if (cr == NULL) {
-		err(EXIT_FAILURE, "failed to open %s", CCID_ROOT);
-	}
 
 	if (ofmt_open(NULL, ccidadm_list_fields, 0, 0, &ofmt) != OFMT_SUCCESS) {
 		errx(EXIT_FAILURE, "failed to initialize ofmt state");
 	}
 
-	while ((d = readdir(cr)) != NULL) {
-		if (strcmp(".", d->d_name) == 0 || strcmp("..", d->d_name) == 0)
-			continue;
-		ccidadm_list_ccid(ofmt, fd, d);
-	}
-
-	closedir(cr);
+	ccidadm_iter(B_FALSE, B_FALSE, ccidadm_list_slot, ofmt);
 	ofmt_close(ofmt);
 }
 
@@ -430,11 +457,17 @@ ccidadm_atr_verbose(uccid_cmd_status_t *ucs)
 	atr_data_free(data);
 }
 
+typedef struct cciadm_atr_args {
+	boolean_t caa_hex;
+	boolean_t caa_props;
+	boolean_t caa_verbose;
+} ccidadm_atr_args_t;
+
 static void
-ccidadm_atr_fetch(int fd, const char *name, boolean_t hex, boolean_t props,
-    boolean_t verbose)
+ccidadm_atr_fetch(int fd, const char *name, void *arg)
 {
 	uccid_cmd_status_t ucs;
+	ccidadm_atr_args_t *caa = arg;
 
 	bzero(&ucs, sizeof (ucs));
 	ucs.ucs_version = UCCID_CURRENT_VERSION;
@@ -450,15 +483,15 @@ ccidadm_atr_fetch(int fd, const char *name, boolean_t hex, boolean_t props,
 	}
 
 	(void) printf("ATR for %s (%u bytes)\n", name, ucs.ucs_atrlen);
-	if (props) {
+	if (caa->caa_props) {
 		ccidadm_atr_props(&ucs);
 	}
 
-	if (hex) {
+	if (caa->caa_hex) {
 		ccidadm_atr_hexdump(ucs.ucs_atr, ucs.ucs_atrlen);
 	}
 
-	if (verbose) {
+	if (caa->caa_verbose) {
 		ccidadm_atr_verbose(&ucs);
 	}
 }
@@ -468,24 +501,20 @@ ccidadm_do_atr(int argc, char *argv[])
 {
 	uint_t i;
 	int c;
-	boolean_t do_verbose, do_props, do_hex;
+	ccidadm_atr_args_t caa;
 
-	if (argc < 1) {
-		errx(EXIT_USAGE, "missing device name");
-	}
-
-	do_verbose = do_props = do_hex = B_FALSE;
+	bzero(&caa, sizeof (caa));
 	optind = 0;
 	while ((c = getopt(argc, argv, "vpx")) != -1) {
 		switch (c) {
 		case 'v':
-			do_verbose = B_TRUE;
+			caa.caa_verbose = B_TRUE;
 			break;
 		case 'p':
-			do_props = B_TRUE;
+			caa.caa_props = B_TRUE;
 			break;
 		case 'x':
-			do_hex = B_TRUE;
+			caa.caa_hex = B_TRUE;
 			break;
 		case ':':
 			errx(EXIT_USAGE, "Option -%c requires an argument\n", optopt);
@@ -494,14 +523,16 @@ ccidadm_do_atr(int argc, char *argv[])
 		}
 	}
 
-	if (!do_verbose && !do_props && !do_hex) {
-		do_props = B_TRUE;
+	if (!caa.caa_verbose && !caa.caa_props && !caa.caa_hex) {
+		caa.caa_props = B_TRUE;
 	}
 
 	argc -= optind;
 	argv += optind;
 
-	/* XXX argc == 0, dump all */
+	if (argc == 0) {
+		ccidadm_iter(B_FALSE, B_TRUE, ccidadm_atr_fetch, &caa);
+	}
 
 	for (i = 0; i < argc; i++) {
 		int fd;
@@ -511,7 +542,7 @@ ccidadm_do_atr(int argc, char *argv[])
 			errx(EXIT_FAILURE, "valid CCID slot?");
 		}
 
-		ccidadm_atr_fetch(fd, argv[i], do_hex, do_props, do_verbose);
+		ccidadm_atr_fetch(fd, argv[i], &caa);
 		(void) close(fd);
 		if (i + 1 < argc) {
 			(void) printf("\n");
@@ -589,11 +620,11 @@ static ccidadm_pair_t ccidadm_p_pin[] = {
 };
 
 static void
-ccidadm_reader_print(int fd, const char *name)
+ccidadm_reader_print(int fd, const char *name, void *unused)
 {
 	uccid_cmd_status_t ucs;
 	ccid_class_descr_t *cd;
-	char nnbuf[NN_NUMBUF_SZ];
+	char nnbuf[NN_NUMBUF_SZ + 1];
 
 	bzero(&ucs, sizeof (uccid_cmd_status_t));
 	ucs.ucs_version = UCCID_VERSION_ONE;
@@ -628,18 +659,18 @@ ccidadm_reader_print(int fd, const char *name)
 	ccidadm_print_pairs(cd->ccd_dwProtocols, ccidadm_p_protocols);
 	/* XXX Add spaces for nicenum */
 	nicenum_scale(cd->ccd_dwDefaultClock, 1000, nnbuf,
-	    sizeof (nnbuf), NN_DIVISOR_1000);
+	    sizeof (nnbuf), NN_DIVISOR_1000 | NN_UNIT_SPACE);
 	(void) printf("  Default Clock: %sHz\n", nnbuf);
 	nicenum_scale(cd->ccd_dwMaximumClock, 1000, nnbuf,
-	    sizeof (nnbuf), NN_DIVISOR_1000);
+	    sizeof (nnbuf), NN_DIVISOR_1000 | NN_UNIT_SPACE);
 	(void) printf("  Maximum Clock: %sHz\n", nnbuf);
 	(void) printf("  Supported Clock Rates: %u\n",
 	    cd->ccd_bNumClockSupported);
 	nicenum_scale(cd->ccd_dwDataRate, 1000, nnbuf,
-	    sizeof (nnbuf), NN_DIVISOR_1000);
+	    sizeof (nnbuf), NN_DIVISOR_1000 | NN_UNIT_SPACE);
 	(void) printf("  Default Data Rate: %sbps\n", nnbuf);
 	nicenum_scale(cd->ccd_dwMaxDataRate, 1000, nnbuf,
-	    sizeof (nnbuf), NN_DIVISOR_1000);
+	    sizeof (nnbuf), NN_DIVISOR_1000 | NN_UNIT_SPACE);
 	(void) printf("  Maximum Data Rate: %sbps\n", nnbuf);
 	(void) printf("  Supported Data Rates: %u\n",
 	    cd->ccd_bNumDataRatesSupported);
@@ -689,6 +720,9 @@ ccidadm_do_reader(int argc, char *argv[])
 	int i;
 
 	/* XXX argc == 0, dump all */
+	if (argc == 0) {
+		ccidadm_iter(B_TRUE, B_TRUE, ccidadm_reader_print, NULL);
+	}
 
 	for (i = 0; i < argc; i++) {
 		int fd;
@@ -698,7 +732,7 @@ ccidadm_do_reader(int argc, char *argv[])
 			errx(EXIT_FAILURE, "valid ccid reader");
 		}
 
-		ccidadm_reader_print(fd, argv[i]);
+		ccidadm_reader_print(fd, argv[i], NULL);
 		(void) close(fd);
 		if (i + 1 < argc) {
 			(void) printf("\n");
