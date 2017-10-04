@@ -25,6 +25,7 @@ include $(UTSBASE)/intel/Makefile.intel
 ALL_TARGET	= $(BINARY)
 LINT_TARGET	= $(MODULE).lint
 INSTALL_TARGET	= $(BINARY) $(ROOTMODULE)
+CPPFLAGS 	+= -I$(SRC)/common/ccid
 
 #
 # XXX For dev

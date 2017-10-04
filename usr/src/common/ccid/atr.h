@@ -71,6 +71,11 @@ extern atr_data_t *atr_data_alloc(void);
 extern void atr_data_free(atr_data_t *);
 
 /*
+ * Reset an allocated ATR data to be ready to parse something else.
+ */
+extern void atr_reset(atr_data_t *);
+
+/*
  * Parse the ATR data into an opaque structure that organizes the data and
  * allows for various queries to be made on it later.
  */

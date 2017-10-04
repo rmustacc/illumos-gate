@@ -123,6 +123,8 @@
 #include <sys/usb/clients/ccid/ccid.h>
 #include <sys/usb/clients/ccid/uccid.h>
 
+#include <atr.h>
+
 /*
  * Set the amount of parallelism we'll want to have from kernel threads which
  * are processing CCID requests. This is used to size the number of asynchronous
@@ -219,6 +221,12 @@ typedef enum ccid_slot_flags {
 #define	CCID_SLOT_F_WORK_MASK	(CCID_SLOT_F_INTR_MASK | \
     CCID_SLOT_F_NEED_TXN_RESET)
 
+typedef struct ccid_icc {
+	atr_data_t *icc_data;
+	atr_protocol_t icc_protocols;
+	atr_protocol_t icc_cur_protocol;
+} ccid_icc_t;
+
 typedef struct ccid_slot {
 	ccid_minor_idx_t	cs_idx;		/* WO */
 	uint_t			cs_slotno;	/* WO */
@@ -226,6 +234,7 @@ typedef struct ccid_slot {
 	ccid_slot_flags_t	cs_flags;
 	ccid_class_voltage_t	cs_voltage;
 	mblk_t			*cs_atr;
+	atr_data_t		*cs_atr_data;
 	struct ccid_command	*cs_command;
 	ccid_minor_t		*cs_excl_minor;
 	list_t			cs_excl_waiters;
@@ -249,15 +258,18 @@ typedef enum ccid_flags {
 	CCID_F_HAS_INTR		= 1 << 0,
 	CCID_F_NEEDS_PPS	= 1 << 1,
 	CCID_F_NEEDS_PARAMS	= 1 << 2,
-	CCID_F_IO_NOTSUP	= 1 << 3,
-	CCID_F_DETACHING	= 1 << 4,
-	CCID_F_WORKER_REQUESTED	= 1 << 5,
-	CCID_F_WORKER_RUNNING	= 1 << 6,
-	CCID_F_DISCONNECTED	= 1 << 7
+	CCID_F_NEEDS_IFSD	= 1 << 3,
+	CCID_F_IO_NOTSUP	= 1 << 4,
+	CCID_F_DETACHING	= 1 << 5,
+	CCID_F_WORKER_REQUESTED	= 1 << 6,
+	CCID_F_WORKER_RUNNING	= 1 << 7,
+	CCID_F_DISCONNECTED	= 1 << 8
 } ccid_flags_t;
 
 #define	CCID_F_WORKER_MASK	(CCID_F_WORKER_REQUESTED | \
     CCID_F_WORKER_RUNNING)
+#define	CCID_F_TPDU_MASK	(CCID_F_NEEDS_PPS | CCID_F_NEEDS_PARAMS | \
+    CCID_F_NEEDS_IFSD)
 
 typedef struct ccid_stats {
 	uint64_t	cst_intr_errs;
@@ -1039,7 +1051,7 @@ ccid_command_queue(ccid_t *ccid, ccid_command_t *cc)
 	if (seq == -1)
 		return (ENOMEM);
 	cc->cc_seq = seq;
-	VERIFY(seq <= UINT8_MAX);
+	VERIFY3U(seq, <=, UINT8_MAX);
 	cchead = (void *)cc->cc_ubrp->bulk_data->b_rptr;
 	cchead->ch_seq = (uint8_t)seq;
 	mutex_enter(&ccid->ccid_mutex);
@@ -1523,6 +1535,81 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
 	}
 }
 
+/*
+ * We have a card reader that supports TPDU processing. To successfully use TPDU
+ * processing, we need to figure what protocol this device uses and potentially
+ * negotiate several different parameters as well as inform the card of these.
+ *
+ * There are several different things we need to do here to successfully use
+ * this device:
+ *
+ * 1. Make sure that we can parse the ATR data to understand what protocols the
+ * device supports.
+ *
+ * XXX For the moment we're only going to parse the ATR and then leave it at
+ * that, making sure that we support T=1 and that it's configured as the default
+ * protocol. If not, then we need to go through and 
+ */
+static boolean_t
+ccid_slot_tpdu_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
+{
+	atr_parsecode_t p;
+	atr_protocol_t sup, def;
+
+	atr_reset(slot->cs_atr_data);
+	if ((p = atr_parse(atr->b_rptr, msgsize(atr), slot->cs_atr_data)) !=
+	    ATR_CODE_OK) {
+		ccid_error(ccid, "!failed to parse ATR data from slot %d: %s",
+		    slot->cs_slotno, atr_strerror(p));
+		return (B_FALSE);
+	}
+
+	/*
+	 * Check the supported protocols of the ICC. If it does not support T=1,
+	 * then mark that we cannot perform I/O to this ICC.
+	 *
+	 * XXX We probably should add a flag to the slot to track this.
+	 * Effectively this will be done by marking the slot as inactive when we
+	 * return B_FALSE
+	 */
+	sup = atr_supported_protocols(slot->cs_atr_data);
+	if (!(sup & ATR_P_T1)) {
+		ccid_error(ccid, "ICC does not support TPDU T=1, I/O not "
+		    "supported");
+		return (B_FALSE);
+	}
+
+	/*
+	 * Per ISO/IEC 7816-3:2006 6.3.1 the ICC may or may not offer the
+	 * ability to negotiate a protocol. If the ICC does not support this,
+	 * then it is in the specific mode as indicated by the ATR. This means
+	 * that we just set the CCID device to the parameters from the ICC's ATR.
+	 *
+	 * If the ICC does support this, then we may need to change its default
+	 * parameters and protocols by sending a PPS (Protocols and Parameters
+	 * Exchange).
+	 */
+	if (atr_params_negotiable(slot->cs_atr_data)) {
+		if (ccid->ccid_flags & CCID_F_NEEDS_PPS) {
+			ccid_error(ccid, "XXX skipping sending of PPS, using default params");
+		}
+	} else if (atr_default_protocol(slot->cs_atr_data) != ATR_P_T1) {
+		ccid_error(ccid, "ICC default is not T=1, I/O not supported");
+		return (B_FALSE);
+	}
+
+	
+	if (ccid->ccid_flags & CCID_F_NEEDS_PARAMS) {
+
+	}
+
+	if (ccid->ccid_flags & CCID_F_NEEDS_IFSD) {
+		ccid_error(ccid, "XXX skipping netogiation of IFSD");
+	}
+
+	return (B_FALSE);
+}
+
 static void
 ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 {
@@ -1608,17 +1695,31 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 		break;
 	}
 
-
-	mutex_enter(&ccid->ccid_mutex);
 	if (cvolt >= nvolts) {
 		ccid_error(ccid, "!failed to activate and power on ICC, no "
 		    "supported voltages found");
+		freemsg(atr);
+		mutex_enter(&ccid->ccid_mutex);
 		return;
 	}
 
+	if ((ccid->ccid_flags & CCID_CLASS_F_TPDU_XCHG) != 0) {
+		if (!ccid_slot_tpdu_init(ccid, slot, atr)) {
+			ccid_error(ccid, "!failed to netogiate required TPDU "
+			    "features");
+			freemsg(atr);
+			mutex_enter(&ccid->ccid_mutex);
+			return;
+		}
+	}
 
+	mutex_enter(&ccid->ccid_mutex);
 	slot->cs_voltage = volts[cvolt];
 	slot->cs_atr = atr;
+
+
+
+
 	slot->cs_flags |= CCID_SLOT_F_ACTIVE;
 }
 
@@ -1929,10 +2030,9 @@ ccid_supported(ccid_t *ccid)
 			ccid->ccid_flags |= CCID_F_NEEDS_PARAMS;
 		}
 
-		/*
-		 * XXX We probably need to figure out the IFSD negotiation and
-		 * if that matters or not.
-		 */
+		if ((feat & CCID_CLASS_F_TPDU_XCHG) == 0) {
+			ccid->ccid_flags |= CCID_F_NEEDS_IFSD;
+		}
 	}
 
 	/*
@@ -1941,7 +2041,7 @@ ccid_supported(ccid_t *ccid)
 	 * don't want to fail attach so that way some useful information can
 	 * still be given about the device.
 	 */
-	if ((feat & (CCID_CLASS_F_SHORT_APDU_XCHG |
+	if ((feat & (CCID_CLASS_F_TPDU_XCHG | CCID_CLASS_F_SHORT_APDU_XCHG |
 	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
 		ccid->ccid_flags |= CCID_F_IO_NOTSUP;
 		ccid_error(ccid, "CCID does not support required APDU transfer "
@@ -2069,6 +2169,7 @@ ccid_slots_fini(ccid_t *ccid)
 		}
 
 		freemsgchain(ccid->ccid_slots[i].cs_atr);
+		atr_data_free(ccid->ccid_slots[i].cs_atr_data);
 		list_destroy(&ccid->ccid_slots[i].cs_minors);
 		list_destroy(&ccid->ccid_slots[i].cs_excl_waiters);
 	}
@@ -2101,6 +2202,7 @@ ccid_slots_init(ccid_t *ccid)
 		ccid->ccid_slots[i].cs_flags |= CCID_SLOT_F_CHANGED;
 		ccid->ccid_slots[i].cs_slotno = i;
 		ccid->ccid_slots[i].cs_ccid = ccid;
+		ccid->ccid_slots[i].cs_atr_data = atr_data_alloc();
 		ccid->ccid_slots[i].cs_idx.cmi_minor = CCID_MINOR_INVALID;
 		ccid->ccid_slots[i].cs_idx.cmi_isslot = B_TRUE;
 		ccid->ccid_slots[i].cs_idx.cmi_data.cmi_slot =
@@ -3235,8 +3337,7 @@ static struct modldrv ccid_modldrv = {
 
 static struct modlinkage ccid_modlinkage = {
 	MODREV_1,
-	&ccid_modldrv,
-	NULL
+	{ &ccid_modldrv, NULL }
 };
 
 int
