@@ -251,6 +251,14 @@
 #define	CCID_MINOR_INVALID	0
 
 /*
+ * Required forward declarations.
+ */
+struct ccid;
+struct ccid_slot;
+struct ccid_minor;
+struct ccid_command;
+
+/*
  * This structure is used to map between the global set of minor numbers and the
  * things represented by them.
  */
@@ -296,12 +304,47 @@ typedef enum ccid_slot_flags {
 #define	CCID_SLOT_F_WORK_MASK	(CCID_SLOT_F_INTR_MASK | \
     CCID_SLOT_F_NEED_TXN_RESET)
 
+typedef int (*icc_transmit_func_t)(struct ccid *, struct ccid_slot *);
+typedef void (*icc_complete_func_t)(struct ccid *, struct ccid_slot *,
+    struct ccid_command *);
+typedef int (*icc_read_func_t)(struct ccid *, struct ccid_slot *, struct uio *);
+typedef void (*icc_excl_clean_func_t)(struct ccid *, struct ccid_slot *);
+
 typedef struct ccid_icc {
-	/* XXX Move the atr_data_t * into this. */
-	atr_protocol_t icc_protocols;
-	atr_protocol_t icc_cur_protocol;
-	ccid_params_t icc_params;
+	atr_data_t		*icc_atr_data;
+	atr_protocol_t		icc_protocols;
+	atr_protocol_t		icc_cur_protocol;
+	ccid_params_t		icc_params;
+	icc_transmit_func_t	icc_tx;
+	icc_complete_func_t	icc_complete;
+	icc_excl_clean_func_t	icc_excl_clean;
+	icc_read_func_t		icc_rx;
 } ccid_icc_t;
+
+/*
+ * Structure used to take care of and map I/O requests and things. This may not
+ * make sense as we develop the T=0 and T=1 code.
+ */
+typedef enum ccid_io_flags {
+	CCID_IO_F_IN_PROGRESS	= 1 << 0,
+	CCID_IO_F_DONE		= 1 << 1,
+	CCID_IO_F_ABANDONED	= 1 << 2
+} ccid_io_flags_t;
+
+typedef struct ccid_io_apdu {
+	/* XXX If this has only one member, remove the struct */
+	struct ccid_command	*cia_command;
+} ccid_io_apdu_t;
+
+typedef struct ccid_io {
+	ccid_io_flags_t	ci_flags;
+	size_t		ci_ilen;
+	uint8_t		ci_ibuf[CCID_APDU_LEN_MAX];
+	mblk_t		*ci_omp;
+	union {
+		ccid_io_apdu_t	ci_apdu;
+	} ci_prot;
+} ccid_io_t;
 
 typedef struct ccid_slot {
 	ccid_minor_idx_t	cs_idx;		/* WO */
@@ -310,12 +353,12 @@ typedef struct ccid_slot {
 	ccid_slot_flags_t	cs_flags;
 	ccid_class_voltage_t	cs_voltage;
 	mblk_t			*cs_atr;
-	atr_data_t		*cs_atr_data;
 	struct ccid_command	*cs_command;
 	ccid_minor_t		*cs_excl_minor;
 	list_t			cs_excl_waiters;
 	list_t			cs_minors;
 	ccid_icc_t		cs_icc;
+	ccid_io_t		cs_io;
 } ccid_slot_t;
 
 typedef enum ccid_attach_state {
@@ -337,11 +380,10 @@ typedef enum ccid_flags {
 	CCID_F_NEEDS_PARAMS	= 1 << 2,
 	CCID_F_NEEDS_DATAFREQ	= 1 << 3,
 	CCID_F_NEEDS_IFSD	= 1 << 4,
-	CCID_F_IO_NOTSUP	= 1 << 5,
-	CCID_F_DETACHING	= 1 << 6,
-	CCID_F_WORKER_REQUESTED	= 1 << 7,
-	CCID_F_WORKER_RUNNING	= 1 << 8,
-	CCID_F_DISCONNECTED	= 1 << 9
+	CCID_F_DETACHING	= 1 << 5,
+	CCID_F_WORKER_REQUESTED	= 1 << 6,
+	CCID_F_WORKER_RUNNING	= 1 << 7,
+	CCID_F_DISCONNECTED	= 1 << 8
 } ccid_flags_t;
 
 #define	CCID_F_WORKER_MASK	(CCID_F_WORKER_REQUESTED | \
@@ -455,6 +497,14 @@ static void ccid_worker_request(ccid_t *);
 static void ccid_command_dispatch(ccid_t *);
 static void ccid_command_free(ccid_command_t *);
 static int ccid_bulkin_schedule(ccid_t *);
+
+/*
+ * XXX Are these needed?
+ */
+static int ccid_write_apdu(ccid_t *, ccid_slot_t *);
+static void ccid_complete_apdu(ccid_t *, ccid_slot_t *, ccid_command_t *);
+static void ccid_excl_clean_apdu(ccid_t *, ccid_slot_t *);
+static int ccid_read_apdu(ccid_t *, ccid_slot_t *, struct uio *);
 
 static int
 ccid_idx_comparator(const void *l, const void *r)
@@ -583,21 +633,15 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 
 	/*
 	 * If we have an outstanding command left by the user when they've
-	 * closed the slot, we need to clean up this command. If the command has
-	 * completed, as in the user never called read, then we can simply free
-	 * this command. Otherwise, we must tag this command as being abandoned,
-	 * which will cause it to be cleaned up when the command is completed.
-	 * This does mean that if a user releases the slot and then someone else
-	 * gets it, they may not be able to write initially as the slot is still
-	 * busy.
+	 * closed the slot, we need to clean up this command. We need to call
+	 * the protocol specific handler here to determine what to do. If the
+	 * command has completed, but the user has never called read, then it
+	 * will simply clean it up. Otherwise it will indicate that there is
+	 * some amount of external state still ongoing to take care of and clean
+	 * up later.
 	 */
-	if (slot->cs_command != NULL) {
-		if (slot->cs_command->cc_state < CCID_COMMAND_COMPLETE) {
-			slot->cs_command->cc_flags |= CCID_COMMAND_F_ABANDON;
-		} else {
-			ccid_command_free(slot->cs_command);
-			slot->cs_command = NULL;
-		}
+	if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) != 0) {
+		slot->cs_icc.icc_excl_clean(ccid, slot);
 	}
 
 	/*
@@ -709,47 +753,6 @@ ccid_command_resp_param2(ccid_command_t *cc)
 	return (val);
 }
 
-static void
-ccid_command_complete_user(ccid_t *ccid, ccid_command_t *cc)
-{
-	ccid_slot_t *slot;
-	ccid_minor_t *cmp;
-
-	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-
-	slot = &ccid->ccid_slots[cc->cc_slot];
-	VERIFY3P(slot->cs_command, ==, cc);
-
-	/*
-	 * If we somehow lost the minor associated with this command, free it.
-	 */
-	cmp = slot->cs_excl_minor;
-	if (cmp == NULL) {
-		slot->cs_command = NULL;
-		ccid_command_free(cc);
-		return;
-	}
-
-	/*
-	 * If this was abandoned, free the command and signal that the slot is
-	 * writable again.
-	 */
-	if (cc->cc_flags & CCID_COMMAND_F_ABANDON) {
-		slot->cs_command = NULL;
-		ccid_command_free(cc);
-		pollwakeup(&cmp->cm_pollhead, POLLOUT);
-		return;
-	}
-
-	/*
-	 * Append this to the end of the list and wake up anyone who was blocked
-	 * or polling. At this point, we only need to signal readers, but we
-	 * need to wake up pollers for read and write.
-	 */
-	pollwakeup(&cmp->cm_pollhead, POLLIN | POLLRDNORM);
-	cv_signal(&cmp->cm_read_cv);
-}
-
 /*
  * Complete a single command. The way that a command completes depends on the
  * kind of command that occurs. If this is commad is flagged as a user command,
@@ -768,7 +771,19 @@ ccid_command_complete(ccid_command_t *cc)
 	list_remove(&ccid->ccid_command_queue, cc);
 
 	if (cc->cc_flags & CCID_COMMAND_F_USER) {
-		ccid_command_complete_user(ccid, cc);
+		ccid_slot_t *slot;
+
+		slot = &ccid->ccid_slots[cc->cc_slot];
+		/*
+		 * If the user ops vector has been destroyed, free this command.
+		 * There's not much we can do at this point. Otherwise, deliver
+		 * it.
+		 */
+		if (slot->cs_icc.icc_rx == NULL) {
+			ccid_command_free(cc);
+		} else {
+			slot->cs_icc.icc_complete(ccid, slot, cc);
+		}
 	} else {
 		list_insert_tail(&ccid->ccid_complete_queue, cc);
 		cv_broadcast(&cc->cc_cv);
@@ -1627,7 +1642,7 @@ ccid_command_set_parameters(ccid_t *ccid, ccid_slot_t *slot, atr_protocol_t prot
 	   CCID_REQUEST_SET_PARAMS, prot, 0, 0, &cc)) != 0) {
 		return (ret);
 	}
-	ccid_command_bcopy(cc, buf, len);
+	ccid_command_bcopy(cc, params, len);
 	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
 		ccid_command_free(cc);
 		return (ret);
@@ -2002,7 +2017,7 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	 * the worker context, so it should be safe to access in a lockless
 	 * fashion.
 	 */
-	data = slot->cs_atr_data;
+	data = slot->cs_icc.icc_atr_data;
 	atr_data_reset(data);
 	if ((p = atr_parse(atr->b_rptr, msgsize(atr), data)) != ATR_CODE_OK) {
 		ccid_error(ccid, "!failed to parse ATR data from slot %d: %s",
@@ -2157,6 +2172,37 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 }
 
 static void
+ccid_slot_setup_functions(ccid_t *ccid, ccid_slot_t *slot)
+{
+	uint_t bits = CCID_CLASS_F_TPDU_XCHG | CCID_CLASS_F_SHORT_APDU_XCHG |
+	    CCID_CLASS_F_EXT_APDU_XCHG;
+	switch (ccid->ccid_class.ccd_dwFeatures & bits) {
+	case CCID_CLASS_F_SHORT_APDU_XCHG:
+	case CCID_CLASS_F_EXT_APDU_XCHG:
+		slot->cs_icc.icc_tx = ccid_write_apdu;
+		slot->cs_icc.icc_complete = ccid_complete_apdu;
+		slot->cs_icc.icc_excl_clean = ccid_excl_clean_apdu;
+		slot->cs_icc.icc_rx = ccid_read_apdu;
+		break;
+	case CCID_CLASS_F_TPDU_XCHG:
+	default:
+		slot->cs_icc.icc_tx = NULL;
+		slot->cs_icc.icc_complete = NULL;
+		slot->cs_icc.icc_excl_clean = NULL;
+		slot->cs_icc.icc_rx = NULL;
+	}
+
+	/*
+	 * When we don't have a support tx or rx function, we don't want to end
+	 * up blocking attach. It's important we attach so that users can try
+	 * and determine information about the ICC and reader.
+	 */
+	if (slot->cs_icc.icc_tx == NULL) {
+		ccid_error(ccid, "CCID does not support transfers toICC");
+	}
+}
+
+static void
 ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 {
 	uint_t nvolts = 4;
@@ -2257,6 +2303,8 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 	}
 
 	mutex_enter(&ccid->ccid_mutex);
+	ccid_slot_setup_functions(ccid, slot);
+
 	slot->cs_voltage = volts[cvolt];
 	slot->cs_atr = atr;
 	slot->cs_flags |= CCID_SLOT_F_ACTIVE;
@@ -2585,20 +2633,6 @@ ccid_supported(ccid_t *ccid)
 		ccid->ccid_flags |= CCID_F_NEEDS_IFSD;
 	}
 
-	/*
-	 * Explicitly require some form of APDU support. Note, at this time we
-	 * check for this when performing writes, but warn about it here. We
-	 * don't want to fail attach so that way some useful information can
-	 * still be given about the device.
-	 */
-	if ((feat & (CCID_CLASS_F_TPDU_XCHG | CCID_CLASS_F_SHORT_APDU_XCHG |
-	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
-		ccid->ccid_flags |= CCID_F_IO_NOTSUP;
-		ccid_error(ccid, "CCID does not support required APDU transfer "
-		    "capabilities");
-	}
-
-
 	return (B_TRUE);
 }
 
@@ -2719,7 +2753,7 @@ ccid_slots_fini(ccid_t *ccid)
 		}
 
 		freemsgchain(ccid->ccid_slots[i].cs_atr);
-		atr_data_free(ccid->ccid_slots[i].cs_atr_data);
+		atr_data_free(ccid->ccid_slots[i].cs_icc.icc_atr_data);
 		list_destroy(&ccid->ccid_slots[i].cs_minors);
 		list_destroy(&ccid->ccid_slots[i].cs_excl_waiters);
 	}
@@ -2752,7 +2786,7 @@ ccid_slots_init(ccid_t *ccid)
 		ccid->ccid_slots[i].cs_flags |= CCID_SLOT_F_CHANGED;
 		ccid->ccid_slots[i].cs_slotno = i;
 		ccid->ccid_slots[i].cs_ccid = ccid;
-		ccid->ccid_slots[i].cs_atr_data = atr_data_alloc();
+		ccid->ccid_slots[i].cs_icc.icc_atr_data = atr_data_alloc();
 		ccid->ccid_slots[i].cs_idx.cmi_minor = CCID_MINOR_INVALID;
 		ccid->ccid_slots[i].cs_idx.cmi_isslot = B_TRUE;
 		ccid->ccid_slots[i].cs_idx.cmi_data.cmi_slot =
@@ -3332,6 +3366,245 @@ ccid_write_copyin(struct uio *uiop, mblk_t **mpp)
 	return (0);
 }
 
+/*
+ * Called to indicate that the I/O has been completed and another I/O may be
+ * issued to the device.
+ */
+static void
+ccid_user_io_free(ccid_t *ccid, ccid_slot_t *slot, boolean_t signal)
+{
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+
+	/*
+	 * Clear I/O flags.
+	 */
+	slot->cs_io.ci_flags &= ~CCID_IO_F_DONE;
+	slot->cs_io.ci_flags &= ~CCID_IO_F_IN_PROGRESS;
+	slot->cs_io.ci_flags &= ~CCID_IO_F_ABANDONED;
+
+	/*
+	 * Wake up anyone waiting for writes. Note, they may not exist. 
+	 */
+	if (slot->cs_excl_minor != NULL && signal) {
+		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLOUT);
+	}
+}
+
+/*
+ * Called to indicate that we are ready for a user to consume the I/O.
+ */
+static void
+ccid_user_io_done(ccid_t *ccid, ccid_slot_t *slot)
+{
+	ccid_minor_t *cmp;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+	cmp = slot->cs_excl_minor;
+	VERIFY3P(cmp, !=, NULL);
+
+	slot->cs_io.ci_flags |= CCID_IO_F_DONE;
+	pollwakeup(&cmp->cm_pollhead, POLLIN | POLLRDNORM);
+	cv_signal(&cmp->cm_read_cv);
+}
+
+static void
+ccid_excl_clean_apdu(ccid_t *ccid, ccid_slot_t *slot)
+{
+	ccid_command_t *cc;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+
+	cc = slot->cs_io.ci_prot.ci_apdu.cia_command;
+	if (cc->cc_state < CCID_COMMAND_COMPLETE) {
+		slot->cs_io.ci_flags |= CCID_IO_F_ABANDONED;
+	} else {
+		slot->cs_io.ci_prot.ci_apdu.cia_command = NULL;
+		ccid_command_free(cc);
+		ccid_user_io_free(ccid, slot, B_FALSE);
+	}
+}
+
+/*
+ * This function is called in response to a CCID command completing.
+ */
+static void
+ccid_complete_apdu(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
+{
+	ccid_minor_t *cmp;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+	VERIFY3P(slot->cs_io.ci_prot.ci_apdu.cia_command, ==, cc);
+
+	/*
+	 * First, see if it's even worth processing this command. To do that, we
+	 * want to go through and see if there's still a minor. If there isn't,
+	 * we can free this command and free up the I/O.
+	 */
+	cmp = slot->cs_excl_minor;
+	if ((slot->cs_io.ci_flags & CCID_IO_F_ABANDONED) != 0 ||
+	    slot->cs_excl_minor == NULL) {
+		ccid_command_free(cc);
+		slot->cs_io.ci_prot.ci_apdu.cia_command = NULL;
+		ccid_user_io_free(ccid, slot, B_TRUE);
+		return;
+	}
+
+	/*
+	 * Now, we can go ahead and wake up a reader to process this command.
+	 */
+	ccid_user_io_done(ccid, slot);
+}
+
+static int
+ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
+{
+	int ret;
+	ccid_command_t *cc;
+	ccid_reply_command_status_t crs;
+	ccid_reply_icc_status_t cis;
+	ccid_command_err_t cce;
+	ccid_minor_t *cmp;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+
+	cmp = slot->cs_excl_minor;
+
+	/*
+	 * While it's tempting to care if the slot is active, that actually
+	 * doesn't matter. All that matters is whether or not we have commands
+	 * here that are in progress or readable.
+	 *
+	 * The only unfortunate matter is that we can't check if the user can
+	 * read this command until one is available. Which means that someone
+	 * could be blocked for some time.
+	 */
+	while (slot->cs_io.ci_prot.ci_apdu.cia_command == NULL ||
+	    slot->cs_io.ci_prot.ci_apdu.cia_command->cc_state <
+	    CCID_COMMAND_COMPLETE) {
+		if (uiop->uio_fmode & FNONBLOCK) {
+			return (EWOULDBLOCK);
+		}
+
+		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
+			return (EINTR);
+		}
+	}
+
+	/*
+	 * Decode the status of the first command. If the command was
+	 * successful, we need to check the user's buffer size. Otherwise, we
+	 * can consume it all.
+	 */
+	cc = slot->cs_io.ci_prot.ci_apdu.cia_command;
+
+	/*
+	 * If we didn't get a successful command, then we go ahead and consume
+	 * this and mark it as having generated an EIO.
+	 */
+	if (cc->cc_state != CCID_COMMAND_COMPLETE) {
+		ret = EIO;
+		goto consume;
+	}
+
+	ccid_command_status_decode(cc, &crs, &cis, &cce);
+	if (crs == CCID_REPLY_STATUS_COMPLETE) {
+		size_t len;
+
+		/*
+		 * Note, as part of processing the reply, the driver has already
+		 * gone through and made sure that we have a message block large
+		 * enough for this command.
+		 */
+		len = ccid_command_resp_length(cc);
+		if (len > uiop->uio_resid) {
+			return (EOVERFLOW);
+		}
+
+		/*
+		 * Copy out the resulting data.
+		 */
+		ret = ccid_read_copyout(uiop, cc, len);
+		if (ret != 0) {
+			return (ret);
+		}
+	} else {
+		if (cis == CCID_REPLY_ICC_MISSING) {
+			ret = ENXIO;
+		} else {
+			/*
+			 * XXX There are a few more semantic things we can do
+			 * with the errors here that we're throwing out and
+			 * lumping as EIO. Oh well.
+			 */
+			ret = EIO;
+		}
+	}
+
+consume:
+	slot->cs_io.ci_prot.ci_apdu.cia_command = NULL;
+	ccid_command_free(cc);
+	ccid_user_io_free(ccid, slot, B_TRUE);
+	return (ret);
+}
+
+/*
+ * We have the uswer buffer in the CCID slot. Given that, transform it into
+ * something that we can send to the device. For APDU's this is simply creating
+ * a transfer command and copying it into that buffer.
+ */
+static int
+ccid_write_apdu(ccid_t *ccid, ccid_slot_t *slot)
+{
+	int ret;
+	ccid_command_t *cc;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+
+	/*
+	 * Drop the lock to perform memory allocation and transmit the command.
+	 */
+	mutex_exit(&ccid->ccid_mutex);
+
+	if ((ret = ccid_command_alloc(ccid, slot, B_FALSE, NULL,
+	    slot->cs_io.ci_ilen, CCID_REQUEST_TRANSFER_BLOCK, 0, 0, 0,
+	    &cc)) != 0) {
+		mutex_enter(&ccid->ccid_mutex);
+		return (ret);
+	}
+
+	cc->cc_flags |= CCID_COMMAND_F_USER;
+	ccid_command_bcopy(cc, slot->cs_io.ci_ibuf, slot->cs_io.ci_ilen);
+
+	/*
+	 * Before we submit this command, assign it to our internal state. We
+	 * need to do this before we submit the command. Otherwise, we could be
+	 * pathologically scheduled and not get the chance.
+	 */
+	mutex_enter(&ccid->ccid_mutex);
+	slot->cs_io.ci_prot.ci_apdu.cia_command = cc;
+	mutex_exit(&ccid->ccid_mutex);
+
+	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
+		mutex_enter(&ccid->ccid_mutex);
+		slot->cs_io.ci_prot.ci_apdu.cia_command = NULL;
+		ccid_command_free(cc);
+		return (ret);
+	}
+
+	mutex_enter(&ccid->ccid_mutex);
+	while (cc->cc_state < CCID_COMMAND_REPLYING) {
+		/*
+		 * If we receive a signal, break out of the loop. Don't return
+		 * EINTR, as this has been successfully dispatched. It just
+		 * means that it'll be a little while before more I/O is ready.
+		 */
+		if (cv_wait_sig(&cc->cc_cv, &ccid->ccid_mutex) == 0)
+			break;
+	}
+
+	return (0);
+}
+
 static int
 ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 {
@@ -3340,10 +3613,6 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	ccid_minor_t *cmp;
 	ccid_slot_t *slot;
 	ccid_t *ccid;
-	ccid_command_t *cc;
-	ccid_reply_command_status_t crs;
-	ccid_reply_icc_status_t cis;
-	ccid_command_err_t cce;
 
 	if (uiop->uio_resid <= 0) {
 		return (EINVAL);
@@ -3376,86 +3645,16 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	}
 
 	/*
-	 * While it's tempting to care if the slot is active, that actually
-	 * doesn't matter. All that matters is whether or not we have commands
-	 * here that are in progress or readable.
-	 *
-	 * The only unfortunate matter is that we can't check if the user can
-	 * read this command until one is available. Which means that someone
-	 * could be blocked for some time.
+	 * Make sure we have a read function for this minor, otherwise we won't
+	 * be able to receive data.
 	 */
-	while (slot->cs_command == NULL ||
-	    slot->cs_command->cc_state < CCID_COMMAND_COMPLETE) {
-		if (uiop->uio_fmode & FNONBLOCK) {
-			mutex_exit(&ccid->ccid_mutex);
-			return (EWOULDBLOCK);
-		}
-
-		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
-			mutex_exit(&ccid->ccid_mutex);
-			return (EINTR);
-		}
+	if (slot->cs_icc.icc_rx == NULL) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (ENOTSUP);
 	}
 
-	/*
-	 * Decode the status of the first command. If the command was
-	 * successful, we need to check the user's buffer size. Otherwise, we
-	 * can consume it all.
-	 *
-	 * XXX The command status logic may not be correct for TPDU.
-	 */
-	cc = slot->cs_command;
-
-	/*
-	 * If we didn't get a successful command, then we go ahead and consume
-	 * this and mark it as having generated an EIO.
-	 */
-	if (cc->cc_state != CCID_COMMAND_COMPLETE) {
-		ret = EIO;
-		goto consume;
-	}
-
-	ccid_command_status_decode(cc, &crs, &cis, &cce);
-	if (crs == CCID_REPLY_STATUS_COMPLETE) {
-		size_t len;
-
-		/*
-		 * Note, as part of processing the reply, the driver has already
-		 * gone through and made sure that we have a message block large
-		 * enough for this command.
-		 */
-		len = ccid_command_resp_length(cc);
-		if (len > uiop->uio_resid) {
-			mutex_exit(&ccid->ccid_mutex);
-			return (EOVERFLOW);
-		}
-
-		/*
-		 * Copy out the resulting data.
-		 */
-		ret = ccid_read_copyout(uiop, cc, len);
-		if (ret != 0) {
-			mutex_exit(&ccid->ccid_mutex);
-			return (ret);
-		}
-	} else {
-		if (cis == CCID_REPLY_ICC_MISSING) {
-			ret = ENXIO;
-		} else {
-			/*
-			 * XXX There are a few more semantic things we can do
-			 * with the errors here that we're throwing out and
-			 * lumping as EIO. Oh well.
-			 */
-			ret = EIO;
-		}
-	}
-
-consume:
-	pollwakeup(&cmp->cm_pollhead, POLLOUT);
-	slot->cs_command = NULL;
+	ret = slot->cs_icc.icc_rx(ccid, slot, uiop);
 	mutex_exit(&ccid->ccid_mutex);
-	ccid_command_free(cc);
 
 	return (ret);
 }
@@ -3469,7 +3668,6 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	ccid_slot_t *slot;
 	ccid_t *ccid;
 	mblk_t *mp = NULL;
-	ccid_command_t *cc = NULL;
 	size_t len;
 
 	if (uiop->uio_resid > CCID_APDU_LEN_MAX) {
@@ -3480,6 +3678,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 		return (EINVAL);
 	}
 
+	len = uiop->uio_resid;
 	idx = ccid_minor_find(getminor(dev));
 	if (idx == NULL) {
 		return (ENOENT);
@@ -3494,27 +3693,10 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	ccid = slot->cs_ccid;
 
 	/*
-	 * Copy in the uio data into an mblk. For the iosize we use the actual
-	 * size of the data we care about. We put a ccid_header_t worth of data
-	 * in front of this so we have space for the header. Snapshot the size
-	 * before we do the uiomove(). If for some reason the I/O fails, we
-	 * don't worry about trying to restore the original resid, consumers
-	 * should ignore it on failure.
+	 * Now that we have the slot, verify whether or not we can perform this
+	 * I/O.
 	 */
-	len = uiop->uio_resid;
-	if ((ret = ccid_write_copyin(uiop, &mp)) != 0) {
-		return (ret);
-	}
-
-	if ((ret = ccid_command_alloc(ccid, slot, B_FALSE, mp, len,
-	    CCID_REQUEST_TRANSFER_BLOCK, 0, 0, 0, &cc)) != 0) {
-		freemsg(mp);
-		return (ret);
-	}
-	cc->cc_flags |= CCID_COMMAND_F_USER;
-
 	mutex_enter(&ccid->ccid_mutex);
-
 	if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENODEV);
@@ -3526,63 +3708,53 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 */
 	if (!(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL)) {
 		mutex_exit(&ccid->ccid_mutex);
-		ccid_command_free(cc);
 		return (EACCES);
 	}
 
 	if (!(slot->cs_flags & CCID_SLOT_F_ACTIVE)) {
 		mutex_exit(&ccid->ccid_mutex);
-		ccid_command_free(cc);
 		return (ENXIO);
 	}
 
 	/*
-	 * Make sure that we have a supported short APDU form.
+	 * Make sure that we have a supported transmit function.
 	 */
-	if ((ccid->ccid_flags & CCID_F_IO_NOTSUP) != 0) {
+	if (slot->cs_icc.icc_tx == NULL) {
 		mutex_exit(&ccid->ccid_mutex);
-		ccid_command_free(cc);
 		return (ENOTSUP);
 	}
 
 	/*
-	 * XXX This isn't taking into accounts commands that we need to issue
-	 * from the perspective of hardware and all those other fun things.
+	 * See if another command is in progress. If so, try to claim it.
+	 * Otherwise, fail with EBUSY. Note, we only fail for commands that are
+	 * user initiated. There may be other commands that are ongoing in the
+	 * system.
 	 */
-	if (slot->cs_command != NULL) {
+	if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
-		ccid_command_free(cc);
 		return (EBUSY);
 	}
 
-	slot->cs_command = cc;
-	mutex_exit(&ccid->ccid_mutex);
+	if (uiomove(slot->cs_io.ci_ibuf, len, UIO_WRITE, uiop) != 0) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (EFAULT);
+	}
+
+	slot->cs_io.ci_ilen = len;
+	slot->cs_io.ci_flags |= CCID_IO_F_IN_PROGRESS;
+	slot->cs_io.ci_omp = NULL;
 
 	/*
-	 * Now that the slot is set up. Try and queue on the command. After
-	 * that, we'll poll until it's gotten to the point where something is
-	 * replying ot it. At that point, we'll be free to return the write.
+	 * Now that we're here, go ahead and call the actual tx function.
 	 */
-
-	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
-		ccid_command_free(cc);
-		return (ret);
+	if ((ret = slot->cs_icc.icc_tx(ccid, slot)) != 0) {
+		slot->cs_io.ci_ilen = 0;
+		bzero(slot->cs_io.ci_ibuf, sizeof (slot->cs_io.ci_ibuf));
+		slot->cs_io.ci_flags &= ~CCID_IO_F_IN_PROGRESS;
 	}
-
-	mutex_enter(&ccid->ccid_mutex);
-	while (cc->cc_state < CCID_COMMAND_REPLYING) {
-		/*
-		 * If we receive a signal, break out of the loop. Don't return
-		 * EINTR, as this has been successfully dispatched. It just
-		 * means that it'll be a little while before more I/O is ready.
-		 */
-		if (cv_wait_sig(&cc->cc_cv, &ccid->ccid_mutex) == 0)
-			break;
-	}
-
 	mutex_exit(&ccid->ccid_mutex);
 
-	return (0);
+	return (ret);
 }
 
 static int
@@ -3790,9 +3962,9 @@ ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 		return (EACCES);
 	}
 
-	if (slot->cs_command == NULL) {
+	if ((slot->cs_io.ci_flags & CCID_IO_F_DONE) != 0) {
 		ready |= POLLOUT;
-	} else if (slot->cs_command->cc_state >= CCID_COMMAND_COMPLETE) {
+	} else if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) == 0) {
 		ready |= POLLIN | POLLRDNORM;
 	}
 
