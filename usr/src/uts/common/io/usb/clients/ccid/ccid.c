@@ -2128,10 +2128,8 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 		}
 	}
 
-	/*
-	 * XXX get params
-	 */
-	if ((ret = ccid_command_get_parameters(ccid, slot, &prot, &slot->cs_icc.icc_params)) != 0) {
+	if ((ret = ccid_command_get_parameters(ccid, slot, &prot,
+	    &slot->cs_icc.icc_params)) != 0) {
 		ccid_error(ccid, "failed to get parameters for slot %u: %d",
 		    slot->cs_slotno, ret);
 		return (B_FALSE);
@@ -2157,84 +2155,6 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 
 	return (B_TRUE);
 }
-
-/*
- * We have a card reader that supports TPDU processing. To successfully use TPDU
- * processing, we need to figure what protocol this device uses and potentially
- * negotiate several different parameters as well as inform the card of these.
- *
- * There are several different things we need to do here to successfully use
- * this device:
- *
- * 1. Make sure that we can parse the ATR data to understand what protocols the
- * device supports.
- *
- * XXX For the moment we're only going to parse the ATR and then leave it at
- * that, making sure that we support T=1 and that it's configured as the default
- * protocol. If not, then we need to go through and 
- */
-#if 0
-static boolean_t
-ccid_slot_tpdu_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
-{
-	atr_parsecode_t p;
-	atr_protocol_t sup, def;
-
-	atr_reset(slot->cs_atr_data);
-	if ((p = atr_parse(atr->b_rptr, msgsize(atr), slot->cs_atr_data)) !=
-	    ATR_CODE_OK) {
-		ccid_error(ccid, "!failed to parse ATR data from slot %d: %s",
-		    slot->cs_slotno, atr_strerror(p));
-		return (B_FALSE);
-	}
-
-	/*
-	 * Check the supported protocols of the ICC. If it does not support T=1,
-	 * then mark that we cannot perform I/O to this ICC.
-	 *
-	 * XXX We probably should add a flag to the slot to track this.
-	 * Effectively this will be done by marking the slot as inactive when we
-	 * return B_FALSE
-	 */
-	def = atr_default_protocol(slot->cs_atr_data);
-	sup = atr_supported_protocols(slot->cs_atr_data);
-	if (!(sup & ATR_P_T1)) {
-		ccid_error(ccid, "ICC does not support TPDU T=1, I/O not "
-		    "supported");
-		return (B_FALSE);
-	}
-
-	/*
-	 * Per ISO/IEC 7816-3:2006 6.3.1 the ICC may or may not offer the
-	 * ability to negotiate a protocol. If the ICC does not support this,
-	 * then it is in the specific mode as indicated by the ATR. This means
-	 * that we just set the CCID device to the parameters from the ICC's ATR.
-	 *
-	 * If the ICC does support this, then we may need to change its default
-	 * parameters and protocols by sending a PPS (Protocols and Parameters
-	 * Exchange).
-	 */
-	if (atr_params_negotiable(slot->cs_atr_data)) {
-		if ((ccid->ccid_flags & CCID_F_NEEDS_PPS) != 0 && def != ATR_P_T1) {
-			ccid_error(ccid, "XXX skipping sending of PPS, using default params");
-		}
-	} else if (atr_default_protocol(slot->cs_atr_data) != ATR_P_T1) {
-		ccid_error(ccid, "ICC default is not T=1, I/O not supported");
-		return (B_FALSE);
-	}
-
-	
-	if (ccid->ccid_flags & CCID_F_NEEDS_PARAMS) {
-
-	}
-
-	if (ccid->ccid_flags & CCID_F_NEEDS_IFSD) {
-		ccid_error(ccid, "XXX skipping netogiation of IFSD");
-	}
-
-	return (B_FALSE);
-}
-#endif
 
 static void
 ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
