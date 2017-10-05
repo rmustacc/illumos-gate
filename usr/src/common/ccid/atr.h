@@ -26,6 +26,7 @@
  */
 
 #include <sys/types.h>
+#include <sys/usb/clients/ccid/ccid.h>
 #ifndef	_KERNEL
 #include <stdio.h>
 #endif
@@ -62,6 +63,36 @@ typedef enum atr_clock_stop {
 	ATR_CLOCK_STOP_BOTH	= 0x03
 } atr_clock_stop_t;
 
+typedef enum atr_data_rate_choice {
+	/*
+	 * Indicates that the reader cannot support the data rate needed for the
+	 * ICC.
+	 */
+	ATR_RATE_UNSUPPORTED	= 0x00,
+	/*
+	 * Indicates that the reader supports the ICC present, but must run at
+	 * the protocol's default rate (Di index = Fi index = 1)
+	 */
+	ATR_RATE_USEDEFAULT	= 0x01,
+	/*
+	 * The reader supports the Di/Fi values that the ICC proposed in its ATR
+	 * and no action beyond setting the parameters of the reader is required
+	 * (this may be automatic depending on the reader's dwFeatures).
+	 */
+	ATR_RATE_USEATR		= 0x02,
+	/*
+	 * The reader can use the features of the ATR specified. However, it
+	 * must change the data rate or frequency that the card is running at to
+	 * proceed.
+	 */
+	ATR_RATE_USEATR_SETRATE	= 0x03
+} atr_data_rate_choice_t;
+
+typedef enum atr_t1_checksum {
+	ATR_T1_CHECKSUM_LRC	= 0x00,
+	ATR_T1_CHECKSUM_CRC	= 0x01
+} atr_t1_checksum_t;
+
 typedef struct atr_data atr_data_t;
 
 /*
@@ -73,7 +104,7 @@ extern void atr_data_free(atr_data_t *);
 /*
  * Reset an allocated ATR data to be ready to parse something else.
  */
-extern void atr_reset(atr_data_t *);
+extern void atr_data_reset(atr_data_t *);
 
 /*
  * Parse the ATR data into an opaque structure that organizes the data and
@@ -100,6 +131,12 @@ extern boolean_t atr_params_negotiable(atr_data_t *);
 extern atr_protocol_t atr_default_protocol(atr_data_t *);
 
 /*
+ * Protocol default values.
+ */
+extern uint8_t atr_fi_default_index(void);
+extern uint8_t atr_di_default_index(void);
+
+/*
  * Obtain the table indexes that should be used by the device.
  */
 extern uint8_t atr_fi_index(atr_data_t *);
@@ -107,25 +144,43 @@ extern uint8_t atr_di_index(atr_data_t *);
 extern atr_convention_t atr_convention(atr_data_t *);
 extern uint8_t atr_extra_guardtime(atr_data_t *);
 extern uint8_t atr_t0_wi(atr_data_t *);
+extern atr_t1_checksum_t atr_t1_checksum(atr_data_t *);
 extern uint8_t atr_t1_bwi(atr_data_t *);
 extern uint8_t atr_t1_cwi(atr_data_t *);
 extern atr_clock_stop_t atr_clock_stop(atr_data_t *);
 extern uint8_t atr_t1_ifsc(atr_data_t *);
+
+/*
+ * Use this function to determine what set of Di and Fi values should be used by
+ * a reader, based on the parameters from the ATR and the reader's cclass.
+ */
+extern atr_data_rate_choice_t atr_data_rate(atr_data_t *, ccid_class_descr_t *, uint32_t *, uint_t, uint32_t *);
 
 #ifndef	_KERNEL
 extern void atr_data_dump(atr_data_t *, FILE *);
 #endif
 
 /*
- * Get a string for an ATR protocol.
+ * String and table index values.
  */
 extern const char *atr_protocol_to_string(atr_protocol_t);
-
+extern uint_t atr_fi_index_to_value(uint8_t);
 extern const char *atr_fi_index_to_string(uint8_t);
 extern const char *atr_fmax_index_to_string(uint8_t);
+extern uint_t atr_di_index_to_value(uint8_t);
 extern const char *atr_di_index_to_string(uint8_t);
 extern const char *atr_clock_stop_to_string(atr_clock_stop_t);
 extern const char *atr_convention_to_string(atr_convention_t);
+
+/*
+ * Functions for generating and testing PPS values. Before calling
+ * atr_pps_fidi_accepted(), one must call atr_pps_valid().
+ */
+#define	PPS_BUFFER_MAX	6
+extern uint_t atr_pps_generate(uint8_t *, size_t, atr_protocol_t, boolean_t, uint8_t,
+    uint8_t, boolean_t, uint8_t);
+extern boolean_t atr_pps_valid(void *, size_t, void *, size_t);
+extern boolean_t atr_pps_fidi_accepted(void *, size_t);
 
 #ifdef __cplusplus
 }

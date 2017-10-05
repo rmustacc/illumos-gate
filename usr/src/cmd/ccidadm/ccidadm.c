@@ -313,6 +313,8 @@ ccidadm_atr_props(uccid_cmd_status_t *ucs)
 	atr_data_t *data;
 	atr_protocol_t prots, defprot;
 	boolean_t negotiate;
+	atr_data_rate_choice_t rate;
+	uint32_t bps;
 
 	if ((data = atr_data_alloc()) == NULL) {
 		err(EXIT_FAILURE, "failed to allocate memory for "
@@ -346,7 +348,7 @@ ccidadm_atr_props(uccid_cmd_status_t *ucs)
 	}
 
 	/*
-	 * For each supported protocol, figure out parameters we would negoiate.
+	 * For each supported protocol, figure out parameters we would negotiate.
 	 * We only need to warn about auto-negotiation if this is TPDU and
 	 * specific bits are missing. XXX Mask for TDPU and maybe character?
 	 */
@@ -356,6 +358,31 @@ ccidadm_atr_props(uccid_cmd_status_t *ucs)
 		    "negotiation\n");
 	}
 
+	/*
+	 * Determine which set of Di/Fi values we should use and how we should
+	 * get there (note a reader may not have to set them).
+	 */
+	rate = atr_data_rate(data, &ucs->ucs_class, NULL, 0, &bps);
+	switch (rate) {
+	case ATR_RATE_USEDEFAULT:
+		(void) printf("Reader will run ICC at the default (Di=1/Fi=1) "
+		    "speed\n");
+		break;
+	case ATR_RATE_USEATR:
+		(void) printf("Reader will run ICC at ICC's Di/Fi values\n");
+		break;
+	case ATR_RATE_USEATR_SETRATE:
+		(void) printf("Reader will run ICC at ICC's Di/Fi values, but "
+		    "must set data rate to %u bps\n", bps);
+		break;
+	case ATR_RATE_UNSUPPORTED:
+		(void) printf("Reader cannot run ICC due to Di/Fi mismatch\n");
+		break;
+	default:
+		(void) printf("Cannot determine Di/Fi rate, unexpected "
+		    "value: %u\n", rate);
+		break;
+	}
 	if (prots & ATR_P_T0) {
 		uint8_t fi, di;
 		atr_convention_t conv;

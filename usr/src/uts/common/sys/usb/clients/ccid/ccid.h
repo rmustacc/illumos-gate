@@ -234,7 +234,10 @@ typedef struct ccid_params_t0 {
 	uint8_t cp0_bGuardTimeT0;
 	uint8_t cp0_bWaitingIntegerT0;
 	uint8_t	cp0_bClockStop;
-} ccid_params_t0;
+} ccid_params_t0_t;
+
+#define	CCID_P_TCCKST0_DIRECT	0x00
+#define	CCID_P_TCCKST0_INVERSE	0x02
 
 typedef struct ccid_params_t1 {
 	uint8_t cp1_bmFindexDindex;
@@ -244,7 +247,12 @@ typedef struct ccid_params_t1 {
 	uint8_t cp1_bClockStop;
 	uint8_t cp1_bIFSC;
 	uint8_t cp1_bNadValue;
-} ccid_params_t1; 
+} ccid_params_t1_t; 
+
+typedef union ccid_params {
+	ccid_params_t0_t ccp_t0;
+	ccid_params_t1_t ccp_t1;
+} ccid_params_t;
 
 /*
  * Macros and constants to take apart the slot status (in ch_param1) when a CCID

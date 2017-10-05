@@ -163,6 +163,26 @@
 #define	ATR_T1_IFSC_DEFAULT	32
 
 /*
+ * From ISO/IEC 7816-3:2006 Section 11.4.4
+ */
+#define	ATR_T1_CHECKSUM_DEFAULT	ATR_T1_CHECKSUM_LRC
+
+/*
+ * Definitions for PPS construction. These are derived from ISO/IEC 7816-3:2006
+ * section 9, Protocol and parameters selection.
+ */
+#define	PPS_LEN_MIN	3	/* PPSS, PPS0, PCK */
+#define	PPS_LEN_MAX	PPS_BUFFER_MAX
+#define	PPS_PPSS_INDEX	0
+#define	PPS_PPSS_VAL	0xff
+#define	PPS_PPS0_INDEX	0x01
+#define	PPS_PPS0_PROT(x)	((x) & 0x0f)
+#define	PPS_PPS0_PPS1		(1 << 5)
+#define	PPS_PPS0_PPS2		(1 << 6)
+#define	PPS_PPS0_PPS3		(1 << 7)
+#define	PPS_PPS1_SETVAL(f, d)	((((f) & 0x0f) << 4) | ((d) & 0x0f))
+
+/*
  * This enum and subsequent structure is used to represent a single level of
  * 'T'. This includes the possibility for all three values to be set and records
  * the protocol.
@@ -205,8 +225,27 @@ struct atr_data {
 };
 
 /*
- * This table maps the bit values for Fi from 7816-3:2006 section 8.3 Table 7.
+ * These tables maps the bit values for Fi from 7816-3:2006 section 8.3 Table 7.
  */
+static uint_t atr_fi_valtable[16] = {
+	372,		/* 0000 */
+	372,		/* 0001 */
+	558,		/* 0010 */
+	744,		/* 0011 */
+	1116,		/* 0100 */
+	1488,		/* 0101 */
+	1860,		/* 0110 */
+	0,		/* 0111 */
+	0,		/* 1000 */
+	512,		/* 1001 */
+	768,		/* 1010 */
+	1024,		/* 1011 */
+	1536,		/* 1100 */
+	2048,		/* 1101 */
+	0,		/* 1110 */
+	0		/* 1111 */
+};
+
 static const char *atr_fi_table[16] = {
 	"372",		/* 0000 */
 	"372",		/* 0001 */
@@ -251,6 +290,28 @@ static const char *atr_fmax_table[16] = {
 /*
  * This table maps the bit values for Fi from 7816-3:2006 section 8.3 Table 8.
  */
+static uint_t atr_di_valtable[16] = {
+	0,		/* 0000 */
+	1,		/* 0001 */
+	2,		/* 0010 */
+	4,		/* 0011 */
+	8,		/* 0100 */
+	16,		/* 0101 */
+	32,		/* 0110 */
+	64,		/* 0111 */
+	12,		/* 1000 */
+	20,		/* 1001 */
+	0,		/* 1010 */
+	0,		/* 1011 */
+	0,		/* 1100 */
+	0,		/* 1101 */
+	0,		/* 1110 */
+	0		/* 1111 */
+};
+
+/*
+ * This table maps the bit values for Fi from 7816-3:2006 section 8.3 Table 8.
+ */
 static const char *atr_di_table[16] = {
 	"RFU",		/* 0000 */
 	"1",		/* 0001 */
@@ -280,6 +341,16 @@ static const char *atr_clock_table[4] = {
 	"signal low or high"	/* 11 */
 };
 
+uint_t
+atr_fi_index_to_value(uint8_t val)
+{
+	if (val >= sizeof (atr_fi_valtable) / sizeof (atr_fi_valtable[0])) {
+		return (0);
+	}
+
+	return (atr_fi_valtable[val]);
+}
+
 const char *
 atr_fi_index_to_string(uint8_t val)
 {
@@ -300,6 +371,15 @@ atr_fmax_index_to_string(uint8_t val)
 	return (atr_fmax_table[val]);
 }
 
+uint_t
+atr_di_index_to_value(uint8_t val)
+{
+	if (val >= sizeof (atr_di_valtable) / sizeof (atr_di_valtable[0])) {
+		return (0);
+	}
+
+	return (atr_di_valtable[val]);
+}
 const char *
 atr_di_index_to_string(uint8_t val)
 {
@@ -561,6 +641,18 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 	return (ATR_CODE_OK);
 }
 
+uint8_t
+atr_fi_default_index(void)
+{
+	return (ATR_FI_DEFAULT_INDEX);
+}
+
+uint8_t
+atr_di_default_index(void)
+{
+	return (ATR_DI_DEFAULT_INDEX);
+}
+
 /*
  * Parse the data to determine which protocols are supported in this atr data.
  * Based on this, users can come and ask us to fill in protocol information.
@@ -798,6 +890,33 @@ atr_clock_stop(atr_data_t *data)
 	return (ATR_CLOCK_STOP_NONE);
 }
 
+atr_t1_checksum_t
+atr_t1_checksum(atr_data_t *data)
+{
+	uint8_t i;
+
+	if (data->atr_nti <= 2) {
+		return (ATR_T1_CHECKSUM_DEFAULT);
+	}
+
+	for (i = 2; i < data->atr_nti; i++) {
+		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T1) {
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TC) != 0) {
+				if (ATR_T1_TC0_CRC(data->atr_ti[i].atrti_tc)) {
+					return (ATR_T1_CHECKSUM_CRC);
+				} else {
+					return (ATR_T1_CHECKSUM_LRC);
+				}
+			}
+
+			return (ATR_T1_CHECKSUM_DEFAULT);
+		}
+	}
+
+	return (ATR_T1_CHECKSUM_DEFAULT);
+
+}
+
 uint8_t
 atr_t1_bwi(atr_data_t *data)
 {
@@ -842,6 +961,124 @@ atr_t1_ifsc(atr_data_t *data)
 	return (ATR_T1_IFSC_DEFAULT);
 }
 
+/*
+ * Attempt to determine which set of data rates we should be able to use for a
+ * given class of protocol. Here we want to do the calculation based on the CCID
+ * specification, section 9.4.x. To use these higher rates we need:
+ *
+ * + Reader's data rate > frequency * Di / Fi.
+ *
+ * To determine which rate and frequency we use, we look at the reader's
+ * features. If the reader supports both the Automatic baud rate and automatic
+ * ICC clock frequency change, then we use the _maximum_ rate. Otherwise we will
+ * indicate that we can use the ATR's properties, but will require changing the
+ * default data rate.
+ * 
+ * Now, some ICC devices are not negotiable. In those cases, we'll see if we can
+ * fit it in with either the default or maximum data rates. If not, then we'll
+ * not be able to support this card.
+ *
+ * There are two wrinkles that exist in this. The first is supported frequencies
+ * and data rates. If there are no additional data rates supported, then all of
+ * the data rates between the default and max are supported. If not, then only
+ * those specified in the data rates array are supported.
+ *
+ * The second hurdle is that we need to do this division and try and avoid the
+ * pitfalls of floating point arithmetic, as floating point is not allowed in
+ * the kernel (and this is shared). Importantly that means only integers are
+ * allowed here.
+ */
+atr_data_rate_choice_t
+atr_data_rate(atr_data_t *data, ccid_class_descr_t *class, uint32_t *rates,
+    uint_t nrates, uint32_t *dataratep)
+{
+	uint_t nfeats = CCID_CLASS_F_AUTO_ICC_CLOCK | CCID_CLASS_F_AUTO_BAUD;
+	uint8_t di, fi;
+	uint_t dival, fival;
+	boolean_t autospeed, negotiable, exprates;
+	uint64_t maxval, defval;
+
+	if ((data->atr_flags & ATR_F_VALID) == 0)
+		return (ATR_RATE_UNSUPPORTED);
+
+	di = atr_di_index(data);
+	fi = atr_fi_index(data);
+	dival = atr_di_index_to_value(di);
+	fival = atr_fi_index_to_value(fi);
+	autospeed = (class->ccd_dwFeatures & nfeats) == nfeats;
+	exprates = class->ccd_bNumDataRatesSupported != 0;
+	negotiable = atr_params_negotiable(data);
+
+	/*
+	 * XXX We don't quite support cards with fixed rates at this time as
+	 * it's not clear what that rate should be. If it's negotiable, we'll
+	 * let them run at the default. Otherwise, we have to fail the request
+	 * until we implement the logic to search their data rates.
+	 */
+	if (exprates) {
+		if (negotiable) {
+			return (ATR_RATE_USEDEFAULT);
+		}
+		return (ATR_RATE_UNSUPPORTED);
+	}
+
+	/*
+	 * This indicates that the card gave us values that were reserved for
+	 * future use. If we could negotiate it, then just stick with the
+	 * default paramters. Otherwise, return that we can't support this ICC.
+	 */
+	if (dival == 0 || fival == 0) {
+		if (negotiable)
+			return (ATR_RATE_USEDEFAULT);
+		return (ATR_RATE_UNSUPPORTED);
+	}
+
+	/*
+	 * Calculate the maximum and default values.
+	 */
+	maxval = class->ccd_dwMaximumClock * 1000;
+	maxval *= dival;
+	maxval /= fival;
+
+	defval = class->ccd_dwDefaultClock * 1000;
+	defval *= dival;
+	defval /= fival;
+
+	/*
+	 * We're allowed any set of data rates between the default and the
+	 * maximum. Check if the maximum data rate will work for either the
+	 * default or maximum clock. If so, then we can use the cards rates.
+	 * Otherwise we should use thwe can use the ICC's rates. Otherwise we
+	 * should use the default rates. To account for the fact that we may
+	 * have had a fractional value, we require a strict greater than
+	 * comparison.
+	 */
+	if ((uint64_t)class->ccd_dwMaxDataRate > maxval ||
+	    (uint64_t)class->ccd_dwMaxDataRate > defval) {
+		if (autospeed) {
+			return (ATR_RATE_USEATR);
+		} else {
+			return (ATR_RATE_UNSUPPORTED);
+		}
+	}
+
+	/*
+	 * If the CCID reader can't handle the ICC's proposed rates, then fall
+	 * back to the defaults if we're allowed to negotiate. Otherwise, we're
+	 * not able to use this ICC.
+	 */
+	if (negotiable) {
+		return (ATR_RATE_USEDEFAULT);
+	}
+
+	return (ATR_RATE_UNSUPPORTED);
+}
+
+void
+atr_data_reset(atr_data_t *data)
+{
+	bzero(data, sizeof (&data));
+}
 
 #ifdef	_KERNEL
 atr_data_t *
@@ -857,6 +1094,169 @@ atr_data_free(atr_data_t *data)
 		return;
 
 	kmem_free(data, sizeof (atr_data_t));
+}
+
+/*
+ * Make sure that the response we got from the ICC is valid. For the ICC to
+ * valid it must pass checksum and have the PPSS value set correctly. The
+ * protocol must match what we requested; however, the PPS1-3 bits are a bit
+ * different. They may only be set in the response if we set them in the
+ * request. However, they do not have to be set in the response.
+ */
+boolean_t
+atr_pps_valid(void *reqbuf, size_t reqlen, void *respbuf, size_t resplen)
+{
+	uint8_t val, i, reqidx, respidx;
+	uint8_t *req = reqbuf, *resp = respbuf;
+
+	if (resplen > PPS_LEN_MAX || resplen < PPS_LEN_MIN)
+		return (B_FALSE);
+
+	/*
+	 * Before we validate the data, make sure the checksum is valid.
+	 */
+	for (i = 0, val = 0; i < resplen; i++) {
+		val ^= resp[i];
+	}
+
+	/* Checksum failure */
+	if (val != 0) {
+		return (B_FALSE);
+	}
+
+	/*
+	 * We should always have PPSS echoed back as we set it.
+	 */
+	if (resp[PPS_PPSS_INDEX] != PPS_PPSS_VAL) {
+		return (B_FALSE);
+	}
+
+	/*
+	 * Go through and make sure the number of bytes present makes sense for
+	 * the number of bits set in PPS1.
+	 */
+	val = PPS_LEN_MIN;
+	if (resp[PPS_PPS0_INDEX] & PPS_PPS0_PPS1)
+		val++;
+	if (resp[PPS_PPS0_INDEX] & PPS_PPS0_PPS2)
+		val++;
+	if (resp[PPS_PPS0_INDEX] & PPS_PPS0_PPS3)
+		val++;
+	if (val != resplen)
+		return (B_FALSE);
+
+	/*
+	 * Now we've finally verified that the response is syntactically valid.
+	 * We must go through and make sure that it is semantically valid.
+	 */
+	if (PPS_PPS0_PROT(req[PPS_PPS0_INDEX]) !=
+	    PPS_PPS0_PROT(resp[PPS_PPS0_INDEX])) {
+		return (B_FALSE);
+	}
+
+	/*
+	 * When checking the PPS bit and extensions, we first check in the
+	 * response as a bit in the request is allowed to not be in the
+	 * response. But not the opposite way around. We also have to keep track
+	 * of the fact that the index for values will vary.
+	 */
+	reqidx = respidx = PPS_PPS0_INDEX + 1;
+	if ((resp[PPS_PPS0_INDEX] & PPS_PPS0_PPS1) != 0) {
+		if ((req[PPS_PPS0_INDEX] & PPS_PPS0_PPS1) == 0) {
+			return (B_FALSE);
+		}
+
+		if (req[reqidx] != resp[respidx]) {
+			return (B_FALSE);
+		}
+
+		reqidx++;
+		respidx++;
+	} else if ((req[PPS_PPS0_INDEX] & PPS_PPS0_PPS1) != 0) {
+		reqidx++;
+	}
+
+	if ((resp[PPS_PPS0_INDEX] & PPS_PPS0_PPS2) != 0) {
+		if ((req[PPS_PPS0_INDEX] & PPS_PPS0_PPS2) == 0) {
+			return (B_FALSE);
+		}
+
+		if (req[reqidx] != resp[respidx]) {
+			return (B_FALSE);
+		}
+
+		reqidx++;
+		respidx++;
+	} else if ((req[PPS_PPS0_INDEX] & PPS_PPS0_PPS2) != 0) {
+		reqidx++;
+	}
+
+	if ((resp[PPS_PPS0_INDEX] & PPS_PPS0_PPS3) != 0) {
+		/*
+		 * At this time, we never specify PPS3 in a request. Therefore
+		 * if it is present in the response, treat this as an invalid
+		 * request.
+		 */
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+uint_t
+atr_pps_generate(uint8_t *buf, size_t buflen, atr_protocol_t prot, boolean_t pps1,
+    uint8_t fi, uint8_t di, boolean_t pps2, uint8_t spu)
+{
+	uint8_t protval, cksum, i;
+	uint_t len = 0;
+
+	if (buflen < PPS_BUFFER_MAX)
+		return (0);
+
+	buf[PPS_PPSS_INDEX] = PPS_PPSS_VAL;
+	switch (prot) {
+	case ATR_P_T0:
+		protval = 0;
+		break;
+	case ATR_P_T1:
+		protval = 1;
+		break;
+	default:
+		return (0);
+	}
+
+	buf[PPS_PPS0_INDEX] = PPS_PPS0_PROT(protval);
+	len = 2;
+	if (pps1) {
+		buf[PPS_PPS0_INDEX] |= PPS_PPS0_PPS1;
+		buf[len++] = PPS_PPS1_SETVAL(fi, di);
+	}
+
+	if (pps2) {
+		buf[PPS_PPS0_INDEX] |= PPS_PPS0_PPS2;
+		buf[len++] = spu;
+	}
+
+	/*
+	 * The checksum must xor to zero.
+	 */
+	for (i = 0, cksum = 0; i < len; i++) {
+		cksum ^= buf[i];
+	}
+	buf[len++] = cksum;
+	return (len);
+}
+
+/*
+ * The caller of this wants to know if the Fi/Di values that they proposed were
+ * accepted. The caller must have already called atr_pps_valid(). At this point,
+ * we can say that the value was accepted if the PPS1 bit is set.
+ */
+boolean_t
+atr_pps_fidi_accepted(void *respbuf, size_t len)
+{
+	uint8_t *resp = respbuf;
+	return ((resp[PPS_PPS0_INDEX] & PPS_PPS0_PPS1) != 0);
 }
 
 #else	/* !_KERNEL */

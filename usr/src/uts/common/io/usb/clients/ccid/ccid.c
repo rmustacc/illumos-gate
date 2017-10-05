@@ -47,16 +47,16 @@
  * for a follow up run. This means that it's possible that we end up processing
  * items early and that the follow up run is ignored.
  *
- * Two state flags are used to keep track of this dance:
- * CCID_F_WORKER_REQUESTED and CCID_F_WORKER_RUNNING. The first is used
- * to indicate that discovery is desired. The second is to indicate that it is
- * actively running. When discovery is requested, the caller first checks to
- * make sure the current flags. If neither flag is set, then it knows that it
- * can kick off discovery. Regardless if it can kick off the taskq, it always
- * sets requested. Once the taskq entry starts, it removes any
- * DISCOVER_REQUESTED flags and sets DISCOVER_RUNNING. If at the end of
- * discovery, we find that another request has been made, the discovery function
- * will kick off another entry in the taskq.
+ * Two state flags are used to keep track of this dance: CCID_F_WORKER_REQUESTED
+ * and CCID_F_WORKER_RUNNING. The first is used to indicate that discovery is
+ * desired. The second is to indicate that it is actively running. When
+ * discovery is requested, the caller first checks to make sure the current
+ * flags. If neither flag is set, then it knows that it can kick off discovery.
+ * Regardless if it can kick off the taskq, it always sets requested. Once the
+ * taskq entry starts, it removes any DISCOVER_REQUESTED flags and sets
+ * DISCOVER_RUNNING. If at the end of discovery, we find that another request
+ * has been made, the discovery function will kick off another entry in the
+ * taskq.
  *
  * The one possible problem with this model is that it means that we aren't
  * throttling the set of incoming requests with respect to taskq dispatches.
@@ -94,6 +94,81 @@
  * state machine:
  *
  * XXX
+ *
+ * APDU and TPDU Processing and Parameter Selection
+ * ------------------------------------------------
+ *
+ * Readers provide four different modes for us to be able to transmit data to
+ * and from the card. These are:
+ *
+ * 1. Character Mode 2. TPDU Mode 3. Short APDU Mode 4. Extended APDU Mode
+ *
+ * Devices either support mode 1, mode 2, mode 3, or mode 3 and 4. All readers
+ * that support extended APDUs support short APDUs. At this time, we do not
+ * support character mode.
+ *
+ * The ICC and the reader need to be in agreement in order for them to be able
+ * to exchange information. The ICC indicates what it supports by replying to a
+ * power on command with an ATR (answer to reset). This data can be parsed to
+ * indicate which of two protocols the ICC supports. These protocols are
+ * referred to as:
+ *
+ *  o T=0
+ *  o T=1
+ *
+ * These protocols are defined in the ISO/IEC 7816-3:2006 specification. When a
+ * reader supports an APDU mode, then it does not have to worry about the
+ * underlying protocol and can just send an application data unit (APDU).
+ * Otherwise, the reader must take the application data (APDU) and transform it
+ * into the form required by the corresponding protocol.
+ *
+ * There are several parameters that need to be negotiated to insure that the
+ * protocols work correctly. To negotiate these parameters and to select a
+ * protocol, the reader must construct a PPS (protocol and parameters structure)
+ * request and exchange that with the ICC. A reader may optionally take care of
+ * performing this and indicates its support for this in dwFeatures member of
+ * the USB class descriptor.
+ *
+ * In addition, the reader itself must often be told of these configuration
+ * changes through the means of a CCID_REQUEST_SET_PARAMS command. Once both of
+ * these have been performed, the reader and ICC can communicate to their hearts
+ * desire.
+ *
+ * Both the negotiation and the setting of the parameters can be performed
+ * automatically by the CCID reader. When the reader supports APDU exchanges,
+ * then it must support some aspects of this negotiation. Because of that, we
+ * never consider performing this for APDU related activity and only worry about
+ * this for TPDU transfers.
+ *
+ * In the ATR data the device can indicate whether or not it supports
+ * negotiating this information. If the hardware does not support negotiation,
+ * then it likely does not support a PPS and in which case we need to program
+ * the hardware with the parameters indicated by the ATR through a
+ * CCID_REQUEST_SET_PARAMS command and do not need to negotiation a PPS.
+ * 
+ * Many ICC devices support negotiation. When an ICC supporting negotiation is
+ * first turned on then it enters into a default mode and uses the default
+ * values while in that mode. The PPS may be used to change the protocol as well
+ * as several parameters. Once the PPS has been agreed upon, this driver just
+ * send a CCID_REQUEST_SET_PARAMS command to inform the reader what is going on.
+ *
+ * If the CCID reader supports neither of the hardware related mechanisms for a
+ * PPS exchange, then we must do both of these. If hardware supports automatic
+ * parameter negotiation then we do not need to send either the PPS or the
+ * CCID_REQUEST_SET_PARAMS command.
+ *
+ * The ATR offers us what the hardware's maximum value of Di and Fi are. If the
+ * reader supports higher speeds, then we will 
+ *
+ * XXX At the moment we're not adjusting any of the Di or Fi values beyond their
+ * default.
+ *
+ * To summarize this all, the following is the flow chart we perform after
+ * successfully powering on the device:
+ *
+ *  - If the reader supports APDU transfers, then we are done.
+ *     XXX Depending on level of automation we may need to still do things.
+ *  - If the reader supports 
  */
 
 /*
@@ -222,9 +297,10 @@ typedef enum ccid_slot_flags {
     CCID_SLOT_F_NEED_TXN_RESET)
 
 typedef struct ccid_icc {
-	atr_data_t *icc_data;
+	/* XXX Move the atr_data_t * into this. */
 	atr_protocol_t icc_protocols;
 	atr_protocol_t icc_cur_protocol;
+	ccid_params_t icc_params;
 } ccid_icc_t;
 
 typedef struct ccid_slot {
@@ -239,6 +315,7 @@ typedef struct ccid_slot {
 	ccid_minor_t		*cs_excl_minor;
 	list_t			cs_excl_waiters;
 	list_t			cs_minors;
+	ccid_icc_t		cs_icc;
 } ccid_slot_t;
 
 typedef enum ccid_attach_state {
@@ -258,18 +335,19 @@ typedef enum ccid_flags {
 	CCID_F_HAS_INTR		= 1 << 0,
 	CCID_F_NEEDS_PPS	= 1 << 1,
 	CCID_F_NEEDS_PARAMS	= 1 << 2,
-	CCID_F_NEEDS_IFSD	= 1 << 3,
-	CCID_F_IO_NOTSUP	= 1 << 4,
-	CCID_F_DETACHING	= 1 << 5,
-	CCID_F_WORKER_REQUESTED	= 1 << 6,
-	CCID_F_WORKER_RUNNING	= 1 << 7,
-	CCID_F_DISCONNECTED	= 1 << 8
+	CCID_F_NEEDS_DATAFREQ	= 1 << 3,
+	CCID_F_NEEDS_IFSD	= 1 << 4,
+	CCID_F_IO_NOTSUP	= 1 << 5,
+	CCID_F_DETACHING	= 1 << 6,
+	CCID_F_WORKER_REQUESTED	= 1 << 7,
+	CCID_F_WORKER_RUNNING	= 1 << 8,
+	CCID_F_DISCONNECTED	= 1 << 9
 } ccid_flags_t;
 
 #define	CCID_F_WORKER_MASK	(CCID_F_WORKER_REQUESTED | \
     CCID_F_WORKER_RUNNING)
-#define	CCID_F_TPDU_MASK	(CCID_F_NEEDS_PPS | CCID_F_NEEDS_PARAMS | \
-    CCID_F_NEEDS_IFSD)
+#define	CCID_F_ICC_INIT_MASK	(CCID_F_NEEDS_PPS | CCID_F_NEEDS_PARAMS | \
+    CCID_F_NEEDS_IFSD | CCID_F_NEEDS_DATAFREQ)
 
 typedef struct ccid_stats {
 	uint64_t	cst_intr_errs;
@@ -615,6 +693,20 @@ ccid_command_resp_length(ccid_command_t *cc)
 	bcopy(&cch->ch_length, &len, sizeof (len));
 	len = LE_32(len);
 	return (len);
+}
+
+static uint8_t
+ccid_command_resp_param2(ccid_command_t *cc)
+{
+	uint8_t val;
+	const ccid_header_t *cch;
+
+	VERIFY3P(cc, !=, NULL);
+	VERIFY3P(cc->cc_response, !=, NULL);
+
+	cch = (ccid_header_t *)cc->cc_response->b_rptr;
+	bcopy(&cch->ch_param2, &val, sizeof (val));
+	return (val);
 }
 
 static void
@@ -1135,6 +1227,22 @@ ccid_command_free(ccid_command_t *cc)
 }
 
 /*
+ * Copy len bytes of data from buf into the allocated message block.
+ */
+static void
+ccid_command_bcopy(ccid_command_t *cc, const void *buf, size_t len)
+{
+	size_t mlen;
+
+	mlen = len + sizeof (ccid_header_t);
+	VERIFY3U(mlen, >, len);
+	VERIFY3U(mlen, <=, cc->cc_ubrp->bulk_len);
+
+	bcopy(buf, cc->cc_ubrp->bulk_data->b_wptr, len);
+	cc->cc_ubrp->bulk_data->b_wptr += len;
+}
+
+/*
  * Allocate a command of a specific size and parameters. This will allocate a
  * USB bulk transfer that the caller will copy data to.
  */
@@ -1233,7 +1341,9 @@ ccid_command_alloc(ccid_t *ccid, ccid_slot_t *slot, boolean_t block,
 	cchead->ch_param0 = param0;
 	cchead->ch_param1 = param1;
 	cchead->ch_param2 = param2;
+	cc->cc_ubrp->bulk_data->b_wptr += sizeof (ccid_header_t);
 	*ccp = cc;
+
 	return (0);
 }
 
@@ -1414,6 +1524,202 @@ done:
 	return (ret);
 }
 
+static int
+ccid_command_get_parameters(ccid_t *ccid, ccid_slot_t *slot,
+    atr_protocol_t *protp, ccid_params_t *paramsp)
+{
+	int ret;
+	uint8_t prot;
+	size_t mlen;
+	ccid_header_t cch;
+	ccid_command_t *cc;
+	ccid_reply_command_status_t crs;
+	ccid_reply_icc_status_t cis;
+	const void *cpbuf;
+
+	if ((ret = ccid_command_alloc(ccid, slot, B_TRUE, NULL, 0,
+	   CCID_REQUEST_GET_PARAMS, 0, 0, 0, &cc)) != 0) {
+		return (ret);
+	}
+
+	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
+		ccid_command_free(cc);
+		return (ret);
+	}
+
+	ccid_command_poll(ccid, cc);
+
+	if (cc->cc_state != CCID_COMMAND_COMPLETE) {
+		ret = EIO;
+		goto done;
+	}
+
+	ccid_command_status_decode(cc, &crs, &cis, NULL);
+	if (crs != CCID_REPLY_STATUS_COMPLETE) {
+		if (cis == CCID_REPLY_ICC_MISSING) {
+			ret = ENXIO;
+		} else {
+			ret = EIO;
+		}
+		goto done;
+	}
+
+	/*
+	 * The protocol is in ch_param2 of the header.
+	 */
+	prot = ccid_command_resp_param2(cc);
+	mlen = ccid_command_resp_length(cc);
+	cpbuf = cc->cc_response->b_rptr + sizeof (ccid_header_t);
+
+	ret = 0;
+	switch (prot) {
+	case 0:
+		if (mlen < sizeof (ccid_params_t0_t)) {
+			ret = EOVERFLOW;
+			goto done;
+		}
+		*protp = ATR_P_T0;
+		bcopy(cpbuf, &paramsp->ccp_t0, sizeof (ccid_params_t0_t));
+		break;
+	case 1:
+		if (mlen < sizeof (ccid_params_t1_t)) {
+			ret = EOVERFLOW;
+			goto done;
+		}
+		*protp = ATR_P_T1;
+		bcopy(cpbuf, &paramsp->ccp_t1, sizeof (ccid_params_t1_t));
+		break;
+	default:
+		ret = ECHRNG;
+		break;
+	}
+
+done:
+	ccid_command_free(cc);
+	return (ret);
+}
+
+static int
+ccid_command_set_parameters(ccid_t *ccid, ccid_slot_t *slot, atr_protocol_t protocol, void *params)
+{
+	int ret;
+	ccid_command_t *cc;
+	uint8_t prot;
+	size_t len;
+	ccid_reply_command_status_t crs;
+	ccid_reply_icc_status_t cis;
+	ccid_command_err_t cce;
+
+	switch (protocol) {
+	case ATR_P_T0:
+		prot = 0;
+		len = sizeof (ccid_params_t0_t);
+		break;
+	case ATR_P_T1:
+		prot = 1;
+		len = sizeof (ccid_params_t1_t);
+		break;
+	default:
+		return (EINVAL);
+	}
+
+	if ((ret = ccid_command_alloc(ccid, slot, B_TRUE, NULL, len,
+	   CCID_REQUEST_SET_PARAMS, prot, 0, 0, &cc)) != 0) {
+		return (ret);
+	}
+	ccid_command_bcopy(cc, buf, len);
+	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
+		ccid_command_free(cc);
+		return (ret);
+	}
+
+	ccid_command_poll(ccid, cc);
+
+	if (cc->cc_state != CCID_COMMAND_COMPLETE) {
+		ret = EIO;
+		goto done;
+	}
+
+	ccid_command_status_decode(cc, &crs, &cis, &cce);
+	if (crs != CCID_REPLY_STATUS_COMPLETE) {
+		if (cis == CCID_REPLY_ICC_MISSING) {
+			ret = ENXIO;
+		} else {
+			ccid_error(ccid, "failed to set parameters on slot %u: "
+			    "%u\n", slot->cs_slotno, cce);
+			ret = EIO;
+		}
+	} else {
+		ret = 0;
+	}
+
+done:
+	ccid_command_free(cc);
+	return (ret);
+}
+
+/*
+ * Initiate a polled data transfer. This should not be used for any user I/O,
+ * only for PPS and IFSD transactions while initializing the card. Generally
+ * this is only used for CCID devices that support TPDU.
+ */
+static int
+ccid_command_transfer(ccid_t *ccid, ccid_slot_t *slot, const void *buf,
+    size_t len, mblk_t **outp)
+{
+	int ret;
+	ccid_command_t *cc;
+	uint8_t *datap;
+	ccid_reply_command_status_t crs;
+	ccid_reply_icc_status_t cis;
+	ccid_command_err_t cce;
+
+	if (buf == NULL || len == 0 || outp == NULL)
+		return (EINVAL);
+
+	*outp = NULL;
+	if ((ret = ccid_command_alloc(ccid, slot, B_TRUE, NULL, len,
+	   CCID_REQUEST_TRANSFER_BLOCK, 0, 0, 0, &cc)) != 0) {
+		return (ret);
+	}
+
+	ccid_command_bcopy(cc, buf, len);
+
+	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
+		ccid_command_free(cc);
+		return (ret);
+	}
+
+	ccid_command_poll(ccid, cc);
+
+	if (cc->cc_state != CCID_COMMAND_COMPLETE) {
+		ret = EIO;
+		goto done;
+	}
+
+	ccid_command_status_decode(cc, &crs, &cis, &cce);
+	if (crs == CCID_REPLY_STATUS_COMPLETE) {
+		mblk_t *mp;
+
+		/* Take ownership of the data from the command */
+		mp = cc->cc_response;
+		cc->cc_response = NULL;
+		mp->b_rptr += sizeof (ccid_header_t);
+		*outp = mp;
+		ret = 0;
+	} else {
+		if (cis == CCID_REPLY_ICC_MISSING) {
+			ret = ENXIO;
+		} else {
+			ret = EIO;
+		}
+	}
+
+done:
+	ccid_command_free(cc);
+	return (ret);
+}
+
 static void
 ccid_intr_pipe_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 {
@@ -1535,6 +1841,323 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
 	}
 }
 
+static boolean_t
+ccid_slot_send_pps(ccid_t *ccid, ccid_slot_t *slot, atr_data_t *data,
+    uint8_t *fi, uint8_t *di, atr_protocol_t prot)
+{
+	mblk_t *mp;
+	uint_t len;
+	boolean_t changefi;
+	int ret;
+	uint8_t pps[PPS_BUFFER_MAX];
+
+	if (fi == NULL && di == NULL) {
+		len = atr_pps_generate(pps, sizeof (pps), prot, B_FALSE, 0, 0,
+		    B_FALSE, 0);
+	} else if (fi != NULL && di != NULL) {
+		len = atr_pps_generate(pps, sizeof (pps), prot, B_TRUE, *fi,
+		    *di, B_FALSE, 0);
+	} else {
+		return (B_FALSE);
+	}
+
+	if (len == 0) {
+		ccid_error(ccid, "!failed to generate pps data");
+		return (B_FALSE);
+	}
+
+	if ((ret = ccid_command_transfer(ccid, slot, pps, len, &mp)) != 0) {
+		ccid_error(ccid, "!failed to perform PPS exchange: %d", ret);
+		return (B_FALSE);
+	}
+
+	if (!atr_pps_valid(pps, sizeof (pps), mp->b_rptr, msgsize(mp))) {
+		ccid_error(ccid, "!PPS reply was invalid\n");
+		return (B_FALSE);
+	}
+
+	/*
+	 * If the proposed Fi/Di values that we sent in the PPS were not
+	 * accepted, then we need to use the default index values.
+	 */
+	if (!atr_pps_fidi_accepted(mp->b_rptr, msgsize(mp))) {
+		*fi = atr_fi_default_index();
+		*di = atr_di_default_index();
+	}
+
+	return (B_TRUE);
+}
+
+static boolean_t
+ccid_slot_params_t0_init(ccid_t *ccid, ccid_slot_t *slot, atr_data_t *data,
+    uint8_t fi, uint8_t di)
+{
+	int ret;
+	ccid_params_t0_t p;
+	atr_convention_t conv;
+	atr_clock_stop_t stop;
+
+	bzero(&p, sizeof (p));
+	conv = atr_convention(data);
+	/* XXX Macroify */
+	p.cp0_bmFindexDindex = ((fi & 0x0f) << 4) | (di & 0x0f);
+	/* B0 is set t0 0 for T=0 */
+	p.cp0_bmTCCKST0 = 0;
+	if (conv == ATR_CONVENTION_INVERSE) {
+		p.cp0_bmTCCKST0 |= CCID_P_TCCKST0_INVERSE;
+	} else {
+		p.cp0_bmTCCKST0 |= CCID_P_TCCKST0_DIRECT;
+	}
+	p.cp0_bGuardTimeT0 = atr_extra_guardtime(data);
+	p.cp0_bWaitingIntegerT0 = atr_t0_wi(data);
+	p.cp0_bClockStop = atr_clock_stop(data);
+
+	if ((ret = ccid_command_set_parameters(ccid, slot, ATR_P_T0,
+	    &p)) != 0) {
+		ccid_error(ccid, "failed to set T=0 params on slot %u: %d",
+		    slot->cs_slotno, ret);
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+static boolean_t
+ccid_slot_params_t1_init(ccid_t *ccid, ccid_slot_t *slot, atr_data_t *data,
+    uint8_t fi, uint8_t di)
+{
+	int ret;
+	uint8_t bwi, cwi;
+	ccid_params_t1_t p;
+	atr_convention_t conv;
+	atr_t1_checksum_t cksum;
+
+	bzero(&p, sizeof (p));
+	/* XXX Macroify */
+	conv = atr_convention(data);
+	cksum = atr_t1_checksum(data);
+	bwi = atr_t1_bwi(data);
+	cwi = atr_t1_cwi(data);
+	p.cp1_bmFindexDindex = ((fi & 0x0f) << 4) | (di & 0x0f);
+	p.cp1_bmTCCKST1 = 0x10;
+	if (cksum == ATR_T1_CHECKSUM_CRC) {
+		p.cp1_bmTCCKST1 |= 0x1;
+	}
+	if (conv == ATR_CONVENTION_INVERSE) {
+		p.cp1_bmTCCKST1 |= 0x02;
+	}
+	p.cp1_bGuardTimeT1 = atr_extra_guardtime(data);
+	p.cp1_bmWaitingIntegersT1 = ((bwi & 0x0f) << 4) | (cwi & 0x0f);
+	p.cp1_bClockStop = atr_clock_stop(data);
+	p.cp1_bIFSC = atr_t1_ifsc(data);
+
+	/*
+	 * We always set NAD to zero. NAD is used as a way to multiplex logical
+	 * connections in T=1. However, we only ever have a single writer so
+	 * this functionality is not useful. In addition, several readers don't
+	 * support non-zero NAD values.
+	 */
+	p.cp1_bNadValue = 0;
+
+	if ((ret = ccid_command_set_parameters(ccid, slot, ATR_P_T1,
+	    &p)) != 0) {
+		ccid_error(ccid, "failed to set T=1 params on slot %u: %d",
+		    slot->cs_slotno, ret);
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
+}
+
+/*
+ * We have an ICC present in a slot. Before we can send commands to it, we
+ * initialize the slot in some form or fashion. The steps that we must take
+ * depend on the features that the card presents. To prepare the slot we must
+ * make sure the following are set:
+ *
+ * - Negotiate and send the PPS (CCID_F_NEEDS_PPS)
+ * - Set the CCID reader's parameters (CCID_F_NEEDS_PARAMS)
+ * - Set the CCID reader's clock and data rate (CCID_F_NEEDS_DATAFREQ)
+ * - Snapshot the current paramters being used for userland
+ * - Set the IFSD for T=1 (CCID_F_NEEDS_IFSD)
+ */
+static boolean_t
+ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
+{
+	int ret;
+	boolean_t neg;
+	atr_parsecode_t p;
+	atr_protocol_t sup, def, prot;
+	atr_data_t *data;
+
+	/*
+	 * Hardware handles all initialization features. There's nothing else
+	 * that we need to do for now.
+	 */
+	if ((ccid->ccid_flags & CCID_F_ICC_INIT_MASK) == 0)
+		return (B_TRUE);
+
+	/*
+	 * Use the slot's atr data structure. This is only used when we're in
+	 * the worker context, so it should be safe to access in a lockless
+	 * fashion.
+	 */
+	data = slot->cs_atr_data;
+	atr_data_reset(data);
+	if ((p = atr_parse(atr->b_rptr, msgsize(atr), data)) != ATR_CODE_OK) {
+		ccid_error(ccid, "!failed to parse ATR data from slot %d: %s",
+		    slot->cs_slotno, atr_strerror(p));
+		return (B_FALSE);
+	}
+
+	/*
+	 * Snapshot the supported and default protocols. Snapshot whether we can
+	 * negotiate this or not.
+	 */
+	def = atr_default_protocol(data);
+	sup = atr_supported_protocols(data);
+	neg = atr_params_negotiable(data);
+
+	/*
+	 * If we encounter an ICC that needs manual setting of the frequency and
+	 * data rates, we don't support that at this time. Warn about that fact.
+	 * When we do support this, this should be folded into the general
+	 * parameter logic detection as it will be driven based on
+	 * atr_data_rate().
+	 */
+	if ((ccid->ccid_flags & CCID_F_NEEDS_DATAFREQ) != 0) {
+		ccid_error(ccid, "!ccid reader requires unsupproted manual "
+		    "clock and data rate settings, failing to activate ICC");
+		return (B_FALSE);
+	}
+
+	/*
+	 * If we need to send a PPS or we need to send parameters to the ICC,
+	 * then we must go through and determine what the values we're sending
+	 * should be.
+	 *
+	 * If the card has automatic parameter negotiation according to various
+	 * specifications, then we don't bother trying to change the protocol
+	 * and thus we don't enter this if block.
+	 */
+	if ((ccid->ccid_flags & (CCID_F_NEEDS_PPS | CCID_F_NEEDS_PARAMS)) != 0) {
+		atr_data_rate_choice_t rate;
+		uint8_t fi, di;
+		boolean_t changeprot;
+
+		fi = atr_fi_index(data);
+		di = atr_di_index(data);
+		rate = atr_data_rate(data, &ccid->ccid_class, NULL, 0, NULL);
+		switch (rate) {
+		case ATR_RATE_UNSUPPORTED:
+			ccid_error(ccid, "!cannot use Fi/Di (%u/%u) values "
+			    "for ICC", fi, di);
+			return (B_FALSE);
+		case ATR_RATE_USEDEFAULT:
+			fi = atr_fi_default_index();
+			di = atr_fi_default_index();
+			break;
+		case ATR_RATE_USEATR:
+			break;
+		case ATR_RATE_USEATR_SETRATE:
+			ccid_error(ccid, "!ccid driver does not support "
+			    "manual data rate setting for ICC, cannot activate");
+			return (B_FALSE);
+		default:
+			ccid_error(ccid, "!unsupported data rate choice: %u",
+			    rate);
+			return (B_FALSE);
+		}
+
+		/*
+		 * Determine what protocol we're going to negotiate or use to
+		 * set parametesr. Prefer T=1 if present. If not negotiable, use
+		 * the default.
+		 */
+		if (neg) {
+			if (sup & ATR_P_T1)
+				prot = ATR_P_T1;
+			else
+				prot = ATR_P_T0;
+		} else {
+			prot = def;
+		}
+
+		changeprot = prot != def;
+
+		/*
+		 * Determine whether or not we need to send a PPS. We need to if
+		 * we're going to change the protocol, if we need to change the
+		 * Di/Fi values or we need to change the protocol, and if the
+		 * hardware requires that we perform all this work. If we're
+		 * sending a PPS, we do not have to send a new value of Fi and
+		 * Di, but we must send a protocol.
+		 */
+		if ((ccid->ccid_flags & CCID_F_NEEDS_PPS) != 0 && neg &&
+		    (changeprot || rate != ATR_RATE_USEDEFAULT)) {
+			uint8_t *fip, *dip;
+
+			if (rate != ATR_RATE_USEDEFAULT) {
+				fip = &fi;
+				dip = &di;
+			} else {
+				fip = dip = NULL;
+			}
+			ccid_slot_send_pps(ccid, slot, data, fip, dip, prot);
+		}
+
+		/*
+		 * Now that we've (potentially) sent a PPS which has changed our
+		 * parameters, we need to move on and send a CCID_SET_PARAMETERS
+		 * command to make sure that the reader honors these.
+		 */
+		if ((ccid->ccid_flags & CCID_F_NEEDS_PARAMS) != 0) {
+			if (prot == ATR_P_T0) {
+				if (!ccid_slot_params_t0_init(ccid, slot, data,
+				    fi, di)) {
+					ccid_error(ccid, "!failed to send T=0 "
+					    "paramters to device");
+				}
+			} else if (prot == ATR_P_T1) {
+				if (!ccid_slot_params_t1_init(ccid, slot, data,
+				    fi, di)) {
+					ccid_error(ccid, "!failed to send T=1 "
+					    "paramters to device");
+				}
+			}
+		}
+	}
+
+	/*
+	 * XXX get params
+	 */
+	if ((ret = ccid_command_get_parameters(ccid, slot, &prot, &slot->cs_icc.icc_params)) != 0) {
+		ccid_error(ccid, "failed to get parameters for slot %u: %d",
+		    slot->cs_slotno, ret);
+		return (B_FALSE);
+	}
+
+	/*
+	 * If we're using the T=1 protocol, then we may need to negotiate the
+	 * IFSD. If the reader is using APDU exchanges with the ICC then we
+	 * don't bother trying to set it, as we don't want to get in the way of
+	 * its 
+	 */
+	if ((ccid->ccid_flags & CCID_F_NEEDS_IFSD) != 0) {
+		if (prot == ATR_P_T1 &&
+		    (ccid->ccid_flags & (CCID_CLASS_F_SHORT_APDU_XCHG |
+		    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
+			/* XXX */
+			ccid_error(ccid, "skipping T=1 IFSD negotiation");
+		}
+	}
+
+	slot->cs_icc.icc_protocols = sup;
+	slot->cs_icc.icc_cur_protocol = prot;
+
+	return (B_TRUE);
+}
+
 /*
  * We have a card reader that supports TPDU processing. To successfully use TPDU
  * processing, we need to figure what protocol this device uses and potentially
@@ -1550,6 +2173,7 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
  * that, making sure that we support T=1 and that it's configured as the default
  * protocol. If not, then we need to go through and 
  */
+#if 0
 static boolean_t
 ccid_slot_tpdu_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 {
@@ -1572,6 +2196,7 @@ ccid_slot_tpdu_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	 * Effectively this will be done by marking the slot as inactive when we
 	 * return B_FALSE
 	 */
+	def = atr_default_protocol(slot->cs_atr_data);
 	sup = atr_supported_protocols(slot->cs_atr_data);
 	if (!(sup & ATR_P_T1)) {
 		ccid_error(ccid, "ICC does not support TPDU T=1, I/O not "
@@ -1590,7 +2215,7 @@ ccid_slot_tpdu_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	 * Exchange).
 	 */
 	if (atr_params_negotiable(slot->cs_atr_data)) {
-		if (ccid->ccid_flags & CCID_F_NEEDS_PPS) {
+		if ((ccid->ccid_flags & CCID_F_NEEDS_PPS) != 0 && def != ATR_P_T1) {
 			ccid_error(ccid, "XXX skipping sending of PPS, using default params");
 		}
 	} else if (atr_default_protocol(slot->cs_atr_data) != ATR_P_T1) {
@@ -1609,6 +2234,7 @@ ccid_slot_tpdu_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 
 	return (B_FALSE);
 }
+#endif
 
 static void
 ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
@@ -1703,23 +2329,16 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 		return;
 	}
 
-	if ((ccid->ccid_flags & CCID_CLASS_F_TPDU_XCHG) != 0) {
-		if (!ccid_slot_tpdu_init(ccid, slot, atr)) {
-			ccid_error(ccid, "!failed to netogiate required TPDU "
-			    "features");
-			freemsg(atr);
-			mutex_enter(&ccid->ccid_mutex);
-			return;
-		}
+	if (!ccid_slot_params_init(ccid, slot, atr)) {
+		ccid_error(ccid, "!failed to set slot paramters for ICC");
+		freemsg(atr);
+		mutex_enter(&ccid->ccid_mutex);
+		return;
 	}
 
 	mutex_enter(&ccid->ccid_mutex);
 	slot->cs_voltage = volts[cvolt];
 	slot->cs_atr = atr;
-
-
-
-
 	slot->cs_flags |= CCID_SLOT_F_ACTIVE;
 }
 
@@ -1957,6 +2576,7 @@ ccid_supported(ccid_t *ccid)
 	usb_client_dev_data_t *dp;
 	usb_alt_if_data_t *alt;
 	ccid_class_features_t feat;
+	uint_t bits;
 	uint16_t ver = ccid->ccid_class.ccd_bcdCCID;
 
 	if (CCID_VERSION_MAJOR(ver) != CCID_VERSION_ONE) {
@@ -2007,32 +2627,42 @@ ccid_supported(ccid_t *ccid)
 	feat = ccid->ccid_class.ccd_dwFeatures;
 
 	/*
-	 * If the reader uses TPDU transports then we must check whether or not
-	 * we're required to set the parameters and thus parse the ATR or
-	 * whether or not we're going to need to send a PPS. The CCID
-	 * specification requires that devices that support APDU transfers do
-	 * some of this.
-	 *
-	 * XXX Some of this probably applies to character transfers.
+	 * Check the number of data rates that are supported by the reader. If
+	 * the reader has a non-zero value
 	 */
-	if ((feat & CCID_CLASS_F_TPDU_XCHG) != 0) {
-		/*
-		 * The footnote for these two bits in CCID r1.1.0 indicates that
-		 * when neither are missing we have to do the PPS negotiation
-		 * ourselves.
-		 */
-		if ((feat & (CCID_CLASS_F_AUTO_PARAM_NEG |
-		    CCID_CLASS_F_AUTO_PPS)) == 0) {
-			ccid->ccid_flags |= CCID_F_NEEDS_PPS;
-		}
+	if (ccid->ccid_class.ccd_bNumDataRatesSupported != 0) {
+		ccid_error(ccid, "!CCID reader only supports fixed clock rates, "
+		    "data will be limited to default values");
+	}
 
-		if ((feat & CCID_CLASS_F_AUTO_PARAM_NEG) == 0) {
-			ccid->ccid_flags |= CCID_F_NEEDS_PARAMS;
-		}
+	/*
+	 * Check which automatic features the reader provides and which features
+	 * it does not. Missing features will require additional work before a
+	 * card can be activated. Note, this also applies to APDU based devices
+	 * which may need to have various aspects of the device negotiated.
+	 */
 
-		if ((feat & CCID_CLASS_F_TPDU_XCHG) == 0) {
-			ccid->ccid_flags |= CCID_F_NEEDS_IFSD;
-		}
+	/*
+	 * The footnote for these two bits in CCID r1.1.0 indicates that
+	 * when neither are missing we have to do the PPS negotiation
+	 * ourselves.
+	 */
+	bits = CCID_CLASS_F_AUTO_PARAM_NEG | CCID_CLASS_F_AUTO_PPS;
+	if ((feat & bits) == 0) {
+		ccid->ccid_flags |= CCID_F_NEEDS_PPS;
+	}
+
+	if ((feat & CCID_CLASS_F_AUTO_PARAM_NEG) == 0) {
+		ccid->ccid_flags |= CCID_F_NEEDS_PARAMS;
+	}
+
+	bits = CCID_CLASS_F_AUTO_BAUD | CCID_CLASS_F_AUTO_ICC_CLOCK;
+	if ((feat & bits) != bits) {
+		ccid->ccid_flags |= CCID_F_NEEDS_DATAFREQ;
+	}
+
+	if ((feat & CCID_CLASS_F_TPDU_XCHG) == 0) {
+		ccid->ccid_flags |= CCID_F_NEEDS_IFSD;
 	}
 
 	/*
