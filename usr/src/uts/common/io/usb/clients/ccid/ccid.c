@@ -309,6 +309,7 @@ typedef void (*icc_complete_func_t)(struct ccid *, struct ccid_slot *,
     struct ccid_command *);
 typedef int (*icc_read_func_t)(struct ccid *, struct ccid_slot *, struct uio *);
 typedef void (*icc_excl_clean_func_t)(struct ccid *, struct ccid_slot *);
+typedef void (*icc_teardown_func_t)(struct ccid *, struct ccid_slot *, boolean_t);
 
 typedef struct ccid_icc {
 	atr_data_t		*icc_atr_data;
@@ -317,8 +318,8 @@ typedef struct ccid_icc {
 	ccid_params_t		icc_params;
 	icc_transmit_func_t	icc_tx;
 	icc_complete_func_t	icc_complete;
-	icc_excl_clean_func_t	icc_excl_clean;
 	icc_read_func_t		icc_rx;
+	icc_teardown_func_t	icc_teardown;
 } ccid_icc_t;
 
 /*
@@ -331,18 +332,16 @@ typedef enum ccid_io_flags {
 	CCID_IO_F_ABANDONED	= 1 << 2
 } ccid_io_flags_t;
 
-typedef struct ccid_io_apdu {
-	/* XXX If this has only one member, remove the struct */
-	struct ccid_command	*cia_command;
-} ccid_io_apdu_t;
-
 typedef struct ccid_io {
 	ccid_io_flags_t	ci_flags;
 	size_t		ci_ilen;
 	uint8_t		ci_ibuf[CCID_APDU_LEN_MAX];
 	mblk_t		*ci_omp;
+	kcondvar_t	ci_cv;
+	struct ccid_command *ci_command;
 	union {
-		ccid_io_apdu_t	ci_apdu;
+		/* XXX Placeholder for T=0/T=1 */
+		void *xxx;
 	} ci_prot;
 } ccid_io_t;
 
@@ -503,7 +502,7 @@ static int ccid_bulkin_schedule(ccid_t *);
  */
 static int ccid_write_apdu(ccid_t *, ccid_slot_t *);
 static void ccid_complete_apdu(ccid_t *, ccid_slot_t *, ccid_command_t *);
-static void ccid_excl_clean_apdu(ccid_t *, ccid_slot_t *);
+static void ccid_teardown_apdu(ccid_t *, ccid_slot_t *, boolean_t);
 static int ccid_read_apdu(ccid_t *, ccid_slot_t *, struct uio *);
 
 static int
@@ -640,8 +639,8 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	 * some amount of external state still ongoing to take care of and clean
 	 * up later.
 	 */
-	if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) != 0) {
-		slot->cs_icc.icc_excl_clean(ccid, slot);
+	if (slot->cs_icc.icc_teardown != NULL) {
+		slot->cs_icc.icc_teardown(ccid, slot, B_FALSE);
 	}
 
 	/*
@@ -1838,16 +1837,27 @@ ccid_intr_pipe_except_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 static void
 ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
 {
-	/*
-	 * Nothing to do right now.
-	 */
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	if ((slot->cs_flags & CCID_SLOT_F_PRESENT) == 0) {
 		VERIFY0(slot->cs_flags & CCID_SLOT_F_ACTIVE);
 		return;
 	}
+
+
 	slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
 	slot->cs_flags &= ~CCID_SLOT_F_ACTIVE;
+
+	/*
+	 * Make sure that user I/O, if it exists, is torn down.
+	 */
+	if (slot->cs_icc.icc_teardown != NULL) {
+		slot->cs_icc.icc_teardown(ccid, slot, B_TRUE);
+	}
+
+	/*
+	 * XXX Reset ops / icc data.
+	 */
+
 	slot->cs_voltage = 0;
 	freemsgchain(slot->cs_atr);
 	slot->cs_atr = NULL;
@@ -2181,14 +2191,14 @@ ccid_slot_setup_functions(ccid_t *ccid, ccid_slot_t *slot)
 	case CCID_CLASS_F_EXT_APDU_XCHG:
 		slot->cs_icc.icc_tx = ccid_write_apdu;
 		slot->cs_icc.icc_complete = ccid_complete_apdu;
-		slot->cs_icc.icc_excl_clean = ccid_excl_clean_apdu;
+		slot->cs_icc.icc_teardown = ccid_teardown_apdu;
 		slot->cs_icc.icc_rx = ccid_read_apdu;
 		break;
 	case CCID_CLASS_F_TPDU_XCHG:
 	default:
 		slot->cs_icc.icc_tx = NULL;
 		slot->cs_icc.icc_complete = NULL;
-		slot->cs_icc.icc_excl_clean = NULL;
+		slot->cs_icc.icc_teardown = NULL;
 		slot->cs_icc.icc_rx = NULL;
 	}
 
@@ -2341,6 +2351,18 @@ ccid_slot_reset(ccid_t *ccid, ccid_slot_t *slot)
 	}
 
 	ccid->ccid_flags &= ~CCID_SLOT_F_ACTIVE;
+
+	/*
+	 * Make sure that user I/O, if it exists, is torn down.
+	 */
+	if (slot->cs_icc.icc_teardown != NULL) {
+		slot->cs_icc.icc_teardown(ccid, slot, B_TRUE);
+	}
+
+	/*
+	 * XXX Reset ops / icc data.
+	 */
+
 	freemsgchain(slot->cs_atr);
 	slot->cs_atr = NULL;
 
@@ -2752,6 +2774,7 @@ ccid_slots_fini(ccid_t *ccid)
 			ccid->ccid_slots[i].cs_command = NULL;
 		}
 
+		cv_destroy(&ccid->ccid_slots[i].cs_io.ci_cv);
 		freemsgchain(ccid->ccid_slots[i].cs_atr);
 		atr_data_free(ccid->ccid_slots[i].cs_icc.icc_atr_data);
 		list_destroy(&ccid->ccid_slots[i].cs_minors);
@@ -2791,6 +2814,7 @@ ccid_slots_init(ccid_t *ccid)
 		ccid->ccid_slots[i].cs_idx.cmi_isslot = B_TRUE;
 		ccid->ccid_slots[i].cs_idx.cmi_data.cmi_slot =
 		    &ccid->ccid_slots[i];
+		cv_init(&ccid->ccid_slots[i].cs_io.ci_cv, NULL, CV_DRIVER, NULL);
 		list_create(&ccid->ccid_slots[i].cs_minors, sizeof (ccid_minor_t),
 		   offsetof(ccid_minor_t, cm_minor_list)); 
 		list_create(&ccid->ccid_slots[i].cs_excl_waiters, sizeof (ccid_minor_t),
@@ -3383,6 +3407,12 @@ ccid_user_io_free(ccid_t *ccid, ccid_slot_t *slot, boolean_t signal)
 	slot->cs_io.ci_flags &= ~CCID_IO_F_ABANDONED;
 
 	/*
+	 * Always signal the I/O cv. Something may be waiting for this I/O to be
+	 * done such as an ongoing teardown.
+	 */
+	cv_broadcast(&slot->cs_io.ci_cv);
+
+	/*
 	 * Wake up anyone waiting for writes. Note, they may not exist. 
 	 */
 	if (slot->cs_excl_minor != NULL && signal) {
@@ -3407,20 +3437,56 @@ ccid_user_io_done(ccid_t *ccid, ccid_slot_t *slot)
 	cv_signal(&cmp->cm_read_cv);
 }
 
+/*
+ * This is called in a few different sitautions. It's called when an exclusive
+ * hold is being released by a user on a the slot. It's also called when the ICC
+ * is removed, the reader has been unplugged, or the ICC is being reset. In all
+ * these cases we need to make sure that we I/O is taken care of and we won't be
+ * leaving behind vestigial garbage.
+ *
+ * The boolean_t wait is used to indicate whether or not this is a user hold
+ * removal or one of the other conditions. In all of the non-user hold
+ * conditions, the operations vector will be torn down for the slot's I/O
+ * module. As such we need to make sure we wait for things to finish up before
+ * we return, in the exclusive hold case, we don't.
+ */
 static void
-ccid_excl_clean_apdu(ccid_t *ccid, ccid_slot_t *slot)
+ccid_teardown_apdu(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
 {
 	ccid_command_t *cc;
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 
-	cc = slot->cs_io.ci_prot.ci_apdu.cia_command;
-	if (cc->cc_state < CCID_COMMAND_COMPLETE) {
-		slot->cs_io.ci_flags |= CCID_IO_F_ABANDONED;
-	} else {
-		slot->cs_io.ci_prot.ci_apdu.cia_command = NULL;
+	/*
+	 * If no I/O is in progres, then there's nothing to do.
+	 */
+	if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) == 0) {
+		return;
+	}
+
+	/*
+	 * If the command is outstanding, then we must wait for it to be issued
+	 * and failed by the device.
+	 */
+	cc = slot->cs_io.ci_command;
+	if (cc->cc_state >= CCID_COMMAND_COMPLETE) {
+		slot->cs_io.ci_command = NULL;
 		ccid_command_free(cc);
 		ccid_user_io_free(ccid, slot, B_FALSE);
+		return;
+	}
+
+	/*
+	 * At this point, we expect that the completion function is going to
+	 * run. Mark this as abandoned, so it knows to clean itself up.
+	 */
+	slot->cs_io.ci_flags |= CCID_IO_F_ABANDONED;
+	if (!wait) {
+		return;
+	}
+
+	while (slot->cs_io.ci_command != NULL) {
+		cv_wait(&slot->cs_io.ci_cv, &ccid->ccid_mutex);
 	}
 }
 
@@ -3433,7 +3499,7 @@ ccid_complete_apdu(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	ccid_minor_t *cmp;
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-	VERIFY3P(slot->cs_io.ci_prot.ci_apdu.cia_command, ==, cc);
+	VERIFY3P(slot->cs_io.ci_command, ==, cc);
 
 	/*
 	 * First, see if it's even worth processing this command. To do that, we
@@ -3444,7 +3510,7 @@ ccid_complete_apdu(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	if ((slot->cs_io.ci_flags & CCID_IO_F_ABANDONED) != 0 ||
 	    slot->cs_excl_minor == NULL) {
 		ccid_command_free(cc);
-		slot->cs_io.ci_prot.ci_apdu.cia_command = NULL;
+		slot->cs_io.ci_command = NULL;
 		ccid_user_io_free(ccid, slot, B_TRUE);
 		return;
 	}
@@ -3478,8 +3544,8 @@ ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 	 * read this command until one is available. Which means that someone
 	 * could be blocked for some time.
 	 */
-	while (slot->cs_io.ci_prot.ci_apdu.cia_command == NULL ||
-	    slot->cs_io.ci_prot.ci_apdu.cia_command->cc_state <
+	while (slot->cs_io.ci_command == NULL ||
+	    slot->cs_io.ci_command->cc_state <
 	    CCID_COMMAND_COMPLETE) {
 		if (uiop->uio_fmode & FNONBLOCK) {
 			return (EWOULDBLOCK);
@@ -3495,7 +3561,7 @@ ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 	 * successful, we need to check the user's buffer size. Otherwise, we
 	 * can consume it all.
 	 */
-	cc = slot->cs_io.ci_prot.ci_apdu.cia_command;
+	cc = slot->cs_io.ci_command;
 
 	/*
 	 * If we didn't get a successful command, then we go ahead and consume
@@ -3541,7 +3607,7 @@ ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 	}
 
 consume:
-	slot->cs_io.ci_prot.ci_apdu.cia_command = NULL;
+	slot->cs_io.ci_command = NULL;
 	ccid_command_free(cc);
 	ccid_user_io_free(ccid, slot, B_TRUE);
 	return (ret);
@@ -3581,12 +3647,12 @@ ccid_write_apdu(ccid_t *ccid, ccid_slot_t *slot)
 	 * pathologically scheduled and not get the chance.
 	 */
 	mutex_enter(&ccid->ccid_mutex);
-	slot->cs_io.ci_prot.ci_apdu.cia_command = cc;
+	slot->cs_io.ci_command = cc;
 	mutex_exit(&ccid->ccid_mutex);
 
 	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
 		mutex_enter(&ccid->ccid_mutex);
-		slot->cs_io.ci_prot.ci_apdu.cia_command = NULL;
+		slot->cs_io.ci_command = NULL;
 		ccid_command_free(cc);
 		return (ret);
 	}

@@ -26,9 +26,14 @@ PROGS = 		\
 	excl-reset	\
 	notxn-poll	\
 	status		\
+	parity		\
 	pollout		\
 	txn-pollerr	\
 	yk
+
+COMMON_OBJS = \
+	ccid_parity.o \
+	atr.o
 
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/test/Makefile.com
@@ -36,27 +41,34 @@ include $(SRC)/test/Makefile.com
 CMDS = $(PROGS:%=$(TESTDIR)/%)
 $(CMDS) := FILEMODE = 0555
 
-CPPFLAGS += -D_REENTRANT
+CPPFLAGS += -D_REENTRANT -I$(SRC)/common/ccid/
+parity := EXTRA_OBJS = ccid_parity.o
 
-all: $(PROGS)
+all: $(PROGS) $(PARITYPROGS)
 
 install: all $(CMDS)
 
 lint: lint_SRCS
 
 clobber: clean
-	-$(RM) $(PROGS)
+	-$(RM) $(PROGS) $(PARITYPROGS)
 
 clean:
 	-$(RM) *.o
+
+%.o: $(SRC)/common/ccid/%.c
+	$(COMPILE.c) -o $@ -c $<
+	$(POST_PROCESS_O)
 
 %.o: %.c
 	$(COMPILE.c) -o $@ -c $<
 	$(POST_PROCESS_O)
 
-$(PROG): $(OBJS)
-	$(LINK.c) $(OBJS) -o $@ $(LDLIBS)
+%: %.o
+	$(LINK.c) -o $@ $< $(EXTRA_OBJS)
 	$(POST_PROCESS)
+
+$(PROGS): $(COMMON_OBJS)
 
 $(CMDS): $(TESTDIR) $(PROGS)
 
