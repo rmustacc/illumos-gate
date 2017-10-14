@@ -199,6 +199,7 @@
 #include <sys/usb/clients/ccid/uccid.h>
 
 #include <atr.h>
+#include "ccid_t1.h"
 
 /*
  * Set the amount of parallelism we'll want to have from kernel threads which
@@ -249,6 +250,16 @@
 #define	CCID_MINOR_MIN		1
 #define	CCID_MINOR_MAX		MAXMIN32
 #define	CCID_MINOR_INVALID	0
+
+/*
+ * This value represents the minimum size value that we require in the CCID
+ * class descriptor's dwMaxCCIDMessageLength member. We got to 64 bytes based on
+ * the required size of a bulk transfer packet size. Especially as many CCID
+ * devices are these class of speeds. The specification does require that the
+ * minimu size of the dwMaxCCIDMessageLength member is at least the size of its
+ * bulk endpoint packet size.
+ */
+#define	CCID_MIN_MESSAGE_LENGTH	64
 
 /*
  * Required forward declarations.
@@ -332,6 +343,42 @@ typedef enum ccid_io_flags {
 	CCID_IO_F_ABANDONED	= 1 << 2
 } ccid_io_flags_t;
 
+/*
+ * TPDU T=1 protocol specific state.
+ */
+typedef enum ccid_io_t1_state {
+	CCID_T1_CHAIN_SENDING,
+	CCID_T1_SENDING,
+	CCID_T1_CHAIN_RECEIVING,
+	CCID_T1_RECEIVING,
+} ccid_io_t1_state_t;
+
+typedef struct ccid_io_t1 {
+	/*
+	 * State to keep track of what we're expecting at this point.
+	 */
+	ccid_io_t1_state_t cit_state;
+	/*
+	 * The maximum size of user data that we can use for a T=1 message.
+	 */
+	uint8_t	cit_maxlen;
+	/*
+	 * The number of bytes we need to allocate to cover the prologue and
+	 * epilogue of a message.
+	 */
+	uint8_t cit_protlen;
+	/*
+	 * The value of the sequence that we should use to transmit this
+	 * request. This is only used when sending I-Block.
+	 */
+	uint8_t cit_ns;
+	/*
+	 * This is used to keep track of our offset in writing data to the
+	 * client.
+	 */
+	off_t	cit_writeoff;
+} ccid_io_t1_t;
+
 typedef struct ccid_io {
 	ccid_io_flags_t	ci_flags;
 	size_t		ci_ilen;
@@ -339,10 +386,7 @@ typedef struct ccid_io {
 	mblk_t		*ci_omp;
 	kcondvar_t	ci_cv;
 	struct ccid_command *ci_command;
-	union {
-		/* XXX Placeholder for T=0/T=1 */
-		void *xxx;
-	} ci_prot;
+	ccid_io_t1_t	ci_t1;
 } ccid_io_t;
 
 typedef struct ccid_slot {
@@ -460,7 +504,6 @@ typedef struct ccid_command {
 	usb_cr_t		cc_usbcr;
 	size_t			cc_reqlen;
 	id_t			cc_seq;
-	boolean_t		cc_isuser;
 	usb_bulk_req_t		*cc_ubrp;
 	ccid_t			*cc_ccid;
 	hrtime_t		cc_queue_time;
@@ -496,6 +539,7 @@ static void ccid_worker_request(ccid_t *);
 static void ccid_command_dispatch(ccid_t *);
 static void ccid_command_free(ccid_command_t *);
 static int ccid_bulkin_schedule(ccid_t *);
+static void ccid_command_bcopy(ccid_command_t *, const void *, size_t);
 
 /*
  * XXX Are these needed?
@@ -504,6 +548,11 @@ static int ccid_write_apdu(ccid_t *, ccid_slot_t *);
 static void ccid_complete_apdu(ccid_t *, ccid_slot_t *, ccid_command_t *);
 static void ccid_teardown_apdu(ccid_t *, ccid_slot_t *, boolean_t);
 static int ccid_read_apdu(ccid_t *, ccid_slot_t *, struct uio *);
+static int ccid_write_tpdu_t1(ccid_t *, ccid_slot_t *);
+static void ccid_complete_tpdu_t1(ccid_t *, ccid_slot_t *, ccid_command_t *);
+static void ccid_teardown_tpdu_t1(ccid_t *, ccid_slot_t *, boolean_t);
+static int ccid_read_tpdu_t1(ccid_t *, ccid_slot_t *, struct uio *);
+
 
 static int
 ccid_idx_comparator(const void *l, const void *r)
@@ -529,6 +578,68 @@ ccid_error(ccid_t *ccid, const char *fmt, ...)
 		vcmn_err(CE_WARN, fmt, ap);
 	}
 	va_end(ap);
+}
+
+/*
+ * T=1 utility routines.
+ */
+static void
+ccid_t1_header_iblock(t1_hdr_t *hdr, uint8_t ns, boolean_t chain, uint8_t len)
+{
+	VERIFY3U(len, <=, T1_SIZE_MAX);
+
+	hdr->t1h_nad = 0;
+	hdr->t1h_pcb = T1_TYPE_IBLOCK;
+
+	if ((ns & 0x1) != 0) {
+		hdr->t1h_pcb |= T1_IBLOCK_NS;
+	}
+
+	if (chain) {
+		hdr->t1h_pcb |= T1_IBLOCK_M;
+	}
+
+	hdr->t1h_len = len;
+}
+
+static void
+ccid_t1_header_rblock(t1_hdr_t *hdr, uint8_t nr, t1_rblock_status_t status)
+{
+	hdr->t1h_nad = 0;
+	hdr->t1h_pcb = T1_TYPE_RBLOCK;
+	if ((nr & 0x1) != 0) {
+		hdr->t1h_pcb |= T1_RBLOCK_NR;
+	}
+	hdr->t1h_pcb |= status;
+	hdr->t1h_len = 0;
+}
+
+static void
+ccid_t1_header_sblock(t1_hdr_t *hdr, t1_sblock_op_t op, uint8_t len)
+{
+	hdr->t1h_nad = 0;
+	hdr->t1h_pcb = T1_TYPE_SBLOCK | op;
+	hdr->t1h_len = len;
+}
+
+/*
+ * Calculate the checksum appropriate for this type of T=1 instance and store it
+ * at cksump. This function only performs the LRC calculation. When we add
+ * support for the CRC calculation, this function will need to be changed. The
+ * LRC checksum is just a simple one byte xor.
+ */
+static void
+ccid_t1_checksum(const t1_hdr_t *hdr, const uint8_t *inf, size_t len, ccid_command_t *cc)
+{
+	uint8_t cksum = 0;
+	size_t i;
+
+	cksum ^= hdr->t1h_nad ^ hdr->t1h_pcb ^ hdr->t1h_len;
+	for (i = 0; i < len; i++) {
+		cksum ^= inf[i];
+	}
+
+	ccid_command_bcopy(cc, &cksum, sizeof (cksum));
 }
 
 static void
@@ -1248,8 +1359,10 @@ ccid_command_bcopy(ccid_command_t *cc, const void *buf, size_t len)
 {
 	size_t mlen;
 
-	mlen = len + sizeof (ccid_header_t);
-	VERIFY3U(mlen, >, len);
+	mlen = msgsize(cc->cc_ubrp->bulk_data);
+	VERIFY3U(mlen + len, >=, len);
+	VERIFY3U(mlen + len, >=, mlen);
+	mlen += len;
 	VERIFY3U(mlen, <=, cc->cc_ubrp->bulk_len);
 
 	bcopy(buf, cc->cc_ubrp->bulk_data->b_wptr, len);
@@ -1303,7 +1416,7 @@ ccid_command_alloc(ccid_t *ccid, ccid_slot_t *slot, boolean_t block,
 
 	if (datasz + sizeof (ccid_header_t) < datasz)
 		return (EINVAL);
-	if (datasz > ccid->ccid_bufsize)
+	if (datasz + sizeof (ccid_header_t) > ccid->ccid_bufsize)
 		return (EINVAL);
 
 	cc = kmem_zalloc(sizeof (ccid_command_t), kmflag);
@@ -1947,6 +2060,43 @@ ccid_slot_params_t0_init(ccid_t *ccid, ccid_slot_t *slot, atr_data_t *data,
 	return (B_TRUE);
 }
 
+/*
+ * Determine the maximum amount of data that we can send in a payload. This is
+ * normally thought of as the IFSC; however, the reader may support less data
+ * than the IFSC provides. In such a case, we have to always send less than the
+ * IFSC.
+ */
+static void
+ccid_slot_t1_fill_maxsize(ccid_t *ccid, ccid_slot_t *slot)
+{
+	size_t csz;
+	uint8_t t1len, ifsc;
+
+	t1len = sizeof (t1_hdr_t);
+	switch (atr_t1_checksum(slot->cs_icc.icc_atr_data)) {
+	case ATR_T1_CHECKSUM_LRC:
+		t1len += 1;
+		break;
+	case ATR_T1_CHECKSUM_CRC:
+		t1len += 2;
+		break;
+	}
+
+	/*
+	 * When looking at our maximum buffer size, we need to subtract both the
+	 * CCID header length and the length of a t1 prologue and epilogue.
+	 * The length field for a T1 header is a uint8_t. Therefore, if the
+	 * card's size is larger for some reason, we further shrink that amount
+	 * to fit within 
+	 */
+	csz = ccid->ccid_bufsize - sizeof (ccid_header_t) - t1len;
+	if (csz > T1_SIZE_MAX)
+		csz = T1_SIZE_MAX;
+	ifsc = atr_t1_ifsc(slot->cs_icc.icc_atr_data);
+	slot->cs_io.ci_t1.cit_maxlen = MIN((uint8_t)csz, ifsc);
+	slot->cs_io.ci_t1.cit_protlen = t1len;
+}
+
 static boolean_t
 ccid_slot_params_t1_init(ccid_t *ccid, ccid_slot_t *slot, atr_data_t *data,
     uint8_t fi, uint8_t di)
@@ -1990,6 +2140,45 @@ ccid_slot_params_t1_init(ccid_t *ccid, ccid_slot_t *slot, atr_data_t *data,
 		    slot->cs_slotno, ret);
 		return (B_FALSE);
 	}
+
+	return (B_TRUE);
+}
+
+static boolean_t
+ccid_slot_t1_ifsd(ccid_t *ccid, ccid_slot_t *slot)
+{
+	t1_hdr_t *hdr;
+	uint8_t ifsd;
+	uint8_t buf[16];
+	size_t len = sizeof (t1_hdr_t) + 1;
+	int ret;
+	mblk_t *mp;
+
+	hdr = (t1_hdr_t *)&buf[0];
+	ccid_t1_header_sblock(hdr, T1_SBLOCK_REQ_IFS, 1);
+	if (ccid->ccid_class.ccd_dwMaxIFSD > T1_SIZE_MAX) {
+		hdr->t1h_data[0] = T1_SIZE_MAX;
+	} else {
+		hdr->t1h_data[0] = (uint8_t)ccid->ccid_class.ccd_dwMaxIFSD;
+	}
+
+	switch (atr_t1_checksum(slot->cs_icc.icc_atr_data)) {
+	case ATR_T1_CHECKSUM_LRC:
+		len += 1;
+		hdr->t1h_data[1] = hdr->t1h_nad ^ hdr->t1h_pcb ^
+		    hdr->t1h_len ^ hdr->t1h_data[0];
+		break;
+	case ATR_T1_CHECKSUM_CRC:
+		/* XXX Unsupported */
+		return (B_FALSE);
+	}
+
+	if ((ret = ccid_command_transfer(ccid, slot, buf, len, &mp)) != 0) {
+		ccid_error(ccid, "!failed to perform IFSD exchange: %d", ret);
+		return (B_FALSE);
+	}
+
+	freemsg(mp);
 
 	return (B_TRUE);
 }
@@ -2166,12 +2355,14 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	 * don't bother trying to set it, as we don't want to get in the way of
 	 * its 
 	 */
+	cmn_err(CE_WARN, "flags: %x, prot: %x", ccid->ccid_flags, prot);
 	if ((ccid->ccid_flags & CCID_F_NEEDS_IFSD) != 0) {
 		if (prot == ATR_P_T1 &&
-		    (ccid->ccid_flags & (CCID_CLASS_F_SHORT_APDU_XCHG |
+		    (ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
 		    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
 			/* XXX */
 			ccid_error(ccid, "skipping T=1 IFSD negotiation");
+			(void) ccid_slot_t1_ifsd(ccid, slot);
 		}
 	}
 
@@ -2195,6 +2386,44 @@ ccid_slot_setup_functions(ccid_t *ccid, ccid_slot_t *slot)
 		slot->cs_icc.icc_rx = ccid_read_apdu;
 		break;
 	case CCID_CLASS_F_TPDU_XCHG:
+		switch (slot->cs_icc.icc_cur_protocol) {
+		case ATR_P_T1:
+			/*
+			 * At this time, we don't support the use of the CRC
+			 * checksum for CCID devices. This is mostly because we
+			 * haven't found any ICC devices that support its use.
+			 * As such, if for some reason the parameters indicate
+			 * that we're using T=1 and that we've specified the CRC
+			 * versus LRC, we need to regretfully note that we can't
+			 * perform I/O.
+			 */
+			if (atr_t1_checksum(slot->cs_icc.icc_atr_data) ==
+			    ATR_T1_CHECKSUM_CRC) {
+				ccid_error(ccid, "!ICC uses unsupported T=1 CRC "
+				    "checksum. Please report this so support "
+				    "can be added");
+				slot->cs_icc.icc_tx = NULL;
+				slot->cs_icc.icc_complete = NULL;
+				slot->cs_icc.icc_teardown = NULL;
+				slot->cs_icc.icc_rx = NULL;
+				break;
+			}
+
+			slot->cs_icc.icc_tx = ccid_write_tpdu_t1;
+			slot->cs_icc.icc_complete = ccid_complete_tpdu_t1;
+			slot->cs_icc.icc_teardown = ccid_teardown_tpdu_t1;
+			slot->cs_icc.icc_rx = ccid_read_tpdu_t1;
+			ccid_slot_t1_fill_maxsize(ccid, slot);
+			break;
+		case ATR_P_T0:
+		default:
+			slot->cs_icc.icc_tx = NULL;
+			slot->cs_icc.icc_complete = NULL;
+			slot->cs_icc.icc_teardown = NULL;
+			slot->cs_icc.icc_rx = NULL;
+			break;
+		}
+		break;
 	default:
 		slot->cs_icc.icc_tx = NULL;
 		slot->cs_icc.icc_complete = NULL;
@@ -2208,7 +2437,7 @@ ccid_slot_setup_functions(ccid_t *ccid, ccid_slot_t *slot)
 	 * and determine information about the ICC and reader.
 	 */
 	if (slot->cs_icc.icc_tx == NULL) {
-		ccid_error(ccid, "CCID does not support transfers toICC");
+		ccid_error(ccid, "CCID does not support I/O transfers to ICC");
 	}
 }
 
@@ -2608,6 +2837,12 @@ ccid_supported(ccid_t *ccid)
 	 * bytes maybe?
 	 */
 	ccid->ccid_bufsize = ccid->ccid_class.ccd_dwMaxCCIDMessageLength;
+	if (ccid->ccid_bufsize < CCID_MIN_MESSAGE_LENGTH) {
+		ccid_error(ccid, "CCID reader maximum CCID message length (%u) is "
+		    "less than minimum packet length (%u)", ccid->ccid_bufsize,
+		    CCID_MIN_MESSAGE_LENGTH);
+		return (B_FALSE);
+	}
 
 	/*
 	 * At this time, we do not require that the system have automatic ICC
@@ -2651,7 +2886,7 @@ ccid_supported(ccid_t *ccid)
 		ccid->ccid_flags |= CCID_F_NEEDS_DATAFREQ;
 	}
 
-	if ((feat & CCID_CLASS_F_TPDU_XCHG) == 0) {
+	if ((feat & CCID_CLASS_F_AUTO_IFSD) == 0) {
 		ccid->ccid_flags |= CCID_F_NEEDS_IFSD;
 	}
 
@@ -3437,6 +3672,110 @@ ccid_user_io_done(ccid_t *ccid, ccid_slot_t *slot)
 	cv_signal(&cmp->cm_read_cv);
 }
 
+static void
+ccid_teardown_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
+{
+}
+
+static void
+ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
+{
+}
+
+static int
+ccid_read_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
+{
+	return (ENOTSUP);
+}
+
+static int
+ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
+{
+	int ret;
+	ccid_command_t *cc;
+	t1_hdr_t t1hdr, *hdrp;
+	uint8_t len;
+	size_t alloclen;
+	boolean_t chain;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+
+	/*
+	 * We're in the state where we can begin a new T=1 command to an ICC.
+	 * The first thing we need to do is figure out whether or not this will
+	 * all fit within a single block. If not, then we must employ command
+	 * chaining. This block size is based on the IFSC used by the card. The
+	 * IFSC does not cover the T=1 header. It is possible that the cards
+	 * IFSC is smaller than our ICC's maximum data size. If that's the case,
+	 * we use the smaller of the two (this is stored in the T=1 protocol
+	 * state).
+	 */
+	len = MIN(slot->cs_io.ci_ilen, slot->cs_io.ci_t1.cit_maxlen);
+	alloclen = (size_t)len + slot->cs_io.ci_t1.cit_protlen;
+	chain = slot->cs_io.ci_ilen > slot->cs_io.ci_t1.cit_maxlen;
+
+	/*
+	 * Reset the sequence value and make the header. Then increment the
+	 * sequence value. Store our state for the T=1 state machine.
+	 */
+	slot->cs_io.ci_t1.cit_ns = T1_IBLOCK_NS_DEFVAL;
+	ccid_t1_header_iblock(&t1hdr, slot->cs_io.ci_t1.cit_ns, chain, len);
+	if (chain) {
+		slot->cs_io.ci_t1.cit_state = CCID_T1_CHAIN_SENDING;
+	} else {
+		slot->cs_io.ci_t1.cit_state = CCID_T1_SENDING;
+	}
+	slot->cs_io.ci_t1.cit_writeoff = len;
+	slot->cs_io.ci_t1.cit_ns ^= 1;
+
+	/*
+	 * Drop the lock to perform memory allocation and transmit the command.
+	 * XXX What happens if the ICC (not device) is removed right here?
+	 */
+	mutex_exit(&ccid->ccid_mutex);
+	if ((ret = ccid_command_alloc(ccid, slot, B_FALSE, NULL,
+	    alloclen, CCID_REQUEST_TRANSFER_BLOCK, 0, 0, 0,
+	    &cc)) != 0) {
+		mutex_enter(&ccid->ccid_mutex);
+		return (ret);
+	}
+	cc->cc_flags |= CCID_COMMAND_F_USER;
+
+	/*
+	 * XXX When this gets refactored into broader I/O, we need to take the
+	 * offset into ibuf into account.
+	 */
+	ccid_command_bcopy(cc, &t1hdr, sizeof (t1hdr));
+	ccid_command_bcopy(cc, slot->cs_io.ci_ibuf, len);
+	ccid_t1_checksum(&t1hdr, slot->cs_io.ci_ibuf, len, cc);
+
+	/*
+	 * Before we submit this command, assign it to our internal state. We
+	 * need to do this before we submit the command. Otherwise, we could be
+	 * pathologically scheduled and not get the chance.
+	 */
+	mutex_enter(&ccid->ccid_mutex);
+	slot->cs_io.ci_command = cc;
+	mutex_exit(&ccid->ccid_mutex);
+
+	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
+		mutex_enter(&ccid->ccid_mutex);
+		slot->cs_io.ci_command = NULL;
+		ccid_command_free(cc);
+		return (ret);
+	}
+
+	mutex_enter(&ccid->ccid_mutex);
+
+	/*
+	 * XXX For APDU we block a bit here. I'm not sure if that really matters
+	 * or not. It's not like we're going to be done with this single command
+	 * anyways.
+	 */
+
+	return (0);
+}
+
 /*
  * This is called in a few different sitautions. It's called when an exclusive
  * hold is being released by a user on a the slot. It's also called when the ICC
@@ -3628,6 +3967,7 @@ ccid_write_apdu(ccid_t *ccid, ccid_slot_t *slot)
 
 	/*
 	 * Drop the lock to perform memory allocation and transmit the command.
+	 * XXX What happens if the ICC (not device) is removed right here?
 	 */
 	mutex_exit(&ccid->ccid_mutex);
 

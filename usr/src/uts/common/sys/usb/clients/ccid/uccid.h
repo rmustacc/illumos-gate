@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc. 
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _SYS_USB_UCCID_H
@@ -66,7 +66,7 @@ typedef struct uccid_cmd_txn_end {
 } uccid_cmd_txn_end_t;
 
 /*
- * Reliquish exclusive access. Takes a uccid_cmd_txn_end_t. uct_flags must be zero.
+ * Reliquish exclusive access. Takes a uccid_cmd_txn_end_t.
  */
 #define	UCCID_CMD_TXN_END	(UCCID_IOCTL | 0x02)
 

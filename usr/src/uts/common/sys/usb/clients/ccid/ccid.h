@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc. 
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _SYS_USB_CCID_H
@@ -127,7 +127,7 @@ typedef struct ccid_class_descr {
  * The sequence is a 1 byte unsigned value. The values are inclusive. We reserve
  * the value of 0x00 so that we can use it as a sentinel in the ccid_command_t
  * structure to know when we should or shouldn't free a command structure's
- * sequence number back to the id space. 
+ * sequence number back to the id space.
  */
 #define	CCID_SEQ_MIN	0x01
 #define	CCID_SEQ_MAX	UINT8_MAX
@@ -247,7 +247,7 @@ typedef struct ccid_params_t1 {
 	uint8_t cp1_bClockStop;
 	uint8_t cp1_bIFSC;
 	uint8_t cp1_bNadValue;
-} ccid_params_t1_t; 
+} ccid_params_t1_t;
 
 typedef union ccid_params {
 	ccid_params_t0_t ccp_t0;
@@ -284,7 +284,7 @@ typedef enum ccid_command_err {
 	CCID_ERR_XFR_OVERRUN	= 0xfc,
 	CCID_ERR_HW_ERROR	= 0xfb,
 	CCID_ERR_BAD_ATR_TS	= 0xf8,
-	CCID_ERR_BAD_ATR_TCK	= 0xf7, 
+	CCID_ERR_BAD_ATR_TCK	= 0xf7,
 	CCID_ERR_ICC_PROTOCOL_NOT_SUPPORTED = 0xf6,
 	CCID_ERR_ICC_CLASS_NOT_SUPPORTED = 0xf5,
 	CCID_ERR_PROCEDURE_BYTE_CONFLICT = 0xf4,

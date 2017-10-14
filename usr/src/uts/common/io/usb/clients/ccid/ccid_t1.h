@@ -36,6 +36,13 @@ typedef struct t1_hdr {
 #pragma pack()
 
 /*
+ * Per ISO/IEC 7816-3:2006 11.3.1 the maximum amount of data that we can put in
+ * the len member of structure is 254 bytes. The value 255 is reserved for
+ * future use.
+ */
+#define	T1_SIZE_MAX	254
+
+/*
  * These macros are used to determine what type the data is. An I-Block has the
  * msb set to zero; however, the other types use two bits to determine what the
  * type is.
@@ -46,6 +53,12 @@ typedef struct t1_hdr {
 
 #define	T1_IBLOCK_NS	0x40
 #define	T1_IBLOCK_M	0x20
+
+/*
+ * The T1 NS sequence must always start at 0 per ISO/IEC 7816-3:2006 11.6.2.1.
+ * This is a one bit counter. To increment it we always do an xor with 1.
+ */
+#define	T1_IBLOCK_NS_DEFVAL	0
 
 #define	T1_RBLOCK_NR	0x10
 #define	T1_RBLOCK_STATUS_MASK	0x0f

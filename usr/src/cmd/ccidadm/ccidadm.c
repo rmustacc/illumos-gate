@@ -410,16 +410,20 @@ ccidadm_atr_props(uccid_cmd_status_t *ucs)
 	if (prots & ATR_P_T1) {
 		uint8_t fi, di;
 		atr_clock_stop_t clock;
+		atr_t1_checksum_t cksum;
 
 		fi = atr_fi_index(data);
 		di = atr_di_index(data);
 		clock = atr_clock_stop(data);
+		cksum = atr_t1_checksum(data);
 		(void) printf("T=1 properties that would be negotiated:\n");
 		(void) printf("  + Fi/Fmax Index: %u (Fi %s/Fmax %s MHz)\n",
 		    fi, atr_fi_index_to_string(fi),
 		    atr_fmax_index_to_string(fi));
 		(void) printf("  + Di Index: %u (Di %s)\n", di,
 		    atr_di_index_to_string(di));
+		(void) printf("  + Checksum: %s\n", cksum == ATR_T1_CHECKSUM_CRC ?
+		    "CRC" : "LRC");
 		(void) printf("  + Extra Guardtime: %u\n",
 		    atr_extra_guardtime(data));
 		(void) printf("  + BWI: %u\n", atr_t1_bwi(data));
