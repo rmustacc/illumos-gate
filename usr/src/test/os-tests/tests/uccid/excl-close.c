@@ -10,11 +10,12 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc. 
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 /*
- * Verify that if a child grabs an exclusive lock and calls exit, we can grab it again.
+ * Verify that if a child grabs an exclusive lock and calls exit, we can grab it
+ * again.
  */
 
 #include <err.h>

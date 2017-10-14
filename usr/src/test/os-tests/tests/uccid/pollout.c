@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc. 
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 /*
@@ -57,8 +57,8 @@ main(int argc, char *argv[])
 
 	ret = poll(pfds, 1, 0);
 	if (ret != 1) {
-		err(EXIT_FAILURE, "poll didn't return 1, returned %d (errno %d)",
-		    ret, errno);
+		err(EXIT_FAILURE, "poll didn't return 1, returned %d "
+		    "(errno %d)", ret, errno);
 	}
 
 	if (!(pfds[0].revents & POLLOUT)) {

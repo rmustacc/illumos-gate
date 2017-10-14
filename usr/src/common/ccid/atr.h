@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc. 
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #ifndef _ATR_H
@@ -154,7 +154,8 @@ extern uint8_t atr_t1_ifsc(atr_data_t *);
  * Use this function to determine what set of Di and Fi values should be used by
  * a reader, based on the parameters from the ATR and the reader's cclass.
  */
-extern atr_data_rate_choice_t atr_data_rate(atr_data_t *, ccid_class_descr_t *, uint32_t *, uint_t, uint32_t *);
+extern atr_data_rate_choice_t atr_data_rate(atr_data_t *, ccid_class_descr_t *,
+    uint32_t *, uint_t, uint32_t *);
 
 #ifndef	_KERNEL
 extern void atr_data_dump(atr_data_t *, FILE *);
@@ -177,8 +178,8 @@ extern const char *atr_convention_to_string(atr_convention_t);
  * atr_pps_fidi_accepted(), one must call atr_pps_valid().
  */
 #define	PPS_BUFFER_MAX	6
-extern uint_t atr_pps_generate(uint8_t *, size_t, atr_protocol_t, boolean_t, uint8_t,
-    uint8_t, boolean_t, uint8_t);
+extern uint_t atr_pps_generate(uint8_t *, size_t, atr_protocol_t, boolean_t,
+    uint8_t, uint8_t, boolean_t, uint8_t);
 extern boolean_t atr_pps_valid(void *, size_t, void *, size_t);
 extern boolean_t atr_pps_fidi_accepted(void *, size_t);
 
