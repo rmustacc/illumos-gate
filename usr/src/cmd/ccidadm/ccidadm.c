@@ -44,7 +44,8 @@ static const char *ccidadm_pname;
 typedef enum {
 	CCIDADM_LIST_DEVICE,
 	CCIDADM_LIST_PRODUCT,
-	CCIDADM_LIST_STATE
+	CCIDADM_LIST_STATE,
+	CCIDADM_LIST_TRANSPORT
 } ccidadm_list_index_t;
 
 typedef struct ccidadm_pair {
@@ -174,6 +175,49 @@ ccidadm_list_slot_status_str(uccid_cmd_status_t *ucs, char *buf, uint_t buflen)
 }
 
 static boolean_t
+ccidadm_list_slot_transport_str(uccid_cmd_status_t *ucs, char *buf, uint_t buflen)
+{
+	const char *prot;
+	const char *tran;
+	uint_t bits = CCID_CLASS_F_TPDU_XCHG | CCID_CLASS_F_SHORT_APDU_XCHG |
+	    CCID_CLASS_F_EXT_APDU_XCHG;
+
+	switch (ucs->ucs_class.ccd_dwFeatures & bits) {
+	case 0:
+		tran = "Character";
+		break;
+	case CCID_CLASS_F_TPDU_XCHG:
+		tran = "TPDU";
+		break;
+	case CCID_CLASS_F_SHORT_APDU_XCHG:
+	case CCID_CLASS_F_EXT_APDU_XCHG:
+		tran = "APDU";
+		break;
+	default:
+		tran = "Unknown";
+		break;
+	}
+
+	if ((ucs->ucs_status & UCCID_STATUS_F_PARAMS_VALID) != 0) {
+		switch (ucs->ucs_prot) {
+		case UCCID_PROT_T0:
+			prot = " (T=0)";
+			break;
+		case UCCID_PROT_T1:
+			prot = " (T=1)";
+			break;
+		default:
+			prot = "";
+			break;
+		}
+	} else {
+		prot = "";
+	}
+
+	return (snprintf(buf, buflen, "%s%s", tran, prot) < buflen);
+}
+
+static boolean_t
 ccidadm_list_ofmt_cb(ofmt_arg_t *ofmt, char *buf, uint_t buflen)
 {
 	ccid_list_ofmt_arg_t *cloa = ofmt->ofmt_cbarg;
@@ -192,6 +236,10 @@ ccidadm_list_ofmt_cb(ofmt_arg_t *ofmt, char *buf, uint_t buflen)
 		break;
 	case CCIDADM_LIST_STATE:
 		ccidadm_list_slot_status_str(cloa->cloa_status, buf, buflen);
+		break;
+	case CCIDADM_LIST_TRANSPORT:
+		return (ccidadm_list_slot_transport_str(cloa->cloa_status, buf,
+		    buflen));
 		break;
 	default:
 		return (B_FALSE);
@@ -228,6 +276,7 @@ static ofmt_field_t ccidadm_list_fields[] = {
 	{ "PRODUCT",	24,	CCIDADM_LIST_PRODUCT,	ccidadm_list_ofmt_cb },
 	{ "DEVICE",	16,	CCIDADM_LIST_DEVICE, 	ccidadm_list_ofmt_cb },
 	{ "CARD STATE",	12,	CCIDADM_LIST_STATE, 	ccidadm_list_ofmt_cb },
+	{ "TRANSPORT",  10,	CCIDADM_LIST_TRANSPORT,	ccidadm_list_ofmt_cb },
 	{ NULL,		0,	0,			NULL	}
 };
 

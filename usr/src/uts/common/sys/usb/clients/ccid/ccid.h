@@ -108,6 +108,38 @@ typedef struct ccid_class_descr {
 #define	CCID_VERSION_MINOR(ver)	((ver) & 0x00ff)
 #define	CCID_VERSION_ONE	0x01
 
+/*
+ * This structure is used as the data for the CCID_REQUEST_SET_PARAMS request
+ * and the CCID_RESPONSE_PARAMETERS response. There are different structures for
+ * T=0 and T=1. These come from CCID r1.1 / Section 6.1.7.
+ */
+#pragma pack(1)
+typedef struct ccid_params_t0 {
+	uint8_t cp0_bmFindexDindex;
+	uint8_t cp0_bmTCCKST0;
+	uint8_t cp0_bGuardTimeT0;
+	uint8_t cp0_bWaitingIntegerT0;
+	uint8_t	cp0_bClockStop;
+} ccid_params_t0_t;
+
+#define	CCID_P_TCCKST0_DIRECT	0x00
+#define	CCID_P_TCCKST0_INVERSE	0x02
+
+typedef struct ccid_params_t1 {
+	uint8_t cp1_bmFindexDindex;
+	uint8_t cp1_bmTCCKST1;
+	uint8_t cp1_bGuardTimeT1;
+	uint8_t cp1_bmWaitingIntegersT1;
+	uint8_t cp1_bClockStop;
+	uint8_t cp1_bIFSC;
+	uint8_t cp1_bNadValue;
+} ccid_params_t1_t;
+#pragma pack()
+
+typedef union ccid_params {
+	ccid_params_t0_t ccp_t0;
+	ccid_params_t1_t ccp_t1;
+} ccid_params_t;
 
 /*
  * Everything below this point is reserved for the kernel.
@@ -131,6 +163,7 @@ typedef struct ccid_class_descr {
  */
 #define	CCID_SEQ_MIN	0x01
 #define	CCID_SEQ_MAX	UINT8_MAX
+
 
 /*
  * All structures from the specification must be packed.
@@ -222,37 +255,6 @@ typedef struct ccid_data_clock {
 	uint32_t	cdc_clock;
 	uint32_t	cdc_data;
 } ccid_data_clock_t;
-
-/*
- * This structure is used as the data for the CCID_REQUEST_SET_PARAMS request
- * and the CCID_RESPONSE_PARAMETERS response. There are different structures for
- * T=0 and T=1. These come from CCID r1.1 / Section 6.1.7.
- */
-typedef struct ccid_params_t0 {
-	uint8_t cp0_bmFindexDindex;
-	uint8_t cp0_bmTCCKST0;
-	uint8_t cp0_bGuardTimeT0;
-	uint8_t cp0_bWaitingIntegerT0;
-	uint8_t	cp0_bClockStop;
-} ccid_params_t0_t;
-
-#define	CCID_P_TCCKST0_DIRECT	0x00
-#define	CCID_P_TCCKST0_INVERSE	0x02
-
-typedef struct ccid_params_t1 {
-	uint8_t cp1_bmFindexDindex;
-	uint8_t cp1_bmTCCKST1;
-	uint8_t cp1_bGuardTimeT1;
-	uint8_t cp1_bmWaitingIntegersT1;
-	uint8_t cp1_bClockStop;
-	uint8_t cp1_bIFSC;
-	uint8_t cp1_bNadValue;
-} ccid_params_t1_t;
-
-typedef union ccid_params {
-	ccid_params_t0_t ccp_t0;
-	ccid_params_t1_t ccp_t1;
-} ccid_params_t;
 
 /*
  * Macros and constants to take apart the slot status (in ch_param1) when a CCID

@@ -101,7 +101,7 @@
 #define	ATR_PROTOCOL_T1		1
 
 #define	ATR_T1_TB0_CWI(x)	((x) & 0x0f)
-#define	ATR_T1_TB0_BWI(x)	(((x) & 0xf0) > 4)
+#define	ATR_T1_TB0_BWI(x)	(((x) & 0xf0) >> 4)
 #define	ATR_T1_TC0_CRC(x)	(((x) & 0x01) != 0)
 
 /*
@@ -177,9 +177,9 @@
 #define	PPS_PPSS_VAL	0xff
 #define	PPS_PPS0_INDEX	0x01
 #define	PPS_PPS0_PROT(x)	((x) & 0x0f)
-#define	PPS_PPS0_PPS1		(1 << 5)
-#define	PPS_PPS0_PPS2		(1 << 6)
-#define	PPS_PPS0_PPS3		(1 << 7)
+#define	PPS_PPS0_PPS1		(1 << 4)
+#define	PPS_PPS0_PPS2		(1 << 5)
+#define	PPS_PPS0_PPS3		(1 << 6)
 #define	PPS_PPS1_SETVAL(f, d)	((((f) & 0x0f) << 4) | ((d) & 0x0f))
 
 /*

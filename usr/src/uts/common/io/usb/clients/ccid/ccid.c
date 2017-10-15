@@ -2355,14 +2355,15 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	 * don't bother trying to set it, as we don't want to get in the way of
 	 * its 
 	 */
-	cmn_err(CE_WARN, "flags: %x, prot: %x", ccid->ccid_flags, prot);
 	if ((ccid->ccid_flags & CCID_F_NEEDS_IFSD) != 0) {
 		if (prot == ATR_P_T1 &&
 		    (ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
 		    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
 			/* XXX */
 			ccid_error(ccid, "skipping T=1 IFSD negotiation");
+#if 0
 			(void) ccid_slot_t1_ifsd(ccid, slot);
+#endif
 		}
 	}
 
@@ -4213,6 +4214,12 @@ ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
 		ucs.ucs_serial[0] = '\0';
 	}
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
+
+	if ((slot->cs_flags & CCID_SLOT_F_ACTIVE) != 0) {
+		ucs.ucs_status |= UCCID_STATUS_F_PARAMS_VALID;
+		ucs.ucs_prot = slot->cs_icc.icc_cur_protocol;
+		ucs.ucs_params = slot->cs_icc.icc_params;
+	}
 
 	if (ddi_copyout(&ucs, (void *)arg, sizeof (ucs), mode & FKIOCTL) != 0)
 		return (EFAULT);

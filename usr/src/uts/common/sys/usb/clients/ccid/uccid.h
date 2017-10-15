@@ -71,12 +71,21 @@ typedef struct uccid_cmd_txn_end {
 #define	UCCID_CMD_TXN_END	(UCCID_IOCTL | 0x02)
 
 /*
+ * Protocol definitions. This should match common/ccid/atr.h.
+ */
+typedef enum {
+	UCCID_PROT_T0	= 1 << 0,
+	UCCID_PROT_T1	= 1 << 1
+} uccid_prot_t;
+
+/*
  * Bits for UCS Status
  */
 #define	UCCID_STATUS_F_CARD_PRESENT	0x01
 #define	UCCID_STATUS_F_CARD_ACTIVE	0x02
 #define	UCCID_STATUS_F_PRODUCT_VALID	0x04
 #define	UCCID_STATUS_F_SERIAL_VALID	0x08
+#define	UCCID_STATUS_F_PARAMS_VALID	0x10
 
 typedef struct uccid_cmd_status {
 	uint32_t	ucs_version;
@@ -87,6 +96,8 @@ typedef struct uccid_cmd_status {
 	int8_t		ucs_product[256];
 	int8_t		ucs_serial[256];
 	ccid_class_descr_t	ucs_class;
+	uccid_prot_t	ucs_prot;
+	ccid_params_t	ucs_params;
 } uccid_cmd_status_t;
 
 /*
