@@ -716,11 +716,11 @@ ccidadm_reader_print(int fd, const char *name, void *unused)
 	(void) printf("  Maximum Clock: %sHz\n", nnbuf);
 	(void) printf("  Supported Clock Rates: %u\n",
 	    cd->ccd_bNumClockSupported);
-	nicenum_scale(cd->ccd_dwDataRate, 1000, nnbuf,
-	    sizeof (nnbuf), NN_DIVISOR_1000 | NN_UNIT_SPACE);
+	nicenum_scale(cd->ccd_dwDataRate, 1, nnbuf, sizeof (nnbuf),
+	    NN_DIVISOR_1000 | NN_UNIT_SPACE);
 	(void) printf("  Default Data Rate: %sbps\n", nnbuf);
-	nicenum_scale(cd->ccd_dwMaxDataRate, 1000, nnbuf,
-	    sizeof (nnbuf), NN_DIVISOR_1000 | NN_UNIT_SPACE);
+	nicenum_scale(cd->ccd_dwMaxDataRate, 1, nnbuf, sizeof (nnbuf),
+	    NN_DIVISOR_1000 | NN_UNIT_SPACE);
 	(void) printf("  Maximum Data Rate: %sbps\n", nnbuf);
 	(void) printf("  Supported Data Rates: %u\n",
 	    cd->ccd_bNumDataRatesSupported);
