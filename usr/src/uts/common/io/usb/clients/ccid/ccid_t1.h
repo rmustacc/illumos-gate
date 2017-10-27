@@ -50,9 +50,12 @@ typedef struct t1_hdr {
 #define	T1_TYPE_IBLOCK	0x00
 #define	T1_TYPE_RBLOCK	0x80
 #define	T1_TYPE_SBLOCK	0xc0
+#define	T1_TYPE_IMASK	0x80
+#define	T1_TYPE_RSMASK	0xc0
 
 #define	T1_IBLOCK_NS	0x40
 #define	T1_IBLOCK_M	0x20
+#define	T1_IBLOCK_RSVD	0x1f
 
 /*
  * The T1 NS sequence must always start at 0 per ISO/IEC 7816-3:2006 11.6.2.1.

@@ -58,6 +58,11 @@ typedef struct uccid_cmd_txn_begin {
  * specified, the ioctl will return immediately if exclusive access cannot be
  * gained. Otherwise, it will block in an interruptable fashion. The argument is
  * a uccid_cmd_txn_begin_t.
+ *
+ * XXX We should probably change things here such that on TXN end you're
+ * required to specify this rather than at TXN begin time. Or if we want to
+ * still require it at begin time, we should still have an override option at
+ * TXN end.
  */
 #define	UCCID_CMD_TXN_BEGIN	(UCCID_IOCTL | 0x01)
 

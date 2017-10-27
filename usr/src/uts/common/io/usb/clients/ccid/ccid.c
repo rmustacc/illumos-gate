@@ -349,8 +349,7 @@ typedef enum ccid_io_flags {
 typedef enum ccid_io_t1_state {
 	CCID_T1_CHAIN_SENDING,
 	CCID_T1_SENDING,
-	CCID_T1_CHAIN_RECEIVING,
-	CCID_T1_RECEIVING,
+	CCID_T1_CHAIN_RECEIVING
 } ccid_io_t1_state_t;
 
 typedef struct ccid_io_t1 {
@@ -358,6 +357,10 @@ typedef struct ccid_io_t1 {
 	 * State to keep track of what we're expecting at this point.
 	 */
 	ccid_io_t1_state_t cit_state;
+	/*
+	 * Checksum type that this instance of T=1 uses
+	 */
+	atr_t1_checksum_t cit_checksum;
 	/*
 	 * The maximum size of user data that we can use for a T=1 message.
 	 */
@@ -377,6 +380,11 @@ typedef struct ccid_io_t1 {
 	 * client.
 	 */
 	off_t	cit_writeoff;
+	/*
+	 * An error value that can be used to indicate command completion
+	 * values across multi-command requests / responses.
+	 */
+	int	cit_errno;
 } ccid_io_t1_t;
 
 typedef struct ccid_io {
@@ -629,17 +637,107 @@ ccid_t1_header_sblock(t1_hdr_t *hdr, t1_sblock_op_t op, uint8_t len)
  * LRC checksum is just a simple one byte xor.
  */
 static void
-ccid_t1_checksum(const t1_hdr_t *hdr, const uint8_t *inf, size_t len, ccid_command_t *cc)
+ccid_t1_checksum_write(const ccid_slot_t *slot, const t1_hdr_t *hdr, const uint8_t *inf, size_t len, ccid_command_t *cc)
 {
 	uint8_t cksum = 0;
 	size_t i;
 
+	ASSERT3U(slot->cs_io.ci_t1.cit_checksum, ==, ATR_T1_CHECKSUM_LRC);
 	cksum ^= hdr->t1h_nad ^ hdr->t1h_pcb ^ hdr->t1h_len;
 	for (i = 0; i < len; i++) {
 		cksum ^= inf[i];
 	}
 
 	ccid_command_bcopy(cc, &cksum, sizeof (cksum));
+}
+
+/*
+ * Given the initial pcb state, try and determine what the expected pcb response
+ * should be. Also make sure that the length makes sense for where we are.
+ */
+static boolean_t
+ccid_t1_pcb_validate(const ccid_slot_t *slot, const t1_hdr_t *req,
+    const t1_hdr_t *resp)
+{
+	ccid_io_state_t state = slot->ci_io.ci_t1.cit_state;
+	/*
+	 * Determine the type of header that we have in the pcb.
+	 */
+	if ((resp->t1h_pcb & T1_TYPE_IMASK) == 0) {
+		/*
+		 * Make sure that the reserved bits are zero.
+		 */
+		if ((resp->t1h_pcb & T1_IBLOCK_RSVD) != 0) {
+			return (B_FALSE);
+		}
+
+		/*
+		 * If we were sending a chain, then getting an I-block does not
+		 * make sense.
+		 */
+		if (state == CCID_T1_CHAIN_SENDING) {
+			return (B_FALSE);
+		}
+
+		/*
+		 * Figure out what sequence we expect and if that makes sense.
+		 */
+	} else if ((resp->t1h_pcb & T1_TYPE_RSMASK) == T1_TYPE_RBLOCK) {
+		/* R-Block */
+	} else {
+		/* S-Block */
+	}
+	return (B_FALSE);
+}
+
+/*
+ * Go through and check the following information about the block:
+ *
+ *  o NAD makes sense
+ *  o LEN makes sense and matches the mblk_t size
+ *  o The PCB is valid and understandable
+ */
+static boolean_t
+ccid_t1_validate(const ccid_slot_t *slot, size_t ccidlen, const mblk_t *mp, const t1_hdr_t *req)
+{
+	const t1_hdr_t *resp;
+	size_t len = MBLKL(mp), i;
+	uint8_t cksum;
+
+	/*
+	 * We have a slight Chicken and Egg problem. We want to look at the
+	 * contents of the T=1 header, but it may not have passed its checksum.
+	 * To deal with that we start with the assumption that we got all the
+	 * data that we expect. In other words that the ccid length equals the
+	 * message block length. We'll validate the checksum based on that raw
+	 * data. Later, we'll go back and make sure that the header makes
+	 * semantic sense.
+	 */
+	/* XXX Hardcoding / assuming LRC */
+	ASSERT3U(slot->cs_io.ci_t1.cit_checksum, ==, ATR_T1_CHECKSUM_LRC);
+	cksum = 0;
+	for (i = 0; i < len; i ++) {
+		cksum ^= mp->b_rptr[i];
+	}
+	if (cksum != 0) {
+		return (B_FALSE);
+	}
+
+	/*
+	 * Now check the header. NAD will always be zero. The value of pcb
+	 * depends on the request and expectation of chaining. Len will depend
+	 * on the header and the type of request.
+	 */
+	resp = (t1_hdr_t *)mp->b_rptr;
+	if (resp->t1h_nad != 0) {
+		return (B_FALSE);
+	}
+
+	if (!ccid_t1_pcb_validate(slot, req, resp)) {
+		return (B_FALSE);
+	}
+
+	return (B_TRUE);
 }
 
 static void
@@ -2071,9 +2169,11 @@ ccid_slot_t1_fill_maxsize(ccid_t *ccid, ccid_slot_t *slot)
 {
 	size_t csz;
 	uint8_t t1len, ifsc;
+	atr_t1_checksum_t ctype;
 
 	t1len = sizeof (t1_hdr_t);
-	switch (atr_t1_checksum(slot->cs_icc.icc_atr_data)) {
+	ctype = atr_t1_checksum(slot->cs_icc.icc_atr_data);
+	switch (ctype) {
 	case ATR_T1_CHECKSUM_LRC:
 		t1len += 1;
 		break;
@@ -2095,6 +2195,7 @@ ccid_slot_t1_fill_maxsize(ccid_t *ccid, ccid_slot_t *slot)
 	ifsc = atr_t1_ifsc(slot->cs_icc.icc_atr_data);
 	slot->cs_io.ci_t1.cit_maxlen = MIN((uint8_t)csz, ifsc);
 	slot->cs_io.ci_t1.cit_protlen = t1len;
+	slot->cs_io.ci_t1.cit_checksum = ctype;
 }
 
 static boolean_t
@@ -3678,9 +3779,81 @@ ccid_teardown_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
 {
 }
 
+/*
+ * This is called in response to us having a command completed for a T=1 TPDU.
+ * At this point we need to go through and now advance the state machine that
+ * we've created and figure out what the next step is. Unlike with APDU level
+ * transfers, we may need to go and send additional commands for the clients
+ * APDU.
+ */
 static void
 ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 {
+	size_t ccidlen;
+	mblk_t *mp;
+	ccid_reply_command_status_t crs;
+	ccid_reply_icc_status_t cis;
+	t1_hdr_t *hdr;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+	VERIFY3P(slot->cs_io.ci_command, ==, cc);
+
+	/*
+	 * XXX At this time we do not properly implement the state machine that
+	 * is described by the ISO/IEC 7816-3:2006 specification. If we get
+	 * errors at a reader level or a failure to transmit the command, that
+	 * might leave the ICC in an arbitrary state. We need to handle this and
+	 * go from there.
+	 */
+	if (cc->cc_state > CCID_COMMAND_COMPLETE) {
+		/*
+		 * XXX Take out the system until we fix this.
+		 */
+		cmn_err(CE_PANIC, "implement cc->cc_state > CCID_COMMAND_COMPLETED case");
+	}
+
+	/*
+	 * Check the CCID command level case. If we were told the slot is going
+	 * away, mark that and notify the user that the command is done.
+	 * 
+	 * XXX In terms of failure we should be looking at one of several
+	 * different things here. We should see if there was a bit error, etc.
+	 * and act accordingly per the spec.
+	 */
+	ccid_command_status_decode(cc, &crs, &cis, NULL);
+	if (crs == CCID_REPLY_STATUS_FAILED && cis == CCID_REPLY_ICC_MISSING) {
+		/*
+		 * The ICC was removed. The user will likely be notified of this
+		 * at some point soon. Keep the ccid_command_t around until they
+		 * call read for debugging purposes.
+		 */
+		slot->cs_io.ci_t1.cit_errno = ENXIO;
+		ccid_user_io_done(ccid, slot);
+		return;
+	} else if (crs != CCID_REPLY_STATUS_COMPLETE) {
+		cmn_err(CE_PANIC, "implement crs != CCID_REPLY_STATUS_COMPLETE casE");
+	}
+
+	/*
+	 * This T=1 command completed successfully at a CCID level. We must go
+	 * through and verify the following aspects of it:
+	 *
+	 *  o The checksum is correct
+	 *  o Invalid PCB
+	 *  o Invalid length
+	 */
+	ccidlen = ccid_command_resp_length(cc);
+	if (ccidlen < sizeof (t1_hdr_t)) {
+		cmn_err(CE_PANIC, "Implement reply with data less than sizeof (t1_hdr_t)");
+	}
+
+	/*
+	 * Take ownership of the mblk_t from the command. 
+	 */
+	mp = cc->cc_response;
+	cc->cc_response = NULL;
+	mp->b_rptr += sizeof (ccid_header_t);
+
 }
 
 static int
@@ -3716,9 +3889,10 @@ ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
 	chain = slot->cs_io.ci_ilen > slot->cs_io.ci_t1.cit_maxlen;
 
 	/*
-	 * Reset the sequence value and make the header. Then increment the
-	 * sequence value. Store our state for the T=1 state machine.
+	 * Reset the sequence value and make the header. Store our state for the
+	 * T=1 state machine.
 	 */
+	slot->cs_io.ci_t1.cit_errno = 0;
 	slot->cs_io.ci_t1.cit_ns = T1_IBLOCK_NS_DEFVAL;
 	ccid_t1_header_iblock(&t1hdr, slot->cs_io.ci_t1.cit_ns, chain, len);
 	if (chain) {
@@ -3727,7 +3901,6 @@ ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
 		slot->cs_io.ci_t1.cit_state = CCID_T1_SENDING;
 	}
 	slot->cs_io.ci_t1.cit_writeoff = len;
-	slot->cs_io.ci_t1.cit_ns ^= 1;
 
 	/*
 	 * Drop the lock to perform memory allocation and transmit the command.
@@ -3748,7 +3921,7 @@ ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
 	 */
 	ccid_command_bcopy(cc, &t1hdr, sizeof (t1hdr));
 	ccid_command_bcopy(cc, slot->cs_io.ci_ibuf, len);
-	ccid_t1_checksum(&t1hdr, slot->cs_io.ci_ibuf, len, cc);
+	ccid_t1_checksum_write(slot, &t1hdr, slot->cs_io.ci_ibuf, len, cc);
 
 	/*
 	 * Before we submit this command, assign it to our internal state. We
@@ -4298,6 +4471,12 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 		return (ENXIO);
 	}
 	VERIFY3S(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL, !=, 0);
+
+	/*
+	 * XXX We should probably go through and add the ability for a user to
+	 * set flags to change the disposition of the device. This is in a
+	 * similar fashion to PCSC.
+	 */
 	ccid_slot_excl_rele(slot);
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
@@ -4414,6 +4593,11 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	slot = cmp->cm_slot;
 	ccid_minor_idx_free(idx);
 
+	/*
+	 * XXX If we find that we have exited without having a transaction
+	 * forcibly ended, then we should go through and reset the card, because
+	 * it could have been in an arbitrary state.
+	 */
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	if (cmp->cm_flags & CCID_MINOR_F_HAS_EXCL) {
 		ccid_slot_excl_rele(slot);
