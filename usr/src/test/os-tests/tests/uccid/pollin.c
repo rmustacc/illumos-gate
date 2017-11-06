@@ -14,8 +14,7 @@
  */
 
 /*
- * Verify that if a child grabs an exclusive lock and calls exit, we can grab it
- * again.
+ * Open up a device and make sure we get pollout by default.
  */
 
 #include <err.h>
@@ -26,55 +25,39 @@
 #include <strings.h>
 #include <unistd.h>
 #include <errno.h>
-#include <sys/wait.h>
+#include <poll.h>
 
 #include <sys/usb/clients/ccid/uccid.h>
 
 int
 main(int argc, char *argv[])
 {
-	int fd, estat;
-	pid_t pid;
+	int fd, ret;
+	struct pollfd pfds[1];
 	uccid_cmd_txn_begin_t begin;
 
 	if (argc != 2) {
 		errx(EXIT_FAILURE, "missing required ccid path");
 	}
 
-	bzero(&begin, sizeof (begin));
-	begin.uct_version = UCCID_CURRENT_VERSION;
-
-	pid = fork();
-	if (pid == 0) {
-		fd = open(argv[1], O_RDWR);
-		if (fd < 0) {
-			err(EXIT_FAILURE, "failed to open %s", argv[1]);
-		}
-
-		if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
-			err(EXIT_FAILURE, "failed to issue begin ioctl");
-		}
-
-		_exit(0);
-	}
-
-	estat = -1;
-	if (waitpid(pid, &estat, 0) == -1) {
-		err(EXIT_FAILURE, "failed to wait for pid %d", pid);
-	}
-
-	if (estat != 0) {
-		errx(EXIT_FAILURE, "child exited with non-zero value (%d)",
-		    estat);
-	}
-
-	fd = open(argv[1], O_RDWR);
-	if (fd < 0) {
+	if ((fd = open(argv[1], O_RDWR)) < 0) {
 		err(EXIT_FAILURE, "failed to open %s", argv[1]);
 	}
 
+	bzero(&begin, sizeof (begin));
+	begin.uct_version = UCCID_CURRENT_VERSION;
 	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
 		err(EXIT_FAILURE, "failed to issue begin ioctl");
+	}
+
+	pfds[0].fd = fd;
+	pfds[0].events = POLLIN;
+	pfds[0].revents = 0;
+
+	ret = poll(pfds, 1, 0);
+	if (ret != 0) {
+		err(EXIT_FAILURE, "poll didn't return 0, returned %d "
+		    "(errno %d)", ret, errno);
 	}
 
 	return (0);

@@ -14,7 +14,7 @@
  */
 
 /*
- * Open up a device and make sure we get pollout by default.
+ * Open up a device and make sure we don't get pollin by default.
  */
 
 #include <err.h>
@@ -46,7 +46,6 @@ main(int argc, char *argv[])
 
 	bzero(&begin, sizeof (begin));
 	begin.uct_version = UCCID_CURRENT_VERSION;
-	begin.uct_flags = UCCID_TXN_END_RELEASE;
 	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
 		err(EXIT_FAILURE, "failed to issue begin ioctl");
 	}

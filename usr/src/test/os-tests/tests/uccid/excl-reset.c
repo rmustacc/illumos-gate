@@ -48,8 +48,8 @@ main(int argc, char *argv[])
 	bzero(&end, sizeof (end));
 
 	begin.uct_version = UCCID_CURRENT_VERSION;
-	begin.uct_flags = UCCID_TXN_END_RESET;
 	end.uct_version = UCCID_CURRENT_VERSION;
+	end.uct_flags = UCCID_TXN_END_RESET;
 
 	for (i = 0; i < 10; i++) {
 		if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {

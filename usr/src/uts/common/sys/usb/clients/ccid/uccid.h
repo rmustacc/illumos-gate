@@ -45,8 +45,6 @@ extern "C" {
 #define	UCCID_CURRENT_VERSION	UCCID_VERSION_ONE
 
 #define	UCCID_TXN_DONT_BLOCK	0x01
-#define	UCCID_TXN_END_RESET	0x02
-#define	UCCID_TXN_END_RELEASE	0x04
 
 typedef struct uccid_cmd_txn_begin {
 	uint32_t	uct_version;
@@ -54,26 +52,28 @@ typedef struct uccid_cmd_txn_begin {
 } uccid_cmd_txn_begin_t;
 
 /*
- * Attempt to obtain eclusive access. If the UCN_TXN_DONT_BLOCK flag is
+ * Attempt to obtain exclusive access. If the UCN_TXN_DONT_BLOCK flag is
  * specified, the ioctl will return immediately if exclusive access cannot be
  * gained. Otherwise, it will block in an interruptable fashion. The argument is
  * a uccid_cmd_txn_begin_t.
- *
- * XXX We should probably change things here such that on TXN end you're
- * required to specify this rather than at TXN begin time. Or if we want to
- * still require it at begin time, we should still have an override option at
- * TXN end.
  */
 #define	UCCID_CMD_TXN_BEGIN	(UCCID_IOCTL | 0x01)
 
 typedef struct uccid_cmd_txn_end {
 	uint32_t	uct_version;
+	uint32_t	uct_flags;
 } uccid_cmd_txn_end_t;
 
 /*
- * Reliquish exclusive access. Takes a uccid_cmd_txn_end_t.
+ * Reliquish exclusive access. Takes a uccid_cmd_txn_end_t. The callers should
+ * specify one of UCCID_TXN_END_RESET or UCCID_TXN_END_RELEASE. These indicate
+ * what behavior should be taken when we release the transaction. It is
+ * considered an error if neither is specified. If the caller exits without
+ * calling this function, then the ICC will be reset.
  */
 #define	UCCID_CMD_TXN_END	(UCCID_IOCTL | 0x02)
+#define	UCCID_TXN_END_RESET	0x01
+#define	UCCID_TXN_END_RELEASE	0x02
 
 /*
  * Protocol definitions. This should match common/ccid/atr.h.

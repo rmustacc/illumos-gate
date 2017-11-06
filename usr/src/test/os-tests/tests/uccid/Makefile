@@ -26,13 +26,12 @@ PROGS = 		\
 	excl-reset	\
 	notxn-poll	\
 	status		\
-	parity		\
+	pollin		\
 	pollout		\
 	txn-pollerr	\
 	yk
 
 COMMON_OBJS = \
-	ccid_parity.o \
 	atr.o
 
 include $(SRC)/cmd/Makefile.cmd
@@ -42,7 +41,6 @@ CMDS = $(PROGS:%=$(TESTDIR)/%)
 $(CMDS) := FILEMODE = 0555
 
 CPPFLAGS += -D_REENTRANT -I$(SRC)/common/ccid/
-parity := EXTRA_OBJS = ccid_parity.o
 
 all: $(PROGS) $(PARITYPROGS)
 

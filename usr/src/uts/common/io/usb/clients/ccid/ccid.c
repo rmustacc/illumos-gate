@@ -4358,36 +4358,17 @@ ccid_ioctl_txn_begin(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mod
 
 	if (uct.uct_version != UCCID_VERSION_ONE)
 		return (EINVAL);
-	if ((uct.uct_flags & ~(UCCID_TXN_DONT_BLOCK | UCCID_TXN_END_RESET |
-	    UCCID_TXN_END_RELEASE)) != 0)
-		return (EINVAL);
-	if ((uct.uct_flags & UCCID_TXN_END_RESET) != 0 &&
-	    (uct.uct_flags & UCCID_TXN_END_RELEASE) != 0) {
-		return (EINVAL);
-	}
 
-	nowait = !!(uct.uct_flags & UCCID_TXN_DONT_BLOCK);
+	if ((uct.uct_flags & ~UCCID_TXN_DONT_BLOCK) != 0)
+		return (EINVAL);
+	nowait = (uct.uct_flags & UCCID_TXN_DONT_BLOCK) != 0;
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENODEV);
 	}
-
 	ret = ccid_slot_excl_req(slot, cmp, nowait);
-
-	/*
-	 * If successful, record whether or not we need to reset the ICC when
-	 * this transaction is ended (whether explicitly or implicitly). The
-	 * reason we have two flags in the ioctl, but only one here is to force
-	 * the consumer to make a concrious choice in which behavior they should
-	 * be using.
-	 */
-	if (ret == 0) {
-		if (uct.uct_flags & UCCID_TXN_END_RESET) {
-			cmp->cm_flags |= CCID_MINOR_F_TXN_RESET;
-		}
-	}
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
 	return (ret);
@@ -4400,11 +4381,26 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 	uccid_cmd_txn_end_t uct;
 	boolean_t nowait;
 
-	if (ddi_copyin((void *)arg, &uct, sizeof (uct), mode & FKIOCTL) != 0)
+	if (ddi_copyin((void *)arg, &uct, sizeof (uct), mode & FKIOCTL) != 0) {
 		return (EFAULT);
+	}
 
-	if (uct.uct_version != UCCID_VERSION_ONE)
+	if (uct.uct_version != UCCID_VERSION_ONE) {
 		return (EINVAL);
+	}
+
+	if ((uct.uct_flags & ~(UCCID_TXN_END_RESET |
+	    UCCID_TXN_END_RELEASE)) != 0) {
+		return (EINVAL);
+	}
+
+	/*
+	 * Require at least one of these flags to be set.
+	 */
+	if ((((uct.uct_flags & UCCID_TXN_END_RESET) != 0) ^
+	    ((uct.uct_flags & UCCID_TXN_END_RELEASE) != 0)) == 0) {
+		return (EINVAL);
+	}
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
@@ -4418,11 +4414,9 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 	}
 	VERIFY3S(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL, !=, 0);
 
-	/*
-	 * XXX We should probably go through and add the ability for a user to
-	 * set flags to change the disposition of the device. This is in a
-	 * similar fashion to PCSC.
-	 */
+	if (uct.uct_flags & UCCID_TXN_END_RESET) {
+		cmp->cm_flags |= CCID_MINOR_F_TXN_RESET;
+	}
 	ccid_slot_excl_rele(slot);
 	mutex_exit(&slot->cs_ccid->ccid_mutex);
 
@@ -4501,9 +4495,9 @@ ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 	}
 
 	if ((slot->cs_io.ci_flags & CCID_IO_F_DONE) != 0) {
-		ready |= POLLOUT;
-	} else if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) == 0) {
 		ready |= POLLIN | POLLRDNORM;
+	} else if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) == 0) {
+		ready |= POLLOUT;
 	}
 
 	if (!(slot->cs_flags & CCID_SLOT_F_PRESENT)) {
@@ -4540,12 +4534,15 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	ccid_minor_idx_free(idx);
 
 	/*
-	 * XXX If we find that we have exited without having a transaction
-	 * forcibly ended, then we should go through and reset the card, because
-	 * it could have been in an arbitrary state.
+	 * If the minor node was closed without an explicit transaction end,
+	 * then we need to assume that the reader's ICC is in an arbitrary
+	 * state. For example, the ICC could have a specific PIV applet
+	 * selected. In such a case, the only safe thing to do is to force a
+	 * reset.
 	 */
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
 	if (cmp->cm_flags & CCID_MINOR_F_HAS_EXCL) {
+		cmp->cm_flags |= CCID_MINOR_F_TXN_RESET;
 		ccid_slot_excl_rele(slot);
 	}
 
