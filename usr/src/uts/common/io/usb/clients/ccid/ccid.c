@@ -2135,9 +2135,16 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
 		return;
 	}
 
-
+	/*
+	 * This slot is gone, mark the flags accordingly.
+	 */
 	slot->cs_flags &= ~CCID_SLOT_F_PRESENT;
 	slot->cs_flags &= ~CCID_SLOT_F_ACTIVE;
+
+	/*
+	 * If there are outstanding user threads, make sure that they get
+	 * cleaned up.
+	 */
 
 	/*
 	 * Make sure that user I/O, if it exists, is torn down.
@@ -3881,6 +3888,32 @@ ccid_user_io_done(ccid_t *ccid, ccid_slot_t *slot)
 static void
 ccid_teardown_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
 {
+	/*
+	 * First check if there's an I/O in progress. If not, then we're done
+	 * here and there's nothing for us to really do.
+	 */
+	if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) == 0) {
+		return;
+	}
+
+	/*
+	 * At this point, we have latent T=1 processing going on. If the
+	 * CCID_IO_F_DONE flag is set, then all we need to do is clean up our
+	 * existing command state and mark this done.
+	 */
+	if ((slot->cs_io.ci_flags & CCID_IO_F_DONE) != 0) {
+		slot->cs_io.ci_errno = 0;
+		t1_state_cmd_done(&slot->cs_io.ci_t1);
+		ccid_user_io_free(ccid, slot, B_TRUE);
+		return;
+	}
+
+	/*
+	 * OK, we have an I/O outstanding. We have some questions that we need
+	 * to answer here. XXX Should we issue an abort, should we do something
+	 * else, should we figure out how what to do next?
+	 */
+	panic("implement the teardown logic for TPDU T=1");
 }
 
 /*
@@ -4003,6 +4036,8 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 
 	/*
 	 * Now, finally drop the lock to queue the command.
+	 *
+	 * XXX We should probably put the preparing flag here.
 	 */
 	mutex_exit(&ccid->ccid_mutex);
 
@@ -4010,7 +4045,7 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 		mutex_enter(&ccid->ccid_mutex);
 		/* XXX Do we need to clean up the T=1 state here potentially? Or
 		 * can we leave it to be cleaned up by something else that next
-		 * uses it? Becuse we've dropped the lock, it's not clear what
+		 * uses it? Because we've dropped the lock, it's not clear what
 		 * we can or cannot do.
 		 *
 		 * XXX For the moment I'm going to mark this command done. This
@@ -4074,7 +4109,6 @@ ccid_read_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 
 consume:
 	slot->cs_io.ci_errno = 0;
-	/* XXX Clean up the T=1 state machine for the next command */
 	t1_state_cmd_done(&slot->cs_io.ci_t1);
 	ccid_user_io_free(ccid, slot, B_TRUE);
 	return (ret);
@@ -4091,7 +4125,7 @@ ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 
 	/*
-	 * Initiailze a new command and kick off the internal state machine.
+	 * Initialize a new command and kick off the internal state machine.
 	 */
 	t1_state_cmd_init(&slot->cs_io.ci_t1, slot->cs_io.ci_ibuf,
 	    slot->cs_io.ci_ilen);
@@ -4174,7 +4208,7 @@ ccid_teardown_apdu(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 
 	/*
-	 * If no I/O is in progres, then there's nothing to do.
+	 * If no I/O is in progress, then there's nothing to do.
 	 */
 	if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) == 0) {
 		return;
