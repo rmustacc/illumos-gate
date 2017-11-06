@@ -2066,7 +2066,7 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	int ret;
 	boolean_t neg;
 	atr_parsecode_t p;
-	atr_protocol_t sup, def, prot;
+	atr_protocol_t sup, def, prot, usable;
 	atr_data_t *data;
 
 	/*
@@ -2096,6 +2096,18 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	def = atr_default_protocol(data);
 	sup = atr_supported_protocols(data);
 	neg = atr_params_negotiable(data);
+	usable = sup & ccid->ccid_class.ccd_dwProtocols;
+
+	/*
+	 * We need to check if the reader supports the protocols supported by
+	 * the ICC. If it does not, then we cannot use this ICC.
+	 */
+	if (usable == 0) {
+		ccid_error(ccid, "!reader and ICC do not support common "
+		    "protocols, reader 0x%x, ICC 0x%x\n",
+		    ccid->ccid_class.ccd_dwProtocols, sup);
+		return (B_FALSE);
+	}
 
 	/*
 	 * If we encounter an ICC that needs manual setting of the frequency and
@@ -2150,16 +2162,23 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 
 		/*
 		 * Determine what protocol we're going to negotiate or use to
-		 * set parametesr. Prefer T=1 if present. If not negotiable, use
-		 * the default.
+		 * set parameters. Prefer T=1 if present. If not negotiable, use
+		 * the default. Keep in mind, we have to consider which
+		 * protocols the CCID reader supports as well.
 		 */
 		if (neg) {
-			if (sup & ATR_P_T1)
+			if (usable & ATR_P_T1)
 				prot = ATR_P_T1;
 			else
 				prot = ATR_P_T0;
 		} else {
 			prot = def;
+			if ((def & usable) == 0) {
+				ccid_error(ccid, "!ICC does not support "
+				    "negotiation and default protocol (0x%x) "
+				    "is not supported by the reader", def);
+				return (B_FALSE);
+			}
 		}
 
 		changeprot = prot != def;
