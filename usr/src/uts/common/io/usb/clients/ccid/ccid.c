@@ -178,6 +178,64 @@
  * explicitly reactivate it as part of something or just make that a future
  * error?
  *  - Should we provide an ioctl to try to reactivate?
+ *
+ * o There is a series of edge cases that we need to handle with both read /
+ *   write. These include:
+ *
+ *   + I/O in flight when end transaction occurs
+ *       o Quiesce the I/O (may involve reset and abort) from a kernel
+ *         perspective
+ *       o Hand off to next transaction only when above is complete
+ *       o POLLERR should signaled on the minor's pollhead
+ *   + I/O in flight when ICC is removed
+ *       o Quiesce the I/O from a kernel perspective
+ *       o End the I/O with an ENXIO (maybe ECONNRESET?) from a user perspective
+ *       o Kernel worker thread should block on kernel clean up, but not user
+ *         consumption. We should not call into rx function to try and consume /
+ *         clean up. It should get cleaned up by other functions.
+ *       o POLLOUT is not signalled until both I/O is consumed and new ICC is
+ *         present
+ *       o POLLIN | POLLHUP should be signaled
+ *   + I/O in flight when reader is removed
+ *       o Ensure that I/O is quiesced from a kernel perspective, nothing should
+ *         be queued for user
+ *       o POLLERR | POLLHUP should be signaled to tell the user that this I/O
+ *         is not coming back.
+ *   + Blocked in read when an end transaction occurs
+ *       o Quiesce the I/O (may involve reset and abort) form a kernel
+ *         perspective
+ *       o Signal and wake up the thread blocked in read(), it should get
+ *         ECANCELED
+ *       o Don't allow the transaction hand off to progress until read thread is
+ *         gone
+ *       o Follow all of the I/O in flight when transaction ends steps
+ *   + Blocked in read when an ICC is removed
+ *       o follow all I/O in flight when ICC is removed steps
+ *       o Signal and wake up the thread blocked in read() to get the error set
+ *         on disconnect.
+ *   + Blocked in read when an reader is removed
+ *       o Follow all normal I/O steps when reader removed
+ *       o Signal and wake up the thread blocked in read(). It should check the
+ *         DISCONNECTED, not the DETACHED flag.
+ *   + Unread, but completed I/O when an end transaction occurs w/ ICC
+ *       o Consume logical I/O state. Do not signal in this case
+ *       o Potentially warm reset ICC
+ *       o POLLERR should be raised with transaction end
+ *   + Unread, but completed I/O when an end transaction occurs w/o ICC
+ *       o Consume logical I/O state. Do not signal.
+ *       o POLLERR should be raised with transaction end
+ *   + Unread, but completed I/O when the ICC is removed
+ *       o XXX This one is tricky, because we might want to reset our T=1 state
+ *         on insertion of a new ICC before this is read. Ugh. Maybe we should
+ *         pull out the mblk_t chain when the I/O is completed so we can
+ *         disassociate this state. 
+ *       o Still need to signal POLLHUP, but POLLIN should already have been
+ *         done
+ *   + Unread, but completed I/O when the reader is removed
+ *       o POLLERR | POLLHUP? should be signaled on the device
+ *       o Outstanding I/O should be cleaned up as part of minor close
+ *
+ * o Proper POLLOUT on ICC insertion / activation
  */
 
 #include <sys/modctl.h>
@@ -287,6 +345,7 @@ typedef enum ccid_minor_flags {
 	CCID_MINOR_F_WAITING		= 1 << 0,
 	CCID_MINOR_F_HAS_EXCL		= 1 << 1,
 	CCID_MINOR_F_TXN_RESET		= 1 << 2,
+	CCID_MINOR_F_READ_WAITING	= 1 << 3,
 } ccid_minor_flags_t;
 
 typedef struct ccid_minor {
@@ -672,6 +731,8 @@ ccid_slot_excl_signal(ccid_slot_t *slot)
 /*
  * XXX This could be called while the user has threads in read() or write(). We
  * should block on those being completed / signal the reads() to break out.
+ * Basically we'll need to block while either of CCID_IO_F_PREPARING or
+ * CCID_MINOR_F_READ_WAITING is set.
  */
 static void
 ccid_slot_excl_rele(ccid_slot_t *slot)
@@ -685,6 +746,12 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	cmp = slot->cs_excl_minor;
 	cmp->cm_flags &= ~CCID_MINOR_F_HAS_EXCL;
 	slot->cs_excl_minor = NULL;
+
+	/*
+	 * XXX Signal any readers that they should give up with ECANCELED. Wait
+	 * for them to complete and if a write is in progress, wait for it to
+	 * advance.
+	 */
 
 	/*
 	 * If we have an outstanding command left by the user when they've
@@ -3616,6 +3683,10 @@ ccid_user_io_free(ccid_t *ccid, ccid_slot_t *slot, boolean_t signal)
 	 * Wake up anyone waiting for writes. Note, they may not exist.  We
 	 * shouldn't have to worry about a reset, as there will be nothing
 	 * assinged to cs_excl_minor at that time.
+	 *
+	 * XXX This isn't quite right. One can have a valid minor but not be
+	 * able to write because there is no ICC, etc. Sigh, these semantics are
+	 * shitty.
 	 */
 	if (slot->cs_excl_minor != NULL && signal) {
 		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLOUT);
@@ -4012,11 +4083,27 @@ ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 
 	/*
-	 * Decode the status of the first command. If the command was
-	 * successful, we need to check the user's buffer size. Otherwise, we
-	 * can consume it all.
+	 * XXX Check if the framework has left us an error in ci_errno and if
+	 * so, use that to bypass any command and return this.
+	 */
+
+	/*
+	 * Check if the command is present and our error status. We may not have
+	 * a command present if an error is set. For example, if an ICC was
+	 * removed while processing this event. However, if the command
+	 * structure is present and the error is non-zero then we must consume
+	 * and free the command.
 	 */
 	cc = slot->cs_io.ci_command;
+	if (cc == NULL) {
+		VERIFY3S(slot->cs_io.ci_errno, !=, 0);
+	}
+
+	if (slot->cs_io.ci_errno != 0) {
+		ret = slot->cs_io.ci_errno;
+		slot->cs_io.ci_errno = 0;
+		goto consume;
+	}
 
 	/*
 	 * If we didn't get a successful command, then we go ahead and consume
@@ -4063,7 +4150,9 @@ ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 
 consume:
 	slot->cs_io.ci_command = NULL;
-	ccid_command_free(cc);
+	if (cc != NULL) {
+		ccid_command_free(cc);
+	}
 	ccid_user_io_free(ccid, slot, B_TRUE);
 	return (ret);
 }
@@ -4165,6 +4254,16 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	}
 
 	/*
+	 * If another thread is already blocked in read, then don't allow them
+	 * in. We only want to allow one thread to attempt to consume a read,
+	 * just as we only allow one thread to initiate a write.
+	 */
+	if ((cmp->cm_flags & CCID_MINOR_F_READ_WAITING) != 0) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (EBUSY);
+	}
+
+	/*
 	 * Check if an I/O has completed. Once it has, call the protocol
 	 * specific code. Note that the lock may be dropped after polling. In
 	 * such a case we will have to logically recheck several conditions.
@@ -4178,10 +4277,20 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 			return (EWOULDBLOCK);
 		}
 
+		/*
+		 * While we perform a cv_wait_sig() we'll end up dropping the
+		 * CCID mutex. This means that we need to notify the rest of the
+		 * driver that a thread is blocked in read. This is used not
+		 * only for excluding multiple threads trying to read from the
+		 * device, but more importantly so that we know that if the ICC
+		 * or reader are removed, that we need to wake up this thread.
+		 */
+		cmp->cm_flags |= CCID_MINOR_F_READ_WAITING;
 		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
 			mutex_exit(&ccid->ccid_mutex);
 			return (EINTR);
 		}
+		cmp->cm_flags &= CCID_MINOR_F_READ_WAITING;
 
 		/*
 		 * Check if the reader has been removed.
