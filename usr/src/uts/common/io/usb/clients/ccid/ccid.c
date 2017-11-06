@@ -169,6 +169,148 @@
  *  - If the reader supports APDU transfers, then we are done.
  *     XXX Depending on level of automation we may need to still do things.
  *  - If the reader supports 
+ *
+ * User I/O Basics
+ * ---------------
+ *
+ * A user performs I/O by writing APDUs (Application Protocol Data Units). A
+ * user issues a system call that ends up in write(9E) (write(2), writev(2),
+ * pwrite(2), pwritev(2), etc.). The user data is consumed by the CCID driver
+ * and a series of commands will then be issued to the device, depending on the
+ * protocol mode. The write(9E) call does not block for this to finish. Once
+ * write(9E) has returned, the user may block in a read(2) related system call
+ * or poll for POLLIN.
+ *
+ * A thread may not call read(9E) without having called write(9E). This model is
+ * due to the limited capability of hardware. Only a single command can be going
+ * on a given slot and due to the fact that many commands change the hardware
+ * state, we do not try to multiplex multiple calls to write() or read().
+ *
+ *
+ * User I/O, Transaction Ends, ICC removals, and Reader Removals
+ * -------------------------------------------------------------
+ *
+ * While the I/O model given to user land is somewhat simple, there are a lot of
+ * tricky pieces to get right because we are in a multi-threaded pre-emptible
+ * system. In general, there are four different levels of state that we need to
+ * keep track of:
+ *
+ *   1. User threads in I/O
+ *   2. Kernel protocol level support (T=1, apdu, etc.).
+ *   3. Slot/ICC state
+ *   4. CCID Reader state
+ *
+ * Of course, each level cares about the state above it. The kernel protocol
+ * level state (2), cares about the User threads in I/O (1). The same is true
+ * with the other levels caring about the levels above it. With this in mind
+ * there are three non-data path things that can go wrong:
+ *
+ *   A. The user can end a transaction (whether through an ioctl or close(9E)).
+ *   B. The ICC can be removed
+ *   C. The CCID device can be removed or is reset at a USB level.
+ *
+ * Each of these has implications on the outstanding I/O and other states of
+ * the world. When events of type A occur, we need to clean up states 1 and 2.
+ * Then events of type B occur we need to clean up states 1-3. When events of
+ * type C occur we need to clean up states 1-4. The following discusses how we
+ * should clean up these different states:
+ *
+ * Cleaning up State 1:
+ *
+ *   To clean up the User threads in I/O there are three different cases to
+ *   consider. The first is cleaning up a thread that is in the middle of
+ *   write(9E). The second is cleaning up thread that is blocked in read(9E).
+ *   The third is dealing with threads that are stuck in chpoll(9E).
+ *
+ *   To handle the write case, we have a series of flags that is on the CCID
+ *   slot's I/O structure (ccid_io_t, cs_io on the ccid_slot_t). When a thread
+ *   begins its I/O it will set the CCID_IO_F_PREPARING flag. This flag is used
+ *   to indicate that there is a thread that is performing a write(9E), but it
+ *   is not holding the ccid_mutex because of the operations that it is taking.
+ *   Once it has finished, the thread will remove that flag and instead
+ *   CCID_IO_F_IN_PROGRESS will be set. If we find that the CCID_IO_F_PREPARING
+ *   flag is set, then we will need to wait for it to be removed before
+ *   continuing. The fact that there is an outstanding physical I/O will be
+ *   dealt with when we clean up state 2.
+ *
+ *   To handle the read case, we have a flag on the ccid_minor_t which indicates
+ *   that a thread is blocked on a condition variable (cm_read_cv), waiting for
+ *   the I/O to complete. The way this gets cleaned up varies a bit on each of
+ *   the different cases as each one will trigger a different error to the
+ *   thread. In all cases, the condition variable will be signaled. Then,
+ *   whenever the thread comes out of the condition variable it will always
+ *   check the state to see if it has been woken up because the transaction is
+ *   being closed, the ICC has been removed, or the reader is being
+ *   disconnected. In all such cases, the thread in read will end up receiving
+ *   an error (ECANCELED, ENXIO, and ENODEV respectively).
+ *
+ *   If we have hit the case that this needs to be cleaned up, then the
+ *   CCID_MINOR_F_READ_WAITING flag will be set on the ccid_minor_t's flags
+ *   member (cm_flags). In this case, the broader system must change the
+ *   corresponding system state flag for the appropriate condition, signal the
+ *   read cv, and then wait on an additional cv in the minor, the
+ *   ccid_iowait_cv).
+ *
+ *   Cleaning up the poll state is somewhat simpler. If any of the conditions
+ *   (A-C) occur, then we must flag POLLERR. In addition if B and C occur, then
+ *   we will flag POLLHUP at the same time. This will guarantee that any threads
+ *   in poll(9E) are woken up.
+ *
+ * Cleaning up State 2.
+ *
+ *   While the user I/O thread is a somewhat straightforward, the kernel
+ *   protocol level is a bit more complicated. The core problem is that when a
+ *   user issues a logical I/O through an APDU, that may result in a series of
+ *   one or protocol level, physical commands. The core crux of the issue with
+ *   cleaning up this state is twofold:
+ *
+ *     1. We don't want to block a user thread while I/O is outstanding
+ *     2. We need to take one of several steps to clean up the aforementioned
+ *        I/O
+ *
+ *   To try and deal with that, there are a number of different things that we
+ *   do. The first thing we do is that we clean up the user state based on the
+ *   notes in cleaning up in State 1. Importantly we need to _block_ on this
+ *   activity.
+ *
+ *   Once that is done, we need to proceed to step 2. The way that this happens
+ *   will depend on the protocol in use and the state that it has. For example,
+ *   when performing APDU processing, this is as simple as waiting for that
+ *   command to complete and/or potentially issues an abort or reset. However,
+ *   for TPDU T=1 processing, we may need to issue subsequent commands to abort
+ *   the state. The amount of work that we do depends on what the user
+ *   configured options are when they ended the transaction. They may tell us to
+ *   either reset or to keep the card in the same state.
+ *
+ *   While this is ongoing an additional flag (XXX) will be set on the slot to
+ *   make sure that we know that we can't issue new I/O or that we can't proceed
+ *   to the next transaction until this phase is finished. XXX This feels rather
+ *   rough.
+ *
+ * Cleaning up State 3
+ *
+ *   When the ICC is removed, this is not dissimilar to the previous states. To
+ *   handle this we need to first make sure that state 1 and state 2 are
+ *   finished being cleaned up. We will have to _block_ on this from the worker
+ *   thread. The problem is that we have certain values such as the operations
+ *   vector, the ATR data, etc. that we need to make sure are still valid while
+ *   we're in the process of cleaning up state. Only once all that is done
+ *   should we consider processing a new ICC insertion or dealing with other
+ *   aspects of this. The one good side is that if the ICC was removed, then it
+ *   should be simpler to handle all of the outstanding I/O.
+ *
+ *   XXX We need more details about how all this happens, etc.
+ *
+ * Cleaning up State 4
+ *
+ *   When the reader is removed, then we need to clean up all the prior states.
+ *   However, this is somewhat simpler than the other cases, as once this
+ *   happens our detach endpoint will be called to clean up all of our
+ *   resources. Therefore, before we call detach, we need to explicitly clean up
+ *   state 1; however, we then at this time leave all the remaining state to be
+ *   cleaned up during detach(9E) as part of normal tear down.
+ *
+ *   XXX Is that really true, this seems like a lot of BS.
  */
 
 /*
