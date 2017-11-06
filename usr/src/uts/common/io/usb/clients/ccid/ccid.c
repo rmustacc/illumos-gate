@@ -338,10 +338,14 @@ typedef struct ccid_icc {
  * make sense as we develop the T=0 and T=1 code.
  */
 typedef enum ccid_io_flags {
-	CCID_IO_F_IN_PROGRESS	= 1 << 0,
-	CCID_IO_F_DONE		= 1 << 1,
-	CCID_IO_F_ABANDONED	= 1 << 2
+	CCID_IO_F_PREPARING	= 1 << 0,
+	CCID_IO_F_IN_PROGRESS	= 1 << 1,
+	CCID_IO_F_DONE		= 1 << 2,
+	CCID_IO_F_ABANDONED	= 1 << 3
 } ccid_io_flags_t;
+
+#define	CCID_IO_F_ALL_FLAGS	(CCID_IO_F_PREPARING | CCID_IO_F_IN_PROGRESS | \
+    CCID_IO_F_DONE | CCID_IO_F_ABANDONED)
 
 typedef struct ccid_io {
 	ccid_io_flags_t	ci_flags;
@@ -3535,35 +3539,6 @@ ccid_read_copyout_apdu(struct uio *uiop, const ccid_command_t *cc, size_t len)
 	return (0);
 }
 
-static int
-ccid_write_copyin(struct uio *uiop, mblk_t **mpp)
-{
-	mblk_t *mp;
-	int ret;
-	size_t len = uiop->uio_resid + sizeof (ccid_header_t);
-	offset_t off;
-
-	*mpp = NULL;
-	mp = allocb(len, 0);
-	if (mp == NULL) {
-		return (ENOMEM);
-	}
-	mp->b_wptr = mp->b_rptr + len;
-
-	/*
-	 * Copy in the buffer, leaving enough space for the ccid header.
-	 */
-	off = uiop->uio_loffset;
-	if ((ret = uiomove(mp->b_rptr + sizeof (ccid_header_t), uiop->uio_resid,
-	    UIO_WRITE, uiop)) != 0) {
-		freemsg(mp);
-		return (ret);
-	}
-	uiop->uio_loffset = off;
-	*mpp = mp;
-	return (0);
-}
-
 /*
  * Called to indicate that the I/O has been completed and another I/O may be
  * issued to the device.
@@ -3576,9 +3551,7 @@ ccid_user_io_free(ccid_t *ccid, ccid_slot_t *slot, boolean_t signal)
 	/*
 	 * Clear I/O flags.
 	 */
-	slot->cs_io.ci_flags &= ~CCID_IO_F_DONE;
-	slot->cs_io.ci_flags &= ~CCID_IO_F_IN_PROGRESS;
-	slot->cs_io.ci_flags &= ~CCID_IO_F_ABANDONED;
+	slot->cs_io.ci_flags &= ~CCID_IO_F_ALL_FLAGS;
 
 	/*
 	 * Always signal the I/O cv. Something may be waiting for this I/O to be
@@ -3587,7 +3560,9 @@ ccid_user_io_free(ccid_t *ccid, ccid_slot_t *slot, boolean_t signal)
 	cv_broadcast(&slot->cs_io.ci_cv);
 
 	/*
-	 * Wake up anyone waiting for writes. Note, they may not exist. 
+	 * Wake up anyone waiting for writes. Note, they may not exist.  We
+	 * shouldn't have to worry about a reset, as there will be nothing
+	 * assinged to cs_excl_minor at that time.
 	 */
 	if (slot->cs_excl_minor != NULL && signal) {
 		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLOUT);
@@ -4053,12 +4028,6 @@ ccid_write_apdu(ccid_t *ccid, ccid_slot_t *slot)
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 
-	/*
-	 * Drop the lock to perform memory allocation and transmit the command.
-	 * XXX What happens if the ICC (not device) is removed right here?
-	 */
-	mutex_exit(&ccid->ccid_mutex);
-
 	if ((ret = ccid_command_alloc(ccid, slot, B_FALSE, NULL,
 	    slot->cs_io.ci_ilen, CCID_REQUEST_TRANSFER_BLOCK, 0, 0, 0,
 	    &cc)) != 0) {
@@ -4069,12 +4038,6 @@ ccid_write_apdu(ccid_t *ccid, ccid_slot_t *slot)
 	cc->cc_flags |= CCID_COMMAND_F_USER;
 	ccid_command_bcopy(cc, slot->cs_io.ci_ibuf, slot->cs_io.ci_ilen);
 
-	/*
-	 * Before we submit this command, assign it to our internal state. We
-	 * need to do this before we submit the command. Otherwise, we could be
-	 * pathologically scheduled and not get the chance.
-	 */
-	mutex_enter(&ccid->ccid_mutex);
 	slot->cs_io.ci_command = cc;
 	mutex_exit(&ccid->ccid_mutex);
 
@@ -4136,6 +4099,16 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	if (slot->cs_icc.icc_rx == NULL) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENOTSUP);
+	}
+
+	/*
+	 * If there's been no write I/O issued, then this read is not allowed.
+	 * While this may seem like a silly constraint, it certainly simplifies
+	 * a lot of the surrounding logic.
+	 */
+	if ((slot->cs_io.ci_flags & (CCID_IO_F_IN_PROGRESS | CCID_IO_F_DONE)) == 0) {
+		mutex_exit(&ccid->ccid_mutex);
+		return (ENODATA);
 	}
 
 	/*
@@ -4202,7 +4175,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	ccid_slot_t *slot;
 	ccid_t *ccid;
 	mblk_t *mp = NULL;
-	size_t len;
+	size_t len, cbytes;
 
 	if (uiop->uio_resid > CCID_APDU_LEN_MAX) {
 		return (E2BIG);
@@ -4264,27 +4237,45 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * user initiated. There may be other commands that are ongoing in the
 	 * system.
 	 */
-	if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) != 0) {
+	if ((slot->cs_io.ci_flags & (CCID_IO_F_PREPARING | CCID_IO_F_IN_PROGRESS)) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (EBUSY);
 	}
 
-	if (uiomove(slot->cs_io.ci_ibuf, len, UIO_WRITE, uiop) != 0) {
+	/*
+	 * Use uiocopy and not uiomove. This way if we fail for whatever reason,
+	 * we don't have to worry about restoring the original buffer.
+	 */
+	if (uiocopy(slot->cs_io.ci_ibuf, len, UIO_WRITE, uiop, &cbytes) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (EFAULT);
 	}
 
 	slot->cs_io.ci_ilen = len;
-	slot->cs_io.ci_flags |= CCID_IO_F_IN_PROGRESS;
+	slot->cs_io.ci_flags |= CCID_IO_F_PREPARING;
 	slot->cs_io.ci_omp = NULL;
 
 	/*
 	 * Now that we're here, go ahead and call the actual tx function.
 	 */
 	if ((ret = slot->cs_icc.icc_tx(ccid, slot)) != 0) {
+		/*
+		 * The command wasn't actually transmitted. In this case we need
+		 * to reset the copied in data and signal anyone who is polling
+		 * that this is writeable again. We don't have to worry about
+		 * readers at this point, as they won't get in unless
+		 * CCID_IO_F_IN_PROGRESS has been set.
+		 */
 		slot->cs_io.ci_ilen = 0;
 		bzero(slot->cs_io.ci_ibuf, sizeof (slot->cs_io.ci_ibuf));
-		slot->cs_io.ci_flags &= ~CCID_IO_F_IN_PROGRESS;
+		slot->cs_io.ci_flags &= ~CCID_IO_F_PREPARING;
+		if (slot->cs_excl_minor != NULL) {
+			pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLOUT);
+		}
+	} else {
+		slot->cs_io.ci_flags &= ~CCID_IO_F_PREPARING;
+		slot->cs_io.ci_flags |= CCID_IO_F_IN_PROGRESS;
+		uiop->uio_resid -= cbytes;
 	}
 	mutex_exit(&ccid->ccid_mutex);
 
