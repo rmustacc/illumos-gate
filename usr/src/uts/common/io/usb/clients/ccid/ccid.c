@@ -346,6 +346,7 @@ typedef enum ccid_minor_flags {
 	CCID_MINOR_F_HAS_EXCL		= 1 << 1,
 	CCID_MINOR_F_TXN_RESET		= 1 << 2,
 	CCID_MINOR_F_READ_WAITING	= 1 << 3,
+	CCID_MINOR_F_TXN_ENDING		= 1 << 4
 } ccid_minor_flags_t;
 
 typedef struct ccid_minor {
@@ -355,6 +356,7 @@ typedef struct ccid_minor {
 	list_node_t		cm_minor_list;
 	list_node_t		cm_excl_list;
 	kcondvar_t		cm_read_cv;
+	kcondvar_t		cm_iowait_cv;
 	kcondvar_t		cm_excl_cv;
 	ccid_minor_flags_t	cm_flags;
 	struct pollhead		cm_pollhead;
@@ -744,14 +746,32 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	VERIFY3P(slot->cs_excl_minor, !=, NULL);
 
 	cmp = slot->cs_excl_minor;
-	cmp->cm_flags &= ~CCID_MINOR_F_HAS_EXCL;
-	slot->cs_excl_minor = NULL;
+
+	cmp->cm_flags |= CCID_MINOR_F_TXN_ENDING;
+	cv_signal(&cmp->cm_read_cv);
 
 	/*
-	 * XXX Signal any readers that they should give up with ECANCELED. Wait
-	 * for them to complete and if a write is in progress, wait for it to
-	 * advance.
+	 * There may either be a thread blocked in read or in the process of
+	 * preparing a write. In either case, we need to make sure that they're
+	 * woken up or finish, before we finish tear down.
 	 */
+	while ((cmp->cm_flags & CCID_MINOR_F_READ_WAITING) != 0 ||
+	    (slot->cs_io.ci_flags & CCID_IO_F_PREPARING) != 0) {
+		cv_wait(&cmp->cm_iowait_cv, &ccid->ccid_mutex);
+	}
+
+	/*
+	 * At this point, we hold the lock and there should be no other threads
+	 * that are past the basic sanity checks. So at this point, note that
+	 * this minor no longer has exclusive access (causing other read/write
+	 * calls to fail) and start the process of cleaning up the outstanding
+	 * I/O on the slot. It is OK that at this point the thread may try to
+	 * obtain exclusive access again. It will end up blocking on everything
+	 * else.
+	 */
+	cmp->cm_flags &= ~CCID_MINOR_F_TXN_ENDING;
+	cmp->cm_flags &= ~CCID_MINOR_F_HAS_EXCL;
+	slot->cs_excl_minor = NULL;
 
 	/*
 	 * If we have an outstanding command left by the user when they've
@@ -776,6 +796,8 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	 * If we've been asked to reset the device before handing it off,
 	 * schedule that. Otherwise, allow the next entry in the queue to get
 	 * woken up and given access to the device.
+	 *
+	 * XXX We need to wait here for I/O to complete or be torn down.
 	 */
 	if (cmp->cm_flags & CCID_MINOR_F_TXN_RESET) {
 		slot->cs_flags |= CCID_SLOT_F_NEED_TXN_RESET;
@@ -3221,6 +3243,8 @@ ccid_disconnect_cb(dev_info_t *dip)
 
 		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLHUP);
 		cv_signal(&slot->cs_excl_minor->cm_read_cv);
+
+		/* XXX We maybe should wait for the read flag to disappear? */
 	}
 
 	/*
@@ -3534,6 +3558,7 @@ ccid_minor_free(ccid_minor_t *cmp)
 	 */
 	VERIFY3U(cmp->cm_idx.cmi_minor, ==, CCID_MINOR_INVALID);
 	crfree(cmp->cm_opener);
+	cv_destroy(&cmp->cm_iowait_cv);
 	cv_destroy(&cmp->cm_read_cv);
 	cv_destroy(&cmp->cm_excl_cv);
 	kmem_free(cmp, sizeof (ccid_minor_t));
@@ -3592,6 +3617,7 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
 	}
 	cv_init(&cmp->cm_excl_cv, NULL, CV_DRIVER, NULL);
 	cv_init(&cmp->cm_read_cv, NULL, CV_DRIVER, NULL);
+	cv_init(&cmp->cm_iowait_cv, NULL, CV_DRIVER, NULL);
 	cmp->cm_opener = crdup(credp);
 	cmp->cm_slot = slot;
 	*devp = makedevice(getmajor(*devp), cmp->cm_idx.cmi_minor);
@@ -4247,6 +4273,8 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * If there's been no write I/O issued, then this read is not allowed.
 	 * While this may seem like a silly constraint, it certainly simplifies
 	 * a lot of the surrounding logic.
+	 *
+	 * XXX This is a stupid errno.
 	 */
 	if ((slot->cs_io.ci_flags & (CCID_IO_F_IN_PROGRESS | CCID_IO_F_DONE)) == 0) {
 		mutex_exit(&ccid->ccid_mutex);
@@ -4291,6 +4319,7 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 			return (EINTR);
 		}
 		cmp->cm_flags &= CCID_MINOR_F_READ_WAITING;
+		cv_signal(&cmp->cm_iowait_cv);
 
 		/*
 		 * Check if the reader has been removed.
@@ -4305,9 +4334,9 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		 * read.
 		 * XXX This isn't currently signaled.
 		 */
-		if (!(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL)) {
+		if (!(cmp->cm_flags & CCID_MINOR_F_TXN_ENDING)) {
 			mutex_exit(&ccid->ccid_mutex);
-			return (EACCES);
+			return (ECANCELED);
 		}
 
 		/*
@@ -4434,6 +4463,11 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 		slot->cs_io.ci_ilen = 0;
 		bzero(slot->cs_io.ci_ibuf, sizeof (slot->cs_io.ci_ibuf));
 		slot->cs_io.ci_flags &= ~CCID_IO_F_PREPARING;
+		/*
+		 * XXX We should be checking more conditions then just this. We
+		 * don't want to signal, if for example, we're disconnected, or
+		 * we're going to end up going away, etc.
+		 */
 		if (slot->cs_excl_minor != NULL) {
 			pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLOUT);
 		}
@@ -4442,6 +4476,10 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 		slot->cs_io.ci_flags |= CCID_IO_F_IN_PROGRESS;
 		uiop->uio_resid -= cbytes;
 	}
+	/*
+	 * Notify a waiter that we've moved on.
+	 */
+	cv_signal(&slot->cs_excl_minor->cm_iowait_cv);
 	mutex_exit(&ccid->ccid_mutex);
 
 	return (ret);
