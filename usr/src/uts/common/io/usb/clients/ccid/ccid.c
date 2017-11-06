@@ -631,6 +631,10 @@ ccid_slot_excl_signal(ccid_slot_t *slot)
 	cv_signal(&cmp->cm_excl_cv);
 }
 
+/*
+ * XXX This could be called while the user has threads in read() or write(). We
+ * should block on those being completed / signal the reads() to break out.
+ */
 static void
 ccid_slot_excl_rele(ccid_slot_t *slot)
 {
@@ -719,6 +723,9 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 			ccid_slot_excl_signal(slot);
 			return (EINTR);
 		}
+
+		/* XXX Waiting on a lock, need to reassert usability of device /
+		 * going awayness */
 	}
 
 	VERIFY3P(cmp, ==, list_head(&slot->cs_excl_waiters));
@@ -1848,7 +1855,7 @@ ccid_intr_pipe_except_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 }
 
 /*
- * The given CCID slot has been removed. Handle insertion.
+ * The given CCID slot has been removed. Clean up.
  */
 static void
 ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
@@ -3052,6 +3059,7 @@ ccid_disconnect_cb(dev_info_t *dip)
 {
 	int inst;
 	ccid_t *ccid;
+	uint_t i;
 
 	if (dip == NULL)
 		goto done;
@@ -3067,7 +3075,36 @@ ccid_disconnect_cb(dev_info_t *dip)
 	 * poll, etc.
 	 */
 	mutex_enter(&ccid->ccid_mutex);
+	/*
+	 * First, set the disconnected flag. This will make sure that anyone
+	 * that tries to make additional operations will be kicked out. This
+	 * flag is checked by detach and by users.
+	 */
 	ccid->ccid_flags |= CCID_F_DISCONNECTED;
+
+	/*
+	 * Now, we need to basically wake up anyone blocked in read and make
+	 * sure that they don't wait there forever and make sure that anyone
+	 * polling gets a POLLHUP. We can't really distinguish between this and
+	 * an ICC being removed. It will be discovered when someone tries to do
+	 * an operation and they receive an EXDEV. We only need to do this on
+	 * minors that have exclusive access.
+	 */
+	for (i = 0; i < ccid->ccid_nslots; i++) {
+		ccid_slot_t *slot = &ccid->ccid_slots[i];
+		if (slot->cs_excl_minor == NULL)
+			continue;
+
+		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLHUP);
+		cv_signal(&slot->cs_excl_minor->cm_read_cv);
+	}
+
+	/*
+	 * XXX If there are outstanding commands, they should ultimately be
+	 * cleaned up as the USB commands themselves time out. It's not clear
+	 * that we need to clean them up ourselves or how all those callbacks
+	 * will function exactly.
+	 */
 	mutex_exit(&ccid->ccid_mutex);
 
 done:
@@ -3685,7 +3722,7 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	 * which is good.
 	 *
 	 * XXX We need to actually ask the T=1 state machine for the WTX for
-	 * this block.
+	 * this block. We also may need to adjust the timeout on the USB command.
 	 */
 	if ((ret = ccid_command_alloc(ccid, slot, B_FALSE, NULL, len,
 	    CCID_REQUEST_TRANSFER_BLOCK, 0, 0, 0,
@@ -3726,38 +3763,10 @@ static int
 ccid_read_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 {
 	int ret;
-	ccid_minor_t *cmp;
 	const mblk_t *mp;
 	size_t len;
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-
-	cmp = slot->cs_excl_minor;
-
-	/*
-	 * Unlike the APDU code which waits for a single command to be issued,
-	 * we instead check the user I/O flags to be set and indicate that the
-	 * I/O is done. At which point we'll need to go and watch for the error.
-	 * 
-	 * XXX I'm not sure if we have a removal if this'll be caught correctly.
-	 */
-	while ((slot->cs_io.ci_flags & CCID_IO_F_DONE) == 0) {
-		if (uiop->uio_fmode & FNONBLOCK) {
-			return (EWOULDBLOCK);
-		}
-
-		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
-			return (EINTR);
-		}
-
-		/*
-		 * Because the lock was dropped, we should check and make sure
-		 * that we break out if the reader has been removed.
-		 */
-		if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
-			return (ENODEV);
-		}
-	}
 
 	/*
 	 * Check to see if we have an error set on I/O structure. If so, then we
@@ -3874,12 +3883,6 @@ ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
 
 	mutex_enter(&ccid->ccid_mutex);
 
-	/*
-	 * XXX For APDU we block a bit here. I'm not sure if that really matters
-	 * or not. It's not like we're going to be done with this single command
-	 * anyways.
-	 */
-
 	return (0);
 }
 
@@ -3887,7 +3890,7 @@ ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
  * This is called in a few different sitautions. It's called when an exclusive
  * hold is being released by a user on a the slot. It's also called when the ICC
  * is removed, the reader has been unplugged, or the ICC is being reset. In all
- * these cases we need to make sure that we I/O is taken care of and we won't be
+ * these cases we need to make sure that I/O is taken care of and we won't be
  * leaving behind vestigial garbage.
  *
  * The boolean_t wait is used to indicate whether or not this is a user hold
@@ -3933,6 +3936,7 @@ ccid_teardown_apdu(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
 
 	while (slot->cs_io.ci_command != NULL) {
 		cv_wait(&slot->cs_io.ci_cv, &ccid->ccid_mutex);
+		/* XXX Should we be waiting for other conditions here */
 	}
 }
 
@@ -3951,6 +3955,7 @@ ccid_complete_apdu(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	 * First, see if it's even worth processing this command. To do that, we
 	 * want to go through and see if there's still a minor. If there isn't,
 	 * we can free this command and free up the I/O.
+	 * XXX The excl_minor bit looks suspicious
 	 */
 	cmp = slot->cs_excl_minor;
 	if ((slot->cs_io.ci_flags & CCID_IO_F_ABANDONED) != 0 ||
@@ -3975,45 +3980,8 @@ ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 	ccid_reply_command_status_t crs;
 	ccid_reply_icc_status_t cis;
 	ccid_command_err_t cce;
-	ccid_minor_t *cmp;
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-
-	cmp = slot->cs_excl_minor;
-
-	/*
-	 * While it's tempting to care if the slot is active, that actually
-	 * doesn't matter. All that matters is whether or not we have commands
-	 * here that are in progress or readable.
-	 *
-	 * The only unfortunate matter is that we can't check if the user can
-	 * read this command until one is available. Which means that someone
-	 * could be blocked for some time.
-	 *
-	 * XXX I'm not sure if we have a removal if this'll be caught correctly.
-	 * We really need to have it check for removal and return appropriately
-	 * or allow it to be woken up, etc.
-	 */
-	while (slot->cs_io.ci_command == NULL ||
-	    slot->cs_io.ci_command->cc_state <
-	    CCID_COMMAND_COMPLETE) {
-		if (uiop->uio_fmode & FNONBLOCK) {
-			return (EWOULDBLOCK);
-		}
-
-		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
-			return (EINTR);
-		}
-
-		/*
-		 * Because the lock was dropped, we should check and make sure
-		 * that we break out if the reader has been removed.
-		 */
-		if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
-			return (ENODEV);
-		}
-
-	}
 
 	/*
 	 * Decode the status of the first command. If the command was
@@ -4118,15 +4086,6 @@ ccid_write_apdu(ccid_t *ccid, ccid_slot_t *slot)
 	}
 
 	mutex_enter(&ccid->ccid_mutex);
-	while (cc->cc_state < CCID_COMMAND_REPLYING) {
-		/*
-		 * If we receive a signal, break out of the loop. Don't return
-		 * EINTR, as this has been successfully dispatched. It just
-		 * means that it'll be a little while before more I/O is ready.
-		 */
-		if (cv_wait_sig(&cc->cc_cv, &ccid->ccid_mutex) == 0)
-			break;
-	}
 
 	return (0);
 }
@@ -4157,7 +4116,7 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	ccid = slot->cs_ccid;
 
 	mutex_enter(&ccid->ccid_mutex);
-	if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
+	if ((ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -4178,6 +4137,55 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENOTSUP);
 	}
+
+	/*
+	 * Check if an I/O has completed. Once it has, call the protocol
+	 * specific code. Note that the lock may be dropped after polling. In
+	 * such a case we will have to logically recheck several conditions.
+	 *
+	 * Note, we don't really care if the slot is active or not as I/O could
+	 * have been in flight while the slot was inactive.
+	 */
+	while ((slot->cs_io.ci_flags & CCID_IO_F_DONE) == 0) {
+		if (uiop->uio_fmode & FNONBLOCK) {
+			mutex_exit(&ccid->ccid_mutex);
+			return (EWOULDBLOCK);
+		}
+
+		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
+			mutex_exit(&ccid->ccid_mutex);
+			return (EINTR);
+		}
+
+		/*
+		 * Check if the reader has been removed.
+		 */
+		if ((ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
+			mutex_exit(&ccid->ccid_mutex);
+			return (ENODEV);
+		}
+
+		/*
+		 * Check if the user ended a transcation while still blocked in
+		 * read.
+		 * XXX This isn't currently signaled.
+		 */
+		if (!(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL)) {
+			mutex_exit(&ccid->ccid_mutex);
+			return (EACCES);
+		}
+
+		/*
+		 * XXX Check and make sure that we still have an icc_rx
+		 * operation and in general, handle the case that the ICC has
+		 * been removed. The way that this happens will probably be a
+		 * bit complicated since we don't want to generally check if the
+		 * slot is active. So really it's check to see if there isn't
+		 * some kind of error on the I/O or similar. The trick case here
+		 * is if there wasn't a write in progress.
+		 */
+	}
+
 
 	ret = slot->cs_icc.icc_rx(ccid, slot, uiop);
 	mutex_exit(&ccid->ccid_mutex);
@@ -4223,7 +4231,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * I/O.
 	 */
 	mutex_enter(&ccid->ccid_mutex);
-	if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
+	if ((ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -4297,7 +4305,7 @@ ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
 
 	ucs.ucs_status = 0;
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
-	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -4364,7 +4372,7 @@ ccid_ioctl_txn_begin(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mod
 	nowait = (uct.uct_flags & UCCID_TXN_DONT_BLOCK) != 0;
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
-	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -4403,7 +4411,7 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 	}
 
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
-	if ((slot->cs_ccid->ccid_flags & CCID_F_DETACHING) != 0) {
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENODEV);
 	}
@@ -4484,7 +4492,7 @@ ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 	ccid = slot->cs_ccid;
 
 	mutex_enter(&ccid->ccid_mutex);
-	if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
+	if ((ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (ENODEV);
 	}
