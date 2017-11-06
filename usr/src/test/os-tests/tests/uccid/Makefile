@@ -20,6 +20,7 @@ TESTDIR = $(ROOTOPTPKG)/tests/uccid
 
 PROGS = 		\
 	excl-basic	\
+	excl-badread	\
 	excl-close	\
 	excl-loop	\
 	excl-nonblock	\
