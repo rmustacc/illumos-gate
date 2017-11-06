@@ -338,12 +338,46 @@ typedef struct ccid_icc {
  * make sense as we develop the T=0 and T=1 code.
  */
 typedef enum ccid_io_flags {
+	/*
+	 * This flag is used during the period that a thread has started calling
+	 * into ccid_write(9E), but before it has finished queuing up the write.
+	 * This blocks pollout or another thread in write.
+	 */
 	CCID_IO_F_PREPARING	= 1 << 0,
+	/*
+	 * This flag is used once a ccid_write() ICC tx function has
+	 * successfully completed. While this is set, the device is not
+	 * writable; however, it is legal to call ccid_read() and block. This
+	 * flag will remain set until the actual write is done.
+	 */
 	CCID_IO_F_IN_PROGRESS	= 1 << 1,
+	/*
+	 * This flag is used to indicate that the logical I/O has completed in
+	 * one way or the other and that a reader can consume data. When this
+	 * flag is set, then POLLIN | POLLRDNORM should be signaled. Until the
+	 * I/O is consumed via ccid_read(), calls to ccid_write() will fail with
+	 * EBUSY.
+	 */
 	CCID_IO_F_DONE		= 1 << 2,
+	/*
+	 * This flag is used to indicate that a given I/O has been abandoned by
+	 * the user and that we need to clean things up before the ICC is usable
+	 * again. 
+	 *
+	 * XXX Should this really be set? I'm now starting to wonder if this
+	 * would make more sent to have like we have the resetting flag.
+	 * Especially if for T=1 we issue an abort.
+	 */
 	CCID_IO_F_ABANDONED	= 1 << 3
 } ccid_io_flags_t;
 
+/*
+ * This group of flags is used to make sure that we can't have multiple threads
+ * in ccid_write(9E) at any given time. This is also used to indicate when we
+ * are or aren't pollable. When one of these flags changes, then we must wake up
+ * the pollhead.
+ */
+#define	CCID_IO_F_POLLOUT_FLAGS	(CCID_IO_F_PREPARING | CCID_IO_F_IN_PROGRESS)
 #define	CCID_IO_F_ALL_FLAGS	(CCID_IO_F_PREPARING | CCID_IO_F_IN_PROGRESS | \
     CCID_IO_F_DONE | CCID_IO_F_ABANDONED)
 
@@ -4178,7 +4212,10 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		 */
 	}
 
-
+	/*
+	 * Callers of this function should in general not drop the lock. Doing
+	 * so might lead to some confusion in the broader readable state.
+	 */
 	ret = slot->cs_icc.icc_rx(ccid, slot, uiop);
 	mutex_exit(&ccid->ccid_mutex);
 
@@ -4256,7 +4293,7 @@ ccid_write(dev_t dev, struct uio *uiop, cred_t *credp)
 	 * user initiated. There may be other commands that are ongoing in the
 	 * system.
 	 */
-	if ((slot->cs_io.ci_flags & (CCID_IO_F_PREPARING | CCID_IO_F_IN_PROGRESS)) != 0) {
+	if ((slot->cs_io.ci_flags & CCID_IO_F_POLLOUT_FLAGS) != 0) {
 		mutex_exit(&ccid->ccid_mutex);
 		return (EBUSY);
 	}
@@ -4514,7 +4551,7 @@ ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 
 	if ((slot->cs_io.ci_flags & CCID_IO_F_DONE) != 0) {
 		ready |= POLLIN | POLLRDNORM;
-	} else if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) == 0) {
+	} else if ((slot->cs_io.ci_flags & CCID_IO_F_POLLOUT_FLAGS) == 0) {
 		ready |= POLLOUT;
 	}
 
