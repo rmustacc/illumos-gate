@@ -2026,7 +2026,6 @@ ccid_slot_t1_ifsd(ccid_t *ccid, ccid_slot_t *slot)
 		return (B_FALSE);
 	}
 
-
 	t1v = t1_ifsd_resp(&slot->cs_io.ci_t1, mp->b_rptr, MBLKL(mp));
 	freemsg(mp);
 	if (t1v != T1_VALIDATE_OK) {
@@ -3447,7 +3446,29 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
  * Copy a command which may have a message block chain out to the user.
  */
 static int
-ccid_read_copyout(struct uio *uiop, ccid_command_t *cc, size_t len)
+ccid_read_copyout_t1(struct uio *uiop, const mblk_t *mp)
+{
+	offset_t off;
+
+	off = uiop->uio_loffset;
+
+	for (; mp != NULL; mp = mp->b_cont) {
+		int ret;
+
+		if (MBLKL(mp) == 0)
+			continue;
+
+		ret = uiomove(mp->b_rptr, MBLKL(mp), UIO_READ, uiop);
+		if (ret != 0) {
+			return (EFAULT);
+		}
+	}
+
+	return (0);
+}
+
+static int
+ccid_read_copyout_apdu(struct uio *uiop, const ccid_command_t *cc, size_t len)
 {
 	int ret;
 	mblk_t *mp;
@@ -3456,17 +3477,14 @@ ccid_read_copyout(struct uio *uiop, ccid_command_t *cc, size_t len)
 	off = uiop->uio_loffset;
 	mp = cc->cc_response;
 	while (len > 0) {
-		size_t tocopy;
+		size_t tocopy, mblen;
 		/*
 		 * Each message block in the chain has its CCID header at the
 		 * front.
-		 *
-		 * XXX This may or may not be true for TPDU land.
 		 */
-		mp->b_rptr += sizeof (ccid_header_t);
-		tocopy = MIN(len, MBLKL(mp));
-		ret = uiomove(mp->b_rptr, tocopy, UIO_READ, uiop);
-		mp->b_rptr -= sizeof (ccid_header_t);
+		mblen = MBLKL(mp) - sizeof (ccid_header_t);
+		tocopy = MIN(len, mblen);
+		ret = uiomove(mp->b_rptr + sizeof (ccid_header_t), tocopy, UIO_READ, uiop);
 		if (ret != 0)
 			return (EFAULT);
 		len -= tocopy;
@@ -3577,6 +3595,8 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	int ret;
 	ccid_reply_command_status_t crs;
 	ccid_reply_icc_status_t cis;
+	t1_validate_t t1err;
+	t1_state_t *t1 = &slot->cs_io.ci_t1;
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	VERIFY3P(slot->cs_io.ci_command, ==, cc);
@@ -3633,11 +3653,15 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	ccid_command_free(cc);
 	cc = NULL;
 
-	(void) t1_reply(&slot->cs_io.ci_t1, mp);
-	switch (t1_step(&slot->cs_io.ci_t1)) {
+	if ((t1err = t1_reply(t1, mp)) != T1_VALIDATE_OK) {
+		ccid_error(ccid, "!Received t1 error (%u): %s", t1err, t1_errmsg(t1));
+	}
+
+	switch (t1_step(t1)) {
 	case T1_ACTION_SEND_COMMAND:
 		break;
 	case T1_ACTION_WARM_RESET:
+		/* XXX Actually issue the reset */
 		slot->cs_io.ci_errno = EIO;
 		ccid_user_io_done(ccid, slot);
 		return;
@@ -3651,7 +3675,7 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	 * We've been asked to send another command by the T=1 state machine. Do
 	 * so.
 	 */
-	t1_data(&slot->cs_io.ci_t1, &buf, &len);
+	t1_data(t1, &buf, &len);
 	/*
 	 * XXX Right now we're purposefully not dropping the lock across the
 	 * command allocation. I'm not sure if that's good or not. THe problem
@@ -3701,7 +3725,83 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 static int
 ccid_read_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 {
-	return (ENOTSUP);
+	int ret;
+	ccid_minor_t *cmp;
+	const mblk_t *mp;
+	size_t len;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+
+	cmp = slot->cs_excl_minor;
+
+	/*
+	 * Unlike the APDU code which waits for a single command to be issued,
+	 * we instead check the user I/O flags to be set and indicate that the
+	 * I/O is done. At which point we'll need to go and watch for the error.
+	 * 
+	 * XXX I'm not sure if we have a removal if this'll be caught correctly.
+	 */
+	while ((slot->cs_io.ci_flags & CCID_IO_F_DONE) == 0) {
+		if (uiop->uio_fmode & FNONBLOCK) {
+			return (EWOULDBLOCK);
+		}
+
+		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
+			return (EINTR);
+		}
+
+		/*
+		 * Because the lock was dropped, we should check and make sure
+		 * that we break out if the reader has been removed.
+		 */
+		if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
+			return (ENODEV);
+		}
+	}
+
+	/*
+	 * Check to see if we have an error set on I/O structure. If so, then we
+	 * need to go ahead and give that to the user.
+	 *
+	 * XXX We need to clean up any T=1 state associated with this.
+	 */
+	if (slot->cs_io.ci_errno != 0) {
+		ret = slot->cs_io.ci_errno;
+		goto consume;
+	}
+
+	/*
+	 * XXX It's not clear right now when we'd not get a message block chain,
+	 * but we don't have an error. For now, treat it as a zero byte read.
+	 */
+	if ((mp = t1_state_cmd_data(&slot->cs_io.ci_t1)) == NULL) {
+		ret = 0;
+		goto consume;
+	}
+
+	/*
+	 * XXX Deal with the fact that msgsize can't deal with constness.
+	 */
+	len = msgsize((mblk_t *)mp);
+	if (len > uiop->uio_resid) {
+		return (EOVERFLOW);
+	}
+
+	/*
+	 * Copy out the resulting data. Don't consume it if we can't copy it all
+	 * out.
+	 */
+	ret = ccid_read_copyout_t1(uiop, mp);
+	if (ret != 0) {
+		return (ret);
+	}
+
+consume:
+	slot->cs_io.ci_errno = 0;
+	/* XXX Clean up the T=1 state machine for the next command */
+	t1_state_cmd_done(&slot->cs_io.ci_t1);
+	ccid_user_io_free(ccid, slot, B_TRUE);
+	return (ret);
 }
 
 static int
@@ -3717,7 +3817,7 @@ ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
 	/*
 	 * Initiailze a new command and kick off the internal state machine.
 	 */
-	t1_state_newcmd(&slot->cs_io.ci_t1, slot->cs_io.ci_ibuf,
+	t1_state_cmd_init(&slot->cs_io.ci_t1, slot->cs_io.ci_ibuf,
 	    slot->cs_io.ci_ilen);
 
 	switch (t1_step(&slot->cs_io.ci_t1)) {
@@ -3889,6 +3989,10 @@ ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 	 * The only unfortunate matter is that we can't check if the user can
 	 * read this command until one is available. Which means that someone
 	 * could be blocked for some time.
+	 *
+	 * XXX I'm not sure if we have a removal if this'll be caught correctly.
+	 * We really need to have it check for removal and return appropriately
+	 * or allow it to be woken up, etc.
 	 */
 	while (slot->cs_io.ci_command == NULL ||
 	    slot->cs_io.ci_command->cc_state <
@@ -3900,6 +4004,15 @@ ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
 			return (EINTR);
 		}
+
+		/*
+		 * Because the lock was dropped, we should check and make sure
+		 * that we break out if the reader has been removed.
+		 */
+		if ((ccid->ccid_flags & CCID_F_DETACHING) != 0) {
+			return (ENODEV);
+		}
+
 	}
 
 	/*
@@ -3935,7 +4048,7 @@ ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
 		/*
 		 * Copy out the resulting data.
 		 */
-		ret = ccid_read_copyout(uiop, cc, len);
+		ret = ccid_read_copyout_apdu(uiop, cc, len);
 		if (ret != 0) {
 			return (ret);
 		}

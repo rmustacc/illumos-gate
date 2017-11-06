@@ -165,6 +165,7 @@ typedef enum t1_state_flags {
 #define	T1_F_CMD_MASK	(T1_F_CMD_SENDING | T1_F_CMD_RECEIVING | \
     T1_F_CMD_DONE | T1_F_CMD_SRESP | T1_F_CMD_ERROR)
 #define	T1_F_CMD_SMASK	(T1_F_CMD_SRESP)
+#define	T1_F_ALL_CMD_FLAGS	(~T1_F_ICC_INIT)
 
 /*
  * State tracking structure that is used for T=1 operations.
@@ -234,7 +235,9 @@ extern void t1_state_init_icc(t1_state_t *, atr_data_t *, size_t);
 /*
  * Called when a new command should be sent out the ICC.
  */
-extern void t1_state_newcmd(t1_state_t *, const void *, size_t);
+extern void t1_state_cmd_init(t1_state_t *, const void *, size_t);
+extern const mblk_t *t1_state_cmd_data(t1_state_t *);
+extern void t1_state_cmd_done(t1_state_t *);
 
 /*
  * Called to generate the data buffer for sending a T=1 IFSD request.
@@ -273,7 +276,7 @@ extern void t1_data(t1_state_t *, const void **, size_t *);
 /*
  * Used to indicate that we're done processing a command.
  */
-extern void t1_finicmd(t1_state_t *, mblk_t **);
+extern void t1_finicmd(t1_state_t *, const mblk_t **);
 
 #ifdef __cplusplus
 }

@@ -135,7 +135,7 @@ t1_state_init_icc(t1_state_t *t1, atr_data_t *atr, size_t maxlen)
  * command.
  */
 void
-t1_state_newcmd(t1_state_t *t1, const void *ubuf, size_t ulen)
+t1_state_cmd_init(t1_state_t *t1, const void *ubuf, size_t ulen)
 {
 	VERIFY((t1->t1_flags & T1_F_ICC_INIT) != 0);
 
@@ -154,6 +154,33 @@ t1_state_newcmd(t1_state_t *t1, const void *ubuf, size_t ulen)
 	freemsgchain(t1->t1_reply_chain);
 	t1->t1_reply_chain = NULL;
 	t1->t1_flags |= T1_F_CMD_SENDING;
+}
+
+const mblk_t *
+t1_state_cmd_data(t1_state_t *t1)
+{
+	VERIFY3U(t1->t1_flags & T1_F_CMD_DONE, !=, 0);
+	return (t1->t1_reply_chain);
+}
+
+/*
+ * The user has told us that they're done. Clean up some of the initial state to
+ * make it ready again.
+ */
+void
+t1_state_cmd_done(t1_state_t *t1)
+{
+	t1->t1_flags &= ~T1_F_ALL_CMD_FLAGS;
+	t1->t1_ubuf = NULL;
+	t1->t1_ulen = 0;
+	t1->t1_uoff = 0;
+	bzero(t1->t1_cmdbuf, sizeof (t1->t1_cmdbuf));
+	bzero(t1->t1_altbuf, sizeof (t1->t1_altbuf));
+	t1->t1_validate = T1_VALIDATE_OK;
+	bzero(t1->t1_msgbuf, sizeof (t1->t1_msgbuf));
+	t1->t1_resend_count = 0;
+	freemsgchain(t1->t1_reply_chain);
+	t1->t1_reply_chain = NULL;
 }
 
 static void
@@ -660,6 +687,7 @@ t1_reply_iblock(t1_state_t *t1, mblk_t *mp)
 	t1h = (const t1_hdr_t *)mp->b_rptr;
 	if ((t1h->t1h_pcb & T1_IBLOCK_M) == 0) {
 		t1->t1_flags |= T1_F_CMD_DONE;
+		t1->t1_flags &= ~T1_F_CMD_RECEIVING;
 	}
 
 	/*
@@ -692,9 +720,9 @@ t1_reply_iblock(t1_state_t *t1, mblk_t *mp)
 		t1->t1_reply_chain = mp;
 	} else {
 		mblk_t *last = t1->t1_reply_chain;
-		while (last->b_next != NULL)
-			last = last->b_next;
-		last->b_next = mp;
+		while (last->b_cont != NULL)
+			last = last->b_cont;
+		last->b_cont = mp;
 	}
 
 	t1->t1_recv_ns ^= 1;
