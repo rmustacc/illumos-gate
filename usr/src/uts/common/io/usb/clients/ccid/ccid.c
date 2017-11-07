@@ -3999,13 +3999,6 @@ ccid_teardown_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, int error)
 	 * next command completion and then act upon it.
 	 */
 	slot->cs_flags |= CCID_SLOT_F_NEED_IO_TEARDOWN;
-
-	/*
-	 * OK, we have an I/O outstanding. We have some questions that we need
-	 * to answer here. XXX Should we issue an abort, should we do something
-	 * else, should we figure out how what to do next?
-	 */
-	panic("implement the teardown logic for TPDU T=1");
 }
 
 static void
