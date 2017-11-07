@@ -488,7 +488,6 @@ typedef enum ccid_minor_flags {
 	CCID_MINOR_F_HAS_EXCL		= 1 << 1,
 	CCID_MINOR_F_TXN_RESET		= 1 << 2,
 	CCID_MINOR_F_READ_WAITING	= 1 << 3,
-	CCID_MINOR_F_TXN_ENDING		= 1 << 4
 } ccid_minor_flags_t;
 
 typedef struct ccid_minor {
@@ -510,30 +509,33 @@ typedef enum ccid_slot_flags {
 	CCID_SLOT_F_INTR_ADD		= 1 << 2,
 	CCID_SLOT_F_PRESENT		= 1 << 3,
 	CCID_SLOT_F_ACTIVE		= 1 << 4,
-	CCID_SLOT_F_NEED_TXN_RESET	= 1 << 5
+	CCID_SLOT_F_NEED_TXN_RESET	= 1 << 5,
+	CCID_SLOT_F_NEED_IO_TEARDOWN	= 1 << 6,
 } ccid_slot_flags_t;
 
 #define	CCID_SLOT_F_INTR_MASK	(CCID_SLOT_F_CHANGED | CCID_SLOT_F_INTR_GONE | \
     CCID_SLOT_F_INTR_ADD)
 #define	CCID_SLOT_F_WORK_MASK	(CCID_SLOT_F_INTR_MASK | \
     CCID_SLOT_F_NEED_TXN_RESET)
+#define	CCID_SLOT_F_NOEXCL_MASK	(CCID_SLOT_F_NEED_TXN_RESET| CCID_SLOT_F_NEED_IO_TEARDOWN)
 
+typedef void (*icc_init_func_t)(struct ccid *, struct ccid_slot *);
 typedef int (*icc_transmit_func_t)(struct ccid *, struct ccid_slot *);
 typedef void (*icc_complete_func_t)(struct ccid *, struct ccid_slot *,
     struct ccid_command *);
-typedef int (*icc_read_func_t)(struct ccid *, struct ccid_slot *, struct uio *);
-typedef void (*icc_excl_clean_func_t)(struct ccid *, struct ccid_slot *);
-typedef void (*icc_teardown_func_t)(struct ccid *, struct ccid_slot *, boolean_t);
+typedef void (*icc_teardown_func_t)(struct ccid *, struct ccid_slot *, int);
+typedef void (*icc_fini_func_t)(struct ccid *, struct ccid_slot *);
 
 typedef struct ccid_icc {
 	atr_data_t		*icc_atr_data;
 	atr_protocol_t		icc_protocols;
 	atr_protocol_t		icc_cur_protocol;
 	ccid_params_t		icc_params;
+	icc_init_func_t		icc_init;
 	icc_transmit_func_t	icc_tx;
 	icc_complete_func_t	icc_complete;
-	icc_read_func_t		icc_rx;
 	icc_teardown_func_t	icc_teardown;
+	icc_fini_func_t		icc_fini;
 } ccid_icc_t;
 
 /*
@@ -551,7 +553,8 @@ typedef enum ccid_io_flags {
 	 * This flag is used once a ccid_write() ICC tx function has
 	 * successfully completed. While this is set, the device is not
 	 * writable; however, it is legal to call ccid_read() and block. This
-	 * flag will remain set until the actual write is done.
+	 * flag will remain set until the actual write is done. This indicates
+	 * that the transmission protocol has finished.
 	 */
 	CCID_IO_F_IN_PROGRESS	= 1 << 1,
 	/*
@@ -559,7 +562,8 @@ typedef enum ccid_io_flags {
 	 * one way or the other and that a reader can consume data. When this
 	 * flag is set, then POLLIN | POLLRDNORM should be signaled. Until the
 	 * I/O is consumed via ccid_read(), calls to ccid_write() will fail with
-	 * EBUSY.
+	 * EBUSY. When this flag is set, the kernel protocol level should be
+	 * idle and it should be safe to tear down.
 	 */
 	CCID_IO_F_DONE		= 1 << 2,
 	/*
@@ -575,12 +579,13 @@ typedef enum ccid_io_flags {
 } ccid_io_flags_t;
 
 /*
- * This group of flags is used to make sure that we can't have multiple threads
- * in ccid_write(9E) at any given time. This is also used to indicate when we
- * are or aren't pollable. When one of these flags changes, then we must wake up
- * the pollhead.
+ * If any of the flags in the POLLOUT group are set, then the device is not
+ * writeable. The same distinction isn't true for POLLIN. We are only readable 
+ * if CCID_IO_F_DONE is set. However, you are allowed to call read as soon as
+ * CCID_IO_F_IN_PROGRESS is set.
  */
-#define	CCID_IO_F_POLLOUT_FLAGS	(CCID_IO_F_PREPARING | CCID_IO_F_IN_PROGRESS)
+#define	CCID_IO_F_POLLOUT_FLAGS	(CCID_IO_F_PREPARING | CCID_IO_F_IN_PROGRESS | \
+    CCID_IO_F_DONE)
 #define	CCID_IO_F_ALL_FLAGS	(CCID_IO_F_PREPARING | CCID_IO_F_IN_PROGRESS | \
     CCID_IO_F_DONE | CCID_IO_F_ABANDONED)
 
@@ -592,6 +597,7 @@ typedef struct ccid_io {
 	kcondvar_t	ci_cv;
 	struct ccid_command *ci_command;
 	int		ci_errno;
+	mblk_t		*ci_data;
 	t1_state_t	ci_t1;
 } ccid_io_t;
 
@@ -696,7 +702,6 @@ typedef enum ccid_command_state {
 
 typedef enum ccid_command_flags {
 	CCID_COMMAND_F_USER	= 1 << 0,
-	CCID_COMMAND_F_ABANDON	= 1 << 1,
 } ccid_command_flags_t;
 
 typedef struct ccid_command {
@@ -752,12 +757,13 @@ static void ccid_command_bcopy(ccid_command_t *, const void *, size_t);
  */
 static int ccid_write_apdu(ccid_t *, ccid_slot_t *);
 static void ccid_complete_apdu(ccid_t *, ccid_slot_t *, ccid_command_t *);
-static void ccid_teardown_apdu(ccid_t *, ccid_slot_t *, boolean_t);
-static int ccid_read_apdu(ccid_t *, ccid_slot_t *, struct uio *);
+static void ccid_teardown_apdu(ccid_t *, ccid_slot_t *, int);
+
+static void ccid_init_tpdu_t1(ccid_t *, ccid_slot_t *);
 static int ccid_write_tpdu_t1(ccid_t *, ccid_slot_t *);
 static void ccid_complete_tpdu_t1(ccid_t *, ccid_slot_t *, ccid_command_t *);
-static void ccid_teardown_tpdu_t1(ccid_t *, ccid_slot_t *, boolean_t);
-static int ccid_read_tpdu_t1(ccid_t *, ccid_slot_t *, struct uio *);
+static void ccid_teardown_tpdu_t1(ccid_t *, ccid_slot_t *, int);
+static void ccid_fini_tpdu_t1(ccid_t *, ccid_slot_t *);
 
 
 static int
@@ -857,27 +863,24 @@ ccid_minor_find_user(minor_t m)
 }
 
 static void
-ccid_slot_excl_signal(ccid_slot_t *slot)
+ccid_slot_excl_maybe_signal(ccid_slot_t *slot)
 {
 	ccid_minor_t *cmp;
 
 	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
-	VERIFY3P(slot->cs_excl_minor, ==, NULL);
-	VERIFY0(slot->cs_flags & CCID_SLOT_F_NEED_TXN_RESET);
 
-
+	if (slot->cs_excl_minor != NULL)
+		return;
+	if ((slot->cs_flags & CCID_SLOT_F_NOEXCL_MASK) != 0)
+		return;
+	if ((slot->cs_flags & CCID_SLOT_F_ACTIVE) == 0)
+		return;
 	cmp = list_head(&slot->cs_excl_waiters);
 	if (cmp == NULL)
 		return;
 	cv_signal(&cmp->cm_excl_cv);
 }
 
-/*
- * XXX This could be called while the user has threads in read() or write(). We
- * should block on those being completed / signal the reads() to break out.
- * Basically we'll need to block while either of CCID_IO_F_PREPARING or
- * CCID_MINOR_F_READ_WAITING is set.
- */
 static void
 ccid_slot_excl_rele(ccid_slot_t *slot)
 {
@@ -889,8 +892,18 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 
 	cmp = slot->cs_excl_minor;
 
-	cmp->cm_flags |= CCID_MINOR_F_TXN_ENDING;
-	cv_signal(&cmp->cm_read_cv);
+	/*
+	 * If we have an outstanding command left by the user when they've
+	 * closed the slot, we need to clean up this command. We need to call
+	 * the protocol specific handler here to determine what to do. If the
+	 * command has completed, but the user has never called read, then it
+	 * will simply clean it up. Otherwise it will indicate that there is
+	 * some amount of external state still ongoing to take care of and clean
+	 * up later.
+	 */
+	if (slot->cs_icc.icc_teardown != NULL) {
+		slot->cs_icc.icc_teardown(ccid, slot, ECANCELED);
+	}
 
 	/*
 	 * There may either be a thread blocked in read or in the process of
@@ -911,21 +924,19 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	 * obtain exclusive access again. It will end up blocking on everything
 	 * else.
 	 */
-	cmp->cm_flags &= ~CCID_MINOR_F_TXN_ENDING;
 	cmp->cm_flags &= ~CCID_MINOR_F_HAS_EXCL;
 	slot->cs_excl_minor = NULL;
 
 	/*
-	 * If we have an outstanding command left by the user when they've
-	 * closed the slot, we need to clean up this command. We need to call
-	 * the protocol specific handler here to determine what to do. If the
-	 * command has completed, but the user has never called read, then it
-	 * will simply clean it up. Otherwise it will indicate that there is
-	 * some amount of external state still ongoing to take care of and clean
-	 * up later.
+	 * If at this point, we have an I/O that's noted as being done, but no
+	 * one blocked in read, then we need to clean that up. The ICC teardown
+	 * function is only designed to take care of in-flight I/Os.
 	 */
-	if (slot->cs_icc.icc_teardown != NULL) {
-		slot->cs_icc.icc_teardown(ccid, slot, B_FALSE);
+	if ((slot->cs_io.ci_flags & CCID_IO_F_DONE) != 0) {
+		slot->cs_io.ci_flags &= ~CCID_IO_F_DONE;
+		slot->cs_io.ci_errno = 0;
+		freemsg(slot->cs_io.ci_data);
+		slot->cs_io.ci_data = NULL;
 	}
 
 	/*
@@ -938,14 +949,12 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	 * If we've been asked to reset the device before handing it off,
 	 * schedule that. Otherwise, allow the next entry in the queue to get
 	 * woken up and given access to the device.
-	 *
-	 * XXX We need to wait here for I/O to complete or be torn down.
 	 */
 	if (cmp->cm_flags & CCID_MINOR_F_TXN_RESET) {
 		slot->cs_flags |= CCID_SLOT_F_NEED_TXN_RESET;
 		ccid_worker_request(ccid);
 	} else {
-		ccid_slot_excl_signal(slot);
+		ccid_slot_excl_maybe_signal(slot);
 	}
 }
 
@@ -970,7 +979,7 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 	 * loop.
 	 */
 	if (nosleep && slot->cs_excl_minor != NULL &&
-	    !(slot->cs_flags & CCID_SLOT_F_NEED_TXN_RESET)) {
+	    (slot->cs_flags & CCID_SLOT_F_NOEXCL_MASK) == 0) {
 		return (EBUSY);
 	}
 
@@ -984,12 +993,16 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 	cmp->cm_flags |= CCID_MINOR_F_WAITING;
 	list_insert_tail(&slot->cs_excl_waiters, cmp);
 	while (slot->cs_excl_minor != NULL ||
-	    slot->cs_flags & CCID_SLOT_F_NEED_TXN_RESET) {
+	    (slot->cs_flags & CCID_SLOT_F_NOEXCL_MASK) != 0) {
 		if (cv_wait_sig(&cmp->cm_excl_cv, &slot->cs_ccid->ccid_mutex) ==
 		    0) {
+			/*
+			 * Remove ourselves from the list, but only signal the
+			 * next thread if 
+			 */
 			list_remove(&slot->cs_excl_waiters, cmp);
 			cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
-			ccid_slot_excl_signal(slot);
+			ccid_slot_excl_maybe_signal(slot);
 			return (EINTR);
 		}
 
@@ -998,13 +1011,67 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 	}
 
 	VERIFY3P(cmp, ==, list_head(&slot->cs_excl_waiters));
-	VERIFY0(slot->cs_flags & CCID_SLOT_F_NEED_TXN_RESET);
+	VERIFY0(slot->cs_flags & CCID_SLOT_F_NOEXCL_MASK);
 	list_remove(&slot->cs_excl_waiters, cmp);
 
 	cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
 	cmp->cm_flags |= CCID_MINOR_F_HAS_EXCL;
 	slot->cs_excl_minor = cmp;
 	return (0);
+}
+
+/*
+ * Check whether or not we're in a state that we can signal a POLLIN. To be able
+ * to signal a POLLIN (meaning that we can read) the following must be true:
+ *
+ *   o There is a client that has an exclusive hold open
+ *   o There is a data which is readable by the client (an I/O is done).
+ *
+ * Unlike with pollout, we don't care about the state of the ICC.
+ */
+static void
+ccid_slot_pollin_signal(ccid_slot_t *slot)
+{
+	ccid_t *ccid = slot->cs_ccid;
+	ccid_minor_t *cmp;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+}
+
+/*
+ * Check whether or not we're in a state that we can signal a POLLOUT. To be
+ * able to signal a POLLOUT (meaning that we can write) the following must be
+ * true:
+ *
+ *   o There is a minor which has an exclusive hold on the device 
+ *   o There is no outstanding I/O activity going on, meaning that there is no
+ *     operation in progress and any write data has been consumed.
+ *   o There is an ICC present
+ *   o There is no outstanding I/O cleanup being done, whether a T=1 abort, a
+ *     warm reset, or something else.
+ */
+static void
+ccid_slot_pollout_signal(ccid_slot_t *slot)
+{
+	ccid_t *ccid = slot->cs_ccid;
+	ccid_minor_t *cmp;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+}
+
+static void
+ccid_slot_io_teardown_done(ccid_slot_t *slot)
+{
+	ccid_t *ccid = slot->cs_ccid;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+	slot->cs_flags &= ~CCID_SLOT_F_NEED_IO_TEARDOWN;
+	cv_broadcast(&slot->cs_io.ci_cv);
+
+	/*
+	 * XXX Check if we're in a state where we should signal pollout, as we
+	 * might be.
+	 */
 }
 
 /*
@@ -1067,8 +1134,10 @@ ccid_command_complete(ccid_command_t *cc)
 		 * If the user ops vector has been destroyed, free this command.
 		 * There's not much we can do at this point. Otherwise, deliver
 		 * it.
+		 *
+		 * XXX This doesn't make sense
 		 */
-		if (slot->cs_icc.icc_rx == NULL) {
+		if (slot->cs_icc.icc_complete == NULL) {
 			ccid_command_free(cc);
 		} else {
 			slot->cs_icc.icc_complete(ccid, slot, cc);
@@ -2124,6 +2193,36 @@ ccid_intr_pipe_except_cb(usb_pipe_handle_t ph, usb_intr_req_t *uirp)
 }
 
 /*
+ * Clean up all the state associated with this slot and its ICC.
+ */
+static void
+ccid_slot_teardown(ccid_t *ccid, ccid_slot_t *slot, boolean_t signal)
+{
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+
+	if (slot->cs_icc.icc_fini != NULL) {
+		slot->cs_icc.icc_fini(ccid, slot);
+	}
+
+	atr_data_reset(slot->cs_icc.icc_atr_data);
+	slot->cs_icc.icc_protocols = ATR_P_NONE;
+	slot->cs_icc.icc_cur_protocol = ATR_P_NONE;
+	slot->cs_icc.icc_init = NULL;
+	slot->cs_icc.icc_tx = NULL;
+	slot->cs_icc.icc_complete = NULL;
+	slot->cs_icc.icc_teardown = NULL;
+	slot->cs_icc.icc_fini = NULL;
+
+	slot->cs_voltage = 0;
+	freemsgchain(slot->cs_atr);
+	slot->cs_atr = NULL;
+
+	if (signal && slot->cs_excl_minor != NULL) {
+		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLHUP);
+	}
+}
+
+/*
  * The given CCID slot has been removed. Clean up.
  */
 static void
@@ -2142,27 +2241,25 @@ ccid_slot_removed(ccid_t *ccid, ccid_slot_t *slot, boolean_t notify)
 	slot->cs_flags &= ~CCID_SLOT_F_ACTIVE;
 
 	/*
-	 * If there are outstanding user threads, make sure that they get
-	 * cleaned up.
-	 */
-
-	/*
-	 * Make sure that user I/O, if it exists, is torn down.
+	 * If there is outstanding user I/O, then we need to go ahead and take
+	 * care of that. Once this function returns, the user I/O will have been
+	 * dealt with; however, before we can tear down things, we need to make
+	 * sure that the logical I/O has been completed.
 	 */
 	if (slot->cs_icc.icc_teardown != NULL) {
-		slot->cs_icc.icc_teardown(ccid, slot, B_TRUE);
+		slot->cs_icc.icc_teardown(ccid, slot, ENXIO);
+	}
+
+	while ((slot->cs_flags & CCID_SLOT_F_NEED_IO_TEARDOWN) != 0) {
+		cv_wait(&slot->cs_io.ci_cv, &ccid->ccid_mutex);
 	}
 
 	/*
-	 * XXX Reset ops / icc data.
+	 * Now that we've finished completely waiting for the logical I/O to be
+	 * torn down, it's safe for us to proceed with the rest of the needed
+	 * tear down.
 	 */
-
-	slot->cs_voltage = 0;
-	freemsgchain(slot->cs_atr);
-	slot->cs_atr = NULL;
-	if (slot->cs_excl_minor != NULL && notify) {
-		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLHUP);
-	}
+	ccid_slot_teardown(ccid, slot, B_TRUE);
 }
 
 static boolean_t
@@ -2318,6 +2415,73 @@ ccid_slot_t1_ifsd(ccid_t *ccid, ccid_slot_t *slot)
 	}
 
 	return (B_TRUE);
+}
+
+static void
+ccid_slot_setup_functions(ccid_t *ccid, ccid_slot_t *slot)
+{
+	uint_t bits = CCID_CLASS_F_TPDU_XCHG | CCID_CLASS_F_SHORT_APDU_XCHG |
+	    CCID_CLASS_F_EXT_APDU_XCHG;
+	switch (ccid->ccid_class.ccd_dwFeatures & bits) {
+	case CCID_CLASS_F_SHORT_APDU_XCHG:
+	case CCID_CLASS_F_EXT_APDU_XCHG:
+		slot->cs_icc.icc_init = NULL;
+		slot->cs_icc.icc_tx = ccid_write_apdu;
+		slot->cs_icc.icc_complete = ccid_complete_apdu;
+		slot->cs_icc.icc_teardown = ccid_teardown_apdu;
+		slot->cs_icc.icc_fini = NULL;
+		break;
+	case CCID_CLASS_F_TPDU_XCHG:
+		switch (slot->cs_icc.icc_cur_protocol) {
+		case ATR_P_T1:
+			/*
+			 * At this time, we don't support the use of the CRC
+			 * checksum for CCID devices. This is mostly because we
+			 * haven't found any ICC devices that support its use.
+			 * As such, if for some reason the parameters indicate
+			 * that we're using T=1 and that we've specified the CRC
+			 * versus LRC, we need to regretfully note that we can't
+			 * perform I/O.
+			 */
+			if (atr_t1_checksum(slot->cs_icc.icc_atr_data) ==
+			    ATR_T1_CHECKSUM_CRC) {
+				ccid_error(ccid, "!ICC uses unsupported T=1 CRC "
+				    "checksum. Please report this so support "
+				    "can be added");
+				slot->cs_icc.icc_tx = NULL;
+				slot->cs_icc.icc_complete = NULL;
+				slot->cs_icc.icc_teardown = NULL;
+				break;
+			}
+
+			slot->cs_icc.icc_init = ccid_init_tpdu_t1;
+			slot->cs_icc.icc_tx = ccid_write_tpdu_t1;
+			slot->cs_icc.icc_complete = ccid_complete_tpdu_t1;
+			slot->cs_icc.icc_teardown = ccid_teardown_tpdu_t1;
+			slot->cs_icc.icc_fini = ccid_fini_tpdu_t1;
+			break;
+		case ATR_P_T0:
+		default:
+			slot->cs_icc.icc_tx = NULL;
+			slot->cs_icc.icc_complete = NULL;
+			slot->cs_icc.icc_teardown = NULL;
+			break;
+		}
+		break;
+	default:
+		slot->cs_icc.icc_tx = NULL;
+		slot->cs_icc.icc_complete = NULL;
+		slot->cs_icc.icc_teardown = NULL;
+	}
+
+	/*
+	 * When we don't have a supported tx function, we don't want to end
+	 * up blocking attach. It's important we attach so that users can try
+	 * and determine information about the ICC and reader.
+	 */
+	if (slot->cs_icc.icc_tx == NULL) {
+		ccid_error(ccid, "CCID does not support I/O transfers to ICC");
+	}
 }
 
 /*
@@ -2506,6 +2670,19 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	}
 
 	/*
+	 * Now that we have the parameters locked in. Set up the ICC function
+	 * parameters and initialize the ICC engine.
+	 */
+	slot->cs_icc.icc_protocols = sup;
+	slot->cs_icc.icc_cur_protocol = prot;
+
+	ccid_slot_setup_functions(ccid, slot);
+
+	if (slot->cs_icc.icc_init != NULL) {
+		slot->cs_icc.icc_init(ccid, slot);
+	}
+
+	/*
 	 * If we're using the T=1 protocol and operating at a TPDU level, then
 	 * we need to initialize the state machine and potentially set the IFSD.
 	 *
@@ -2517,12 +2694,11 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	    (ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
 	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0) {
 
-		t1_state_init_icc(&slot->cs_io.ci_t1, data, ccid->ccid_bufsize);
-
 		/*
-		 * XXX If we need to negotiate the IFSD and it fails, we could
-		 * in theory drive on; however, it's probably better to fail
-		 * hard in this case.
+		 * While it is strictly possible to drive on in the face of an
+		 * IFSD negotiation failure, that likely means that something
+		 * else is wrong and that we are better off failing to
+		 * initialize this reader.
 		 */
 		if ((ccid->ccid_flags & CCID_F_NEEDS_IFSD) != 0) {
 			if (!ccid_slot_t1_ifsd(ccid, slot)) {
@@ -2532,79 +2708,9 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 		}
 	}
 
-	slot->cs_icc.icc_protocols = sup;
-	slot->cs_icc.icc_cur_protocol = prot;
-
 	return (B_TRUE);
 }
 
-static void
-ccid_slot_setup_functions(ccid_t *ccid, ccid_slot_t *slot)
-{
-	uint_t bits = CCID_CLASS_F_TPDU_XCHG | CCID_CLASS_F_SHORT_APDU_XCHG |
-	    CCID_CLASS_F_EXT_APDU_XCHG;
-	switch (ccid->ccid_class.ccd_dwFeatures & bits) {
-	case CCID_CLASS_F_SHORT_APDU_XCHG:
-	case CCID_CLASS_F_EXT_APDU_XCHG:
-		slot->cs_icc.icc_tx = ccid_write_apdu;
-		slot->cs_icc.icc_complete = ccid_complete_apdu;
-		slot->cs_icc.icc_teardown = ccid_teardown_apdu;
-		slot->cs_icc.icc_rx = ccid_read_apdu;
-		break;
-	case CCID_CLASS_F_TPDU_XCHG:
-		switch (slot->cs_icc.icc_cur_protocol) {
-		case ATR_P_T1:
-			/*
-			 * At this time, we don't support the use of the CRC
-			 * checksum for CCID devices. This is mostly because we
-			 * haven't found any ICC devices that support its use.
-			 * As such, if for some reason the parameters indicate
-			 * that we're using T=1 and that we've specified the CRC
-			 * versus LRC, we need to regretfully note that we can't
-			 * perform I/O.
-			 */
-			if (atr_t1_checksum(slot->cs_icc.icc_atr_data) ==
-			    ATR_T1_CHECKSUM_CRC) {
-				ccid_error(ccid, "!ICC uses unsupported T=1 CRC "
-				    "checksum. Please report this so support "
-				    "can be added");
-				slot->cs_icc.icc_tx = NULL;
-				slot->cs_icc.icc_complete = NULL;
-				slot->cs_icc.icc_teardown = NULL;
-				slot->cs_icc.icc_rx = NULL;
-				break;
-			}
-
-			slot->cs_icc.icc_tx = ccid_write_tpdu_t1;
-			slot->cs_icc.icc_complete = ccid_complete_tpdu_t1;
-			slot->cs_icc.icc_teardown = ccid_teardown_tpdu_t1;
-			slot->cs_icc.icc_rx = ccid_read_tpdu_t1;
-			break;
-		case ATR_P_T0:
-		default:
-			slot->cs_icc.icc_tx = NULL;
-			slot->cs_icc.icc_complete = NULL;
-			slot->cs_icc.icc_teardown = NULL;
-			slot->cs_icc.icc_rx = NULL;
-			break;
-		}
-		break;
-	default:
-		slot->cs_icc.icc_tx = NULL;
-		slot->cs_icc.icc_complete = NULL;
-		slot->cs_icc.icc_teardown = NULL;
-		slot->cs_icc.icc_rx = NULL;
-	}
-
-	/*
-	 * When we don't have a support tx or rx function, we don't want to end
-	 * up blocking attach. It's important we attach so that users can try
-	 * and determine information about the ICC and reader.
-	 */
-	if (slot->cs_icc.icc_tx == NULL) {
-		ccid_error(ccid, "CCID does not support I/O transfers to ICC");
-	}
-}
 
 static void
 ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
@@ -2703,11 +2809,11 @@ ccid_slot_inserted(ccid_t *ccid, ccid_slot_t *slot)
 		ccid_error(ccid, "!failed to set slot paramters for ICC");
 		freemsg(atr);
 		mutex_enter(&ccid->ccid_mutex);
+		ccid_slot_teardown(ccid, slot, B_FALSE);
 		return;
 	}
 
 	mutex_enter(&ccid->ccid_mutex);
-	ccid_slot_setup_functions(ccid, slot);
 
 	slot->cs_voltage = volts[cvolt];
 	slot->cs_atr = atr;
@@ -2723,19 +2829,34 @@ ccid_slot_reset(ccid_t *ccid, ccid_slot_t *slot)
 	VERIFY(ccid->ccid_flags & CCID_SLOT_F_NEED_TXN_RESET);
 	VERIFY(ccid->ccid_flags & CCID_F_WORKER_RUNNING);
 
+	/*
+	 * If there is outstanding user I/O, then we need to go ahead and take
+	 * care of that. Once this function returns, the user I/O will have been
+	 * dealt with; however, before we can tear down things, we need to make
+	 * sure that the logical I/O has been completed.
+	 */
+	if (slot->cs_icc.icc_teardown != NULL) {
+		slot->cs_icc.icc_teardown(ccid, slot, ENXIO);
+	}
+
+	while ((slot->cs_flags & CCID_SLOT_F_NEED_IO_TEARDOWN) != 0) {
+		cv_wait(&slot->cs_io.ci_cv, &ccid->ccid_mutex);
+	}
+
+	/*
+	 * Now that we've finished this, try and power off the ICC.
+	 */
 	mutex_exit(&ccid->ccid_mutex);
 	ret = ccid_command_power_off(ccid, slot);
 	mutex_enter(&ccid->ccid_mutex);
 
 	/*
-	 * If the CCID was removed, that's fine. We can actually just mark it as
-	 * removed and move onto the next user. Note, we don't opt to notify the
-	 * user as we'll wait for that to happen as part of our normal
-	 * transition, which should still occur here.
+	 * If we failed to power off the ICC because the ICC is removed, then
+	 * just return that we failed, so that we can let the next lap clean
+	 * things up by noting that the ICC has been removed.
 	 */
 	if (ret != 0 && ret == ENXIO) {
-		ccid_slot_removed(ccid, slot, B_FALSE);
-		return (B_TRUE);
+		return (B_FALSE);
 	}
 
 	if (ret != 0) {
@@ -2746,27 +2867,15 @@ ccid_slot_reset(ccid_t *ccid, ccid_slot_t *slot)
 
 	ccid->ccid_flags &= ~CCID_SLOT_F_ACTIVE;
 
-	/*
-	 * Make sure that user I/O, if it exists, is torn down.
-	 */
-	if (slot->cs_icc.icc_teardown != NULL) {
-		slot->cs_icc.icc_teardown(ccid, slot, B_TRUE);
-	}
-
-	/*
-	 * XXX Reset ops / icc data.
-	 */
-
-	freemsgchain(slot->cs_atr);
-	slot->cs_atr = NULL;
-
+	ccid_slot_teardown(ccid, slot, B_TRUE);
 	mutex_exit(&ccid->ccid_mutex);
+
 	/*
-	 * Attempt to insert this into the slot. Don't worry about success or
-	 * failure, because as far as we care for resetting it, we've done our
-	 * duty once we've powered it off successfully.
+	 * Mimic a slot insertion to power this back on. Don't worry about
+	 * success or failure, because as far as we care for resetting it, we've
+	 * done our duty once we've powered it off successfully.
 	 */
-	ccid_slot_inserted(ccid, slot);
+	(void) ccid_slot_inserted(ccid, slot);
 	mutex_enter(&ccid->ccid_mutex);
 
 	return (B_TRUE);
@@ -2819,6 +2928,9 @@ ccid_worker(void *arg)
 				ccid_slot_removed(ccid, slot, B_TRUE);
 			} else {
 				ccid_slot_inserted(ccid, slot);
+				if (slot->cs_flags & CCID_SLOT_F_ACTIVE) {
+					ccid_slot_excl_maybe_signal(slot);
+				}
 			}
 			VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 		}
@@ -2837,9 +2949,13 @@ ccid_worker(void *arg)
 				}
 			}
 
-			slot->cs_flags &= ~CCID_SLOT_F_NEED_TXN_RESET;
-			ccid_slot_excl_signal(slot);
 			VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+			slot->cs_flags &= ~CCID_SLOT_F_NEED_TXN_RESET;
+			/*
+			 * XXX The signaling in all of this worker logic makes
+			 * no sense.
+			 */
+			ccid_slot_excl_maybe_signal(slot);
 		}
 	}
 
@@ -2947,12 +3063,7 @@ ccid_parse_class_desc(ccid_t *ccid)
 }
 
 /*
- * Look at the ccid device in question and determine whether or not we can use
- * it.
- *
- * XXX we should use this as a basis for determining which features we require
- * from a card. This set should evolve as we implement features and know which
- * ones we're missing.
+ * Verify whether or not we can support this CCID reader.
  */
 static boolean_t
 ccid_supported(ccid_t *ccid)
@@ -3782,11 +3893,12 @@ ccid_open(dev_t *devp, int flag, int otyp, cred_t *credp)
  * Copy a command which may have a message block chain out to the user.
  */
 static int
-ccid_read_copyout_t1(struct uio *uiop, const mblk_t *mp)
+ccid_read_copyout(struct uio *uiop, const mblk_t *mp)
 {
 	offset_t off;
 
 	off = uiop->uio_loffset;
+	VERIFY3P(mp->b_next, ==, NULL);
 
 	for (; mp != NULL; mp = mp->b_cont) {
 		int ret;
@@ -3803,71 +3915,6 @@ ccid_read_copyout_t1(struct uio *uiop, const mblk_t *mp)
 	return (0);
 }
 
-static int
-ccid_read_copyout_apdu(struct uio *uiop, const ccid_command_t *cc, size_t len)
-{
-	int ret;
-	mblk_t *mp;
-	offset_t off;
-
-	off = uiop->uio_loffset;
-	mp = cc->cc_response;
-	while (len > 0) {
-		size_t tocopy, mblen;
-		/*
-		 * Each message block in the chain has its CCID header at the
-		 * front.
-		 */
-		mblen = MBLKL(mp) - sizeof (ccid_header_t);
-		tocopy = MIN(len, mblen);
-		ret = uiomove(mp->b_rptr + sizeof (ccid_header_t), tocopy, UIO_READ, uiop);
-		if (ret != 0)
-			return (EFAULT);
-		len -= tocopy;
-		if (len != 0) {
-			mp = mp->b_cont;
-			VERIFY3P(mp, !=, NULL);
-		}
-	}
-	uiop->uio_loffset = off;
-
-	return (0);
-}
-
-/*
- * Called to indicate that the I/O has been completed and another I/O may be
- * issued to the device.
- */
-static void
-ccid_user_io_free(ccid_t *ccid, ccid_slot_t *slot, boolean_t signal)
-{
-	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-
-	/*
-	 * Clear I/O flags.
-	 */
-	slot->cs_io.ci_flags &= ~CCID_IO_F_ALL_FLAGS;
-
-	/*
-	 * Always signal the I/O cv. Something may be waiting for this I/O to be
-	 * done such as an ongoing teardown.
-	 */
-	cv_broadcast(&slot->cs_io.ci_cv);
-
-	/*
-	 * Wake up anyone waiting for writes. Note, they may not exist.  We
-	 * shouldn't have to worry about a reset, as there will be nothing
-	 * assinged to cs_excl_minor at that time.
-	 *
-	 * XXX This isn't quite right. One can have a valid minor but not be
-	 * able to write because there is no ICC, etc. Sigh, these semantics are
-	 * shitty.
-	 */
-	if (slot->cs_excl_minor != NULL && signal) {
-		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLOUT);
-	}
-}
-
 /*
  * Called to indicate that we are ready for a user to consume the I/O.
  */
@@ -3877,16 +3924,18 @@ ccid_user_io_done(ccid_t *ccid, ccid_slot_t *slot)
 	ccid_minor_t *cmp;
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-	cmp = slot->cs_excl_minor;
-	VERIFY3P(cmp, !=, NULL);
 
+	slot->cs_io.ci_flags &= ~CCID_IO_F_IN_PROGRESS;
 	slot->cs_io.ci_flags |= CCID_IO_F_DONE;
-	pollwakeup(&cmp->cm_pollhead, POLLIN | POLLRDNORM);
-	cv_signal(&cmp->cm_read_cv);
+	cmp = slot->cs_excl_minor;
+	if (cmp != NULL) {
+		pollwakeup(&cmp->cm_pollhead, POLLIN | POLLRDNORM);
+		cv_signal(&cmp->cm_read_cv);
+	}
 }
 
 static void
-ccid_teardown_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
+ccid_teardown_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, int error)
 {
 	/*
 	 * First check if there's an I/O in progress. If not, then we're done
@@ -3897,16 +3946,20 @@ ccid_teardown_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
 	}
 
 	/*
-	 * At this point, we have latent T=1 processing going on. If the
-	 * CCID_IO_F_DONE flag is set, then all we need to do is clean up our
-	 * existing command state and mark this done.
+	 * There's an outstanding I/O. The first thing we need to do is to
+	 * complete the command from a user perspective so we can disassociate
+	 * our state from it.
 	 */
-	if ((slot->cs_io.ci_flags & CCID_IO_F_DONE) != 0) {
-		slot->cs_io.ci_errno = 0;
-		t1_state_cmd_done(&slot->cs_io.ci_t1);
-		ccid_user_io_free(ccid, slot, B_TRUE);
-		return;
-	}
+	slot->cs_io.ci_errno = error;
+	ccid_user_io_done(ccid, slot);
+
+	/*
+	 * Set the fact that the slot should block until such an I/O is
+	 * complete. We cannot do anything about outstanding T=1 behavior at
+	 * this point in time. The only thing that we can do is wait for the
+	 * next command completion and then act upon it.
+	 */
+	slot->cs_flags |= CCID_SLOT_F_NEED_IO_TEARDOWN;
 
 	/*
 	 * OK, we have an I/O outstanding. We have some questions that we need
@@ -3914,6 +3967,19 @@ ccid_teardown_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
 	 * else, should we figure out how what to do next?
 	 */
 	panic("implement the teardown logic for TPDU T=1");
+}
+
+static void
+ccid_init_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
+{
+	t1_state_icc_init(&slot->cs_io.ci_t1, slot->cs_icc.icc_atr_data,
+	    ccid->ccid_bufsize);
+}
+
+static void
+ccid_fini_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
+{
+	t1_state_icc_fini(&slot->cs_io.ci_t1);
 }
 
 /*
@@ -3937,6 +4003,25 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	VERIFY3P(slot->cs_io.ci_command, ==, cc);
+
+	/*
+	 * XXX First check whether or not we've been asked to teardown this I/O.
+	 * The steps that we take for this teardown will depend on what's going
+	 * on with the ICC or reader. Presuming that the ICC is still present
+	 * and not being reset, we'll need to terminate this gracefully.
+	 * Otherwise, we can basically not worry about cleaning this up beyond
+	 * the logical state because the hardware is being reset or going away,
+	 * so we don't have to issue new commands.
+	 */
+	if ((slot->cs_flags & CCID_SLOT_F_NEED_IO_TEARDOWN) != 0) {
+		if ((slot->cs_flags & CCID_SLOT_F_NEED_TXN_RESET) != 0 ||
+		    (slot->cs_flags & CCID_SLOT_F_ACTIVE) == 0) {
+			/* We can just drop our state now. */
+			t1_state_cmd_fini(&slot->cs_io.ci_t1);
+			ccid_slot_io_teardown_done(slot);
+			return;
+		}
+	}
 
 	/*
 	 * XXX At this time we do not properly implement the state machine that
@@ -4003,7 +4088,14 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 		ccid_user_io_done(ccid, slot);
 		return;
 	case T1_ACTION_DONE:
+		/*
+		 * Complete and free this I/O from a T=1 perspective. The data
+		 * will be saved for the user.
+		 */
 		slot->cs_io.ci_errno = 0;
+		slot->cs_io.ci_data = t1_state_cmd_reply_take(&slot->cs_io.ci_t1);
+		t1_state_cmd_fini(&slot->cs_io.ci_t1);
+		VERIFY3P(slot->cs_io.ci_data, !=, NULL);
 		ccid_user_io_done(ccid, slot);
 		return;
 	}
@@ -4062,59 +4154,6 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 }
 
 static int
-ccid_read_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
-{
-	int ret;
-	const mblk_t *mp;
-	size_t len;
-
-	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-
-	/*
-	 * Check to see if we have an error set on I/O structure. If so, then we
-	 * need to go ahead and give that to the user.
-	 *
-	 * XXX We need to clean up any T=1 state associated with this.
-	 */
-	if (slot->cs_io.ci_errno != 0) {
-		ret = slot->cs_io.ci_errno;
-		goto consume;
-	}
-
-	/*
-	 * XXX It's not clear right now when we'd not get a message block chain,
-	 * but we don't have an error. For now, treat it as a zero byte read.
-	 */
-	if ((mp = t1_state_cmd_data(&slot->cs_io.ci_t1)) == NULL) {
-		ret = 0;
-		goto consume;
-	}
-
-	/*
-	 * XXX Deal with the fact that msgsize can't deal with constness.
-	 */
-	len = msgsize((mblk_t *)mp);
-	if (len > uiop->uio_resid) {
-		return (EOVERFLOW);
-	}
-
-	/*
-	 * Copy out the resulting data. Don't consume it if we can't copy it all
-	 * out.
-	 */
-	ret = ccid_read_copyout_t1(uiop, mp);
-	if (ret != 0) {
-		return (ret);
-	}
-
-consume:
-	slot->cs_io.ci_errno = 0;
-	t1_state_cmd_done(&slot->cs_io.ci_t1);
-	ccid_user_io_free(ccid, slot, B_TRUE);
-	return (ret);
-}
-
-static int
 ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
 {
 	int ret;
@@ -4143,7 +4182,7 @@ ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
 
 	/*
 	 * XXX Right now we're purposefully not dropping the lock across the
-	 * command allocation. I'm not sure if that's good or not. THe problem
+	 * command allocation. I'm not sure if that's good or not. The problem
 	 * is that if we drop it, we need to make sure that the ICC state is
 	 * still good. If not, then we would need to throw this out, but it
 	 * means that the system can advance in the face of memory pressure,
@@ -4193,52 +4232,30 @@ ccid_write_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot)
  * is removed, the reader has been unplugged, or the ICC is being reset. In all
  * these cases we need to make sure that I/O is taken care of and we won't be
  * leaving behind vestigial garbage.
- *
- * The boolean_t wait is used to indicate whether or not this is a user hold
- * removal or one of the other conditions. In all of the non-user hold
- * conditions, the operations vector will be torn down for the slot's I/O
- * module. As such we need to make sure we wait for things to finish up before
- * we return, in the exclusive hold case, we don't.
  */
 static void
-ccid_teardown_apdu(ccid_t *ccid, ccid_slot_t *slot, boolean_t wait)
+ccid_teardown_apdu(ccid_t *ccid, ccid_slot_t *slot, int error)
 {
 	ccid_command_t *cc;
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 
 	/*
-	 * If no I/O is in progress, then there's nothing to do.
+	 * If no I/O is in progress, then there's nothing to do at our end.
 	 */
 	if ((slot->cs_io.ci_flags & CCID_IO_F_IN_PROGRESS) == 0) {
 		return;
 	}
 
-	/*
-	 * If the command is outstanding, then we must wait for it to be issued
-	 * and failed by the device.
-	 */
-	cc = slot->cs_io.ci_command;
-	if (cc->cc_state >= CCID_COMMAND_COMPLETE) {
-		slot->cs_io.ci_command = NULL;
-		ccid_command_free(cc);
-		ccid_user_io_free(ccid, slot, B_FALSE);
-		return;
-	}
+	slot->cs_io.ci_errno = error;
+	ccid_user_io_done(ccid, slot);
 
 	/*
-	 * At this point, we expect that the completion function is going to
-	 * run. Mark this as abandoned, so it knows to clean itself up.
+	 * There is still I/O going on. We need to mark this on the slot such
+	 * that no one can gain ownership of it or issue commands. This will
+	 * block hand off of a slot.
 	 */
-	slot->cs_io.ci_flags |= CCID_IO_F_ABANDONED;
-	if (!wait) {
-		return;
-	}
-
-	while (slot->cs_io.ci_command != NULL) {
-		cv_wait(&slot->cs_io.ci_cv, &ccid->ccid_mutex);
-		/* XXX Should we be waiting for other conditions here */
-	}
+	slot->cs_flags |= CCID_SLOT_F_NEED_IO_TEARDOWN;
 }
 
 /*
@@ -4248,119 +4265,71 @@ static void
 ccid_complete_apdu(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 {
 	ccid_minor_t *cmp;
-
-	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
-	VERIFY3P(slot->cs_io.ci_command, ==, cc);
-
-	/*
-	 * First, see if it's even worth processing this command. To do that, we
-	 * want to go through and see if there's still a minor. If there isn't,
-	 * we can free this command and free up the I/O.
-	 * XXX The excl_minor bit looks suspicious
-	 */
-	cmp = slot->cs_excl_minor;
-	if ((slot->cs_io.ci_flags & CCID_IO_F_ABANDONED) != 0 ||
-	    slot->cs_excl_minor == NULL) {
-		ccid_command_free(cc);
-		slot->cs_io.ci_command = NULL;
-		ccid_user_io_free(ccid, slot, B_TRUE);
-		return;
-	}
-
-	/*
-	 * Now, we can go ahead and wake up a reader to process this command.
-	 */
-	ccid_user_io_done(ccid, slot);
-}
-
-static int
-ccid_read_apdu(ccid_t *ccid, ccid_slot_t *slot, struct uio *uiop)
-{
-	int ret;
-	ccid_command_t *cc;
 	ccid_reply_command_status_t crs;
 	ccid_reply_icc_status_t cis;
 	ccid_command_err_t cce;
 
 	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+	VERIFY3P(slot->cs_io.ci_command, ==, cc);
 
 	/*
-	 * XXX Check if the framework has left us an error in ci_errno and if
-	 * so, use that to bypass any command and return this.
+	 * This completion could be called due to the fact that a user is no
+	 * longer present, but we still have outstanding work to do in the
+	 * stack. As such, we need to go through and check if the flag was set
+	 * on the slot during teardown and if so, clean it up now.
+	 *
+	 * XXX Once this is done, we may be able to proceed with I/O depending
+	 * on what else is happening. So signal that fact or at least check.
+	 * This needs to do more than just signal on a CV, we may need to do
+	 * various POLL activities.
 	 */
-
-	/*
-	 * Check if the command is present and our error status. We may not have
-	 * a command present if an error is set. For example, if an ICC was
-	 * removed while processing this event. However, if the command
-	 * structure is present and the error is non-zero then we must consume
-	 * and free the command.
-	 */
-	cc = slot->cs_io.ci_command;
-	if (cc == NULL) {
-		VERIFY3S(slot->cs_io.ci_errno, !=, 0);
-	}
-
-	if (slot->cs_io.ci_errno != 0) {
-		ret = slot->cs_io.ci_errno;
-		slot->cs_io.ci_errno = 0;
-		goto consume;
+	if ((slot->cs_io.ci_flags & CCID_SLOT_F_NEED_IO_TEARDOWN) != 0) {
+		ccid_command_free(cc);
+		slot->cs_io.ci_command = NULL;
+		ccid_slot_io_teardown_done(slot);
+		return;
 	}
 
 	/*
-	 * If we didn't get a successful command, then we go ahead and consume
-	 * this and mark it as having generated an EIO.
+	 * Process this command and figure out what we should logically be
+	 * returning to the user.
 	 */
 	if (cc->cc_state != CCID_COMMAND_COMPLETE) {
-		ret = EIO;
+		slot->cs_io.ci_errno = EIO;
 		goto consume;
 	}
 
 	ccid_command_status_decode(cc, &crs, &cis, &cce);
 	if (crs == CCID_REPLY_STATUS_COMPLETE) {
-		size_t len;
+		mblk_t *mp;
 
-		/*
-		 * Note, as part of processing the reply, the driver has already
-		 * gone through and made sure that we have a message block large
-		 * enough for this command.
-		 */
-		len = ccid_command_resp_length(cc);
-		if (len > uiop->uio_resid) {
-			return (EOVERFLOW);
-		}
-
-		/*
-		 * Copy out the resulting data.
-		 */
-		ret = ccid_read_copyout_apdu(uiop, cc, len);
-		if (ret != 0) {
-			return (ret);
-		}
+		mp = cc->cc_response;
+		cc->cc_response = NULL;
+		mp->b_rptr += sizeof (ccid_header_t);
+		slot->cs_io.ci_errno = 0;
+		slot->cs_io.ci_data = mp;
+	} else if (cis == CCID_REPLY_ICC_MISSING) {
+		slot->cs_io.ci_errno = ENXIO;
 	} else {
-		if (cis == CCID_REPLY_ICC_MISSING) {
-			ret = ENXIO;
-		} else {
-			/*
-			 * XXX There are a few more semantic things we can do
-			 * with the errors here that we're throwing out and
-			 * lumping as EIO. Oh well.
-			 */
-			ret = EIO;
-		}
+		/*
+		 * XXX There are a few more semantic things we can do
+		 * with the errors here that we're throwing out and
+		 * lumping as EIO. Oh well.
+		 */
+		slot->cs_io.ci_errno = EIO;
 	}
 
+	/*
+	 * Now, we can go ahead and wake up a reader to process this command.
+	 */
 consume:
 	slot->cs_io.ci_command = NULL;
-	if (cc != NULL) {
-		ccid_command_free(cc);
-	}
-	ccid_user_io_free(ccid, slot, B_TRUE);
-	return (ret);
+	ccid_command_free(cc);
+	ccid_user_io_done(ccid, slot);
 }
 
 /*
- * We have the uswer buffer in the CCID slot. Given that, transform it into
+ * We have the user buffer in the CCID slot. Given that, transform it into
  * something that we can send to the device. For APDU's this is simply creating
  * a transfer command and copying it into that buffer.
  */
@@ -4405,6 +4374,7 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	ccid_minor_t *cmp;
 	ccid_slot_t *slot;
 	ccid_t *ccid;
+	boolean_t done;
 
 	if (uiop->uio_resid <= 0) {
 		return (EINVAL);
@@ -4437,13 +4407,10 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	}
 
 	/*
-	 * Make sure we have a read function for this minor, otherwise we won't
-	 * be able to receive data.
+	 * While it's tempting to mirror ccid_write() here and check if we have
+	 * a tx or rx function, that actually has no relevance on read. The only
+	 * thing that matters is whether or not we actually have an I/O.
 	 */
-	if (slot->cs_icc.icc_rx == NULL) {
-		mutex_exit(&ccid->ccid_mutex);
-		return (ENOTSUP);
-	}
 
 	/*
 	 * If there's been no write I/O issued, then this read is not allowed.
@@ -4498,39 +4465,46 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		cv_signal(&cmp->cm_iowait_cv);
 
 		/*
-		 * Check if the reader has been removed.
+		 * Check if the reader has been removed. We do not need to check
+		 * for other conditions, as we'll end up being told that the I/O
+		 * is done and that the error has been set.
 		 */
 		if ((ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
 			mutex_exit(&ccid->ccid_mutex);
 			return (ENODEV);
 		}
-
-		/*
-		 * Check if the user ended a transcation while still blocked in
-		 * read.
-		 * XXX This isn't currently signaled.
-		 */
-		if (!(cmp->cm_flags & CCID_MINOR_F_TXN_ENDING)) {
-			mutex_exit(&ccid->ccid_mutex);
-			return (ECANCELED);
-		}
-
-		/*
-		 * XXX Check and make sure that we still have an icc_rx
-		 * operation and in general, handle the case that the ICC has
-		 * been removed. The way that this happens will probably be a
-		 * bit complicated since we don't want to generally check if the
-		 * slot is active. So really it's check to see if there isn't
-		 * some kind of error on the I/O or similar. The trick case here
-		 * is if there wasn't a write in progress.
-		 */
 	}
 
 	/*
-	 * Callers of this function should in general not drop the lock. Doing
-	 * so might lead to some confusion in the broader readable state.
+	 * We'll either have an error or data available for the user at this
+	 * point that we can copy out. We need to make sure that it's not too
+	 * large. The data should have already been adjusted such that we only
+	 * have data payloads.
 	 */
-	ret = slot->cs_icc.icc_rx(ccid, slot, uiop);
+	done = B_FALSE;
+	if (slot->cs_io.ci_errno == 0) {
+		size_t mlen;
+
+		mlen = msgsize(slot->cs_io.ci_data);
+		if (mlen > uiop->uio_resid) {
+			ret = EOVERFLOW;
+		} else {
+			if ((ret = ccid_read_copyout(uiop, slot->cs_io.ci_data)) == 0) {
+				done = B_TRUE;
+			}
+		}
+	} else {
+		ret = slot->cs_io.ci_errno;
+		done = B_TRUE;
+	}
+
+	if (done) {
+		freemsg(slot->cs_io.ci_data);
+		slot->cs_io.ci_data = NULL;
+		slot->cs_io.ci_errno = 0;
+		/* XXX Signal next write may be able to happen at this point */
+	}
+
 	mutex_exit(&ccid->ccid_mutex);
 
 	return (ret);
@@ -4872,9 +4846,17 @@ ccid_chpoll(dev_t dev, short events, int anyyet, short *reventsp,
 		return (EACCES);
 	}
 
+	/*
+	 * If the CCID_IO_F_DONE flag is set, then we're always readable.
+	 * However, flags are insufficient to be writeable.
+	 */
 	if ((slot->cs_io.ci_flags & CCID_IO_F_DONE) != 0) {
 		ready |= POLLIN | POLLRDNORM;
 	} else if ((slot->cs_io.ci_flags & CCID_IO_F_POLLOUT_FLAGS) == 0) {
+		/*
+		 * XXX This isn't quite true, as we need to consider other
+		 * states of the device, ICC present, etc.
+		 */
 		ready |= POLLOUT;
 	}
 

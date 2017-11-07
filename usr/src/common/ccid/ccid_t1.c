@@ -88,7 +88,7 @@ t1_invalid(t1_state_t *t1, t1_validate_t v, const char *fmt, ...)
  * Initialize all of our T=1 state when a new ICC has been inserted.
  */
 void
-t1_state_init_icc(t1_state_t *t1, atr_data_t *atr, size_t maxlen)
+t1_state_icc_init(t1_state_t *t1, atr_data_t *atr, size_t maxlen)
 {
 	size_t csz;
 	uint8_t t1len, ifsc;
@@ -130,6 +130,12 @@ t1_state_init_icc(t1_state_t *t1, atr_data_t *atr, size_t maxlen)
 	t1->t1_flags |= T1_F_ICC_INIT;
 }
 
+void
+t1_state_icc_fini(t1_state_t *t1)
+{
+	VERIFY(0);
+}
+
 /*
  * A new command has been started. Reset all of our state tracking for this new
  * command.
@@ -156,11 +162,14 @@ t1_state_cmd_init(t1_state_t *t1, const void *ubuf, size_t ulen)
 	t1->t1_flags |= T1_F_CMD_SENDING;
 }
 
-const mblk_t *
-t1_state_cmd_data(t1_state_t *t1)
+mblk_t *
+t1_state_cmd_reply_take(t1_state_t *t1)
 {
+	mblk_t *mp;
 	VERIFY3U(t1->t1_flags & T1_F_CMD_DONE, !=, 0);
-	return (t1->t1_reply_chain);
+	mp = t1->t1_reply_chain;
+	t1->t1_reply_chain = NULL;
+	return (mp);
 }
 
 /*
@@ -168,7 +177,7 @@ t1_state_cmd_data(t1_state_t *t1)
  * make it ready again.
  */
 void
-t1_state_cmd_done(t1_state_t *t1)
+t1_state_cmd_fini(t1_state_t *t1)
 {
 	t1->t1_flags &= ~T1_F_ALL_CMD_FLAGS;
 	t1->t1_ubuf = NULL;

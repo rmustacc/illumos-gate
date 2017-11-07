@@ -230,14 +230,15 @@ typedef struct t1_state {
  * Called when a new ICC has been inserted or reset to initialize the T=1 state
  * again for the ICC.
  */
-extern void t1_state_init_icc(t1_state_t *, atr_data_t *, size_t);
+extern void t1_state_icc_init(t1_state_t *, atr_data_t *, size_t);
+extern void t1_state_icc_fini(t1_state_t *);
 
 /*
  * Called when a new command should be sent out the ICC.
  */
 extern void t1_state_cmd_init(t1_state_t *, const void *, size_t);
-extern const mblk_t *t1_state_cmd_data(t1_state_t *);
-extern void t1_state_cmd_done(t1_state_t *);
+extern mblk_t *t1_state_cmd_reply_take(t1_state_t *);
+extern void t1_state_cmd_fini(t1_state_t *);
 
 /*
  * Called to generate the data buffer for sending a T=1 IFSD request.
