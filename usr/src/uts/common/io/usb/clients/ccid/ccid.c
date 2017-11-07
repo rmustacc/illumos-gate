@@ -4060,6 +4060,8 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 			ccid_slot_io_teardown_done(slot);
 			return;
 		}
+
+		cmn_err(CE_PANIC, "implement T=1 abort logic");
 	}
 
 	/*
@@ -4322,7 +4324,7 @@ ccid_complete_apdu(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	 * This needs to do more than just signal on a CV, we may need to do
 	 * various POLL activities.
 	 */
-	if ((slot->cs_io.ci_flags & CCID_SLOT_F_NEED_IO_TEARDOWN) != 0) {
+	if ((slot->cs_flags & CCID_SLOT_F_NEED_IO_TEARDOWN) != 0) {
 		ccid_command_free(cc);
 		slot->cs_io.ci_command = NULL;
 		ccid_slot_io_teardown_done(slot);
