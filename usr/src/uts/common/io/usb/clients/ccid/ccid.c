@@ -862,6 +862,15 @@ ccid_minor_find_user(minor_t m)
 	return (idx);
 }
 
+/*
+ * Check if the conditions are met to signal the next exclusive holder. For this
+ * to be true, there should be no one holding it. In addition, there must be
+ * someone in the queue waiting. Finally, we want to make sure that the ICC, if
+ * present, is in a state where it could handle these kinds of issues. That
+ * means that we shouldn't have an outstanding I/O question or warm reset
+ * ongoing. However, we must not block this on the condition of an ICC being
+ * present. But, if the reader has been disconnected, don't signal anyone.
+ */
 static void
 ccid_slot_excl_maybe_signal(ccid_slot_t *slot)
 {
@@ -869,11 +878,11 @@ ccid_slot_excl_maybe_signal(ccid_slot_t *slot)
 
 	VERIFY(MUTEX_HELD(&slot->cs_ccid->ccid_mutex));
 
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DISCONNECTED) != 0)
+		return;
 	if (slot->cs_excl_minor != NULL)
 		return;
 	if ((slot->cs_flags & CCID_SLOT_F_NOEXCL_MASK) != 0)
-		return;
-	if ((slot->cs_flags & CCID_SLOT_F_ACTIVE) == 0)
 		return;
 	cmp = list_head(&slot->cs_excl_waiters);
 	if (cmp == NULL)
@@ -933,10 +942,12 @@ ccid_slot_excl_rele(ccid_slot_t *slot)
 	 * function is only designed to take care of in-flight I/Os.
 	 */
 	if ((slot->cs_io.ci_flags & CCID_IO_F_DONE) != 0) {
-		slot->cs_io.ci_flags &= ~CCID_IO_F_DONE;
-		slot->cs_io.ci_errno = 0;
 		freemsg(slot->cs_io.ci_data);
 		slot->cs_io.ci_data = NULL;
+		slot->cs_io.ci_errno = 0;
+		slot->cs_io.ci_flags &= ~CCID_IO_F_DONE;
+		slot->cs_io.ci_ilen = 0;
+		bzero(slot->cs_io.ci_ibuf, sizeof (slot->cs_io.ci_ibuf));
 	}
 
 	/*
@@ -1004,6 +1015,16 @@ ccid_slot_excl_req(ccid_slot_t *slot, ccid_minor_t *cmp, boolean_t nosleep)
 			cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
 			ccid_slot_excl_maybe_signal(slot);
 			return (EINTR);
+		}
+
+		/*
+		 * Check if the reader is going away. If so, then we're done
+		 * here.
+		 */
+		if ((slot->cs_ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
+			list_remove(&slot->cs_excl_waiters, cmp);
+			cmp->cm_flags &= ~CCID_MINOR_F_WAITING;
+			return (ENODEV);
 		}
 
 		/* XXX Waiting on a lock, need to reassert usability of device /
@@ -3129,9 +3150,11 @@ ccid_supported(ccid_t *ccid)
 
 	/*
 	 * Check the number of data rates that are supported by the reader. If
-	 * the reader has a non-zero value
+	 * the reader has a non-zero value and we don't support automatic
+	 * negotiation then warn about that.
 	 */
-	if (ccid->ccid_class.ccd_bNumDataRatesSupported != 0) {
+	if (ccid->ccid_class.ccd_bNumDataRatesSupported != 0 &&
+	    (feat & CCID_CLASS_F_AUTO_BAUD) == 0) {
 		ccid_error(ccid, "!CCID reader only supports fixed clock rates, "
 		    "data will be limited to default values");
 	}
@@ -3489,22 +3512,38 @@ ccid_disconnect_cb(dev_info_t *dip)
 	ccid->ccid_flags |= CCID_F_DISCONNECTED;
 
 	/*
+	 * First, go through any threads that are blocked on a minor for
+	 * exclusive access. They should be woken up and they'll fail due to the
+	 * fact that we've set the disconnected flag above.
+	 */
+	for (i = 0; i < ccid->ccid_nslots; i++) {
+		ccid_minor_t *cmp;
+		ccid_slot_t *slot = &ccid->ccid_slots[i];
+
+		for (cmp = list_head(&slot->cs_excl_waiters); cmp != NULL;
+		    cmp = list_next(&slot->cs_excl_waiters, cmp)) {
+			cv_signal(&cmp->cm_excl_cv);
+		}
+	}
+
+	/*
 	 * Now, we need to basically wake up anyone blocked in read and make
 	 * sure that they don't wait there forever and make sure that anyone
 	 * polling gets a POLLHUP. We can't really distinguish between this and
 	 * an ICC being removed. It will be discovered when someone tries to do
 	 * an operation and they receive an EXDEV. We only need to do this on
-	 * minors that have exclusive access.
+	 * minors that have exclusive access. Don't worry about them finishing
+	 * up, this'll be done as part of detach.
 	 */
 	for (i = 0; i < ccid->ccid_nslots; i++) {
+		ccid_minor_t *cmp;
 		ccid_slot_t *slot = &ccid->ccid_slots[i];
 		if (slot->cs_excl_minor == NULL)
 			continue;
 
-		pollwakeup(&slot->cs_excl_minor->cm_pollhead, POLLHUP);
+		pollwakeup(&slot->cs_excl_minor->cm_pollhead,
+		    POLLHUP | POLLERR);
 		cv_signal(&slot->cs_excl_minor->cm_read_cv);
-
-		/* XXX We maybe should wait for the read flag to disappear? */
 	}
 
 	/*
@@ -4457,12 +4496,14 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 		 * or reader are removed, that we need to wake up this thread.
 		 */
 		cmp->cm_flags |= CCID_MINOR_F_READ_WAITING;
-		if (cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex) == 0) {
+		ret = cv_wait_sig(&cmp->cm_read_cv, &ccid->ccid_mutex);
+		cmp->cm_flags &= ~CCID_MINOR_F_READ_WAITING;
+		cv_signal(&cmp->cm_iowait_cv);
+
+		if (ret == 0) {
 			mutex_exit(&ccid->ccid_mutex);
 			return (EINTR);
 		}
-		cmp->cm_flags &= CCID_MINOR_F_READ_WAITING;
-		cv_signal(&cmp->cm_iowait_cv);
 
 		/*
 		 * Check if the reader has been removed. We do not need to check
@@ -4499,9 +4540,16 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	}
 
 	if (done) {
+		/*
+		 * XXX Commonize this with the I/O cleanup in
+		 * ccid_slot_excl_rele().
+		 */
 		freemsg(slot->cs_io.ci_data);
 		slot->cs_io.ci_data = NULL;
 		slot->cs_io.ci_errno = 0;
+		slot->cs_io.ci_flags &= ~CCID_IO_F_DONE;
+		slot->cs_io.ci_ilen = 0;
+		bzero(slot->cs_io.ci_ibuf, sizeof (slot->cs_io.ci_ibuf));
 		/* XXX Signal next write may be able to happen at this point */
 	}
 
@@ -4901,7 +4949,7 @@ ccid_close(dev_t dev, int flag, int otyp, cred_t *credp)
 	 * reset.
 	 */
 	mutex_enter(&slot->cs_ccid->ccid_mutex);
-	if (cmp->cm_flags & CCID_MINOR_F_HAS_EXCL) {
+	if ((cmp->cm_flags & CCID_MINOR_F_HAS_EXCL) != 0) {
 		cmp->cm_flags |= CCID_MINOR_F_TXN_RESET;
 		ccid_slot_excl_rele(slot);
 	}

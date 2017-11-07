@@ -133,7 +133,11 @@ t1_state_icc_init(t1_state_t *t1, atr_data_t *atr, size_t maxlen)
 void
 t1_state_icc_fini(t1_state_t *t1)
 {
-	VERIFY(0);
+	VERIFY(t1->t1_flags & T1_F_ICC_INIT);
+	VERIFY0(t1->t1_flags & T1_F_ALL_CMD_FLAGS);
+	VERIFY3P(t1->t1_reply_chain, ==, NULL);
+
+	bzero(t1, sizeof (*t1));
 }
 
 /*
