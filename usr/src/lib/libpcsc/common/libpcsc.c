@@ -16,10 +16,13 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <fts.h>
 #include <errno.h>
 #include <strings.h>
+#include <unistd.h>
 #include <sys/debug.h>
+#include <sys/usb/clients/ccid/uccid.h>
 
 #include <libpcsc.h>
 
@@ -27,9 +30,65 @@
  * Implementation of the PCSC library leveraging the uccid framework.
  */
 
+/* XXX This is just a token structure */
 typedef struct pcsc_hdl {
 	void *pcsc_foo;
 } pcsc_hdl_t;
+
+typedef struct pcsc_card {
+	int pcc_fd;
+} pcsc_card_t;
+
+const char *
+pcsc_stringify_error(const LONG err)
+{
+	switch (err) {
+	case SCARD_S_SUCCESS:
+		return ("no error");
+	case SCARD_F_INTERNAL_ERROR:
+		return ("internal error");
+	case SCARD_E_CANCELLED:
+		return ("request cancelled");
+	case SCARD_E_INVALID_HANDLE:
+		return ("invalid handle");
+	case SCARD_E_INVALID_PARAMETER:
+		return ("invalid parameter");
+	case SCARD_E_NO_MEMORY:
+		return ("no memory");
+	case SCARD_E_INSUFFICIENT_BUFFER:
+		return ("buffer was insufficiently sized");
+	case SCARD_E_INVALID_VALUE:
+		return ("invalid value passed");
+	case SCARD_E_UNKNOWN_READER:
+		return ("unknown reader");
+	case SCARD_E_TIMEOUT:
+		return ("timeout occurred");
+	case SCARD_E_SHARING_VIOLATION:
+		return ("sharing violation");
+	case SCARD_E_NO_SMARTCARD:
+		return ("no smartcard present");
+	case SCARD_E_UNKNOWN_CARD:
+		return ("unknown ICC");
+	case SCARD_E_PROTO_MISMATCH:
+		return ("protocol mismatch");
+	case SCARD_F_COMM_ERROR:
+		return ("communication error");
+	case SCARD_F_UNKNOWN_ERROR:
+		return ("unknown error");
+	case SCARD_E_NO_SERVICE:
+		return ("service error");
+	case SCARD_E_UNSUPPORTED_FEATURE:
+		return ("ICC requires unsupported feature");
+	case SCARD_E_NO_READERS_AVAILABLE:
+		return ("no readers avaiable");
+	case SCARD_W_UNSUPPORTED_CARD:
+		return ("ICC unsupported");
+	case SCARD_W_UNPOWERED_CARD:
+		return ("ICC is not powered");
+	default:
+		return ("unknown error");
+	}
+}
 
 
 /*
@@ -209,4 +268,107 @@ out:
 	free(readers);
 	(void) fts_close(fts);
 	return (ret);
+}
+
+LONG
+SCardConnect(SCARDCONTEXT hdl, LPCSTR reader, DWORD mode, DWORD prots,
+    LPSCARDHANDLE iccp, LPDWORD protp)
+{
+	int ret;
+	uccid_cmd_status_t ucs;
+	pcsc_card_t *card;
+
+	if (reader == NULL) {
+		return (SCARD_E_UNKNOWN_READER);
+	}
+
+	if (iccp == NULL || protp == NULL) {
+		return (SCARD_E_INVALID_PARAMETER);
+	}
+
+	if (mode != SCARD_SHARE_SHARED) {
+		return (SCARD_E_INVALID_VALUE);
+	}
+
+	if ((prots & ~(SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1 |
+	    SCARD_PROTOCOL_RAW | SCARD_PROTOCOL_T15)) != 0) {
+		return (SCARD_E_INVALID_VALUE);
+	}
+
+	if ((prots & (SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1)) == 0) {
+		return (SCARD_E_UNSUPPORTED_FEATURE);
+	}
+
+	if ((card = malloc(sizeof (*card))) == NULL) {
+		return (SCARD_E_NO_MEMORY);
+	}
+
+	if ((card->pcc_fd = open(reader, O_RDWR)) < 0) {
+		free(card);
+		switch (errno) {
+		case ENOENT:
+			return (SCARD_E_UNKNOWN_READER);
+		default:
+			return (SCARD_F_UNKNOWN_ERROR);
+		}
+	}
+
+	/*
+	 * Get the status of this slot and find out information about the slot.
+	 * We need to see if there's an ICC present and if it matches the
+	 * current protocol. If not, then we have to fail this.
+	 */
+	bzero(&ucs, sizeof (uccid_cmd_status_t));
+	ucs.ucs_version = UCCID_CURRENT_VERSION;
+	if (ioctl(card->pcc_fd, UCCID_CMD_STATUS, &ucs) != 0) {
+		ret = SCARD_F_UNKNOWN_ERROR;
+		goto cleanup;
+	}
+
+	if ((ucs.ucs_status & UCCID_STATUS_F_CARD_PRESENT) == 0) {
+		ret = SCARD_E_NO_SMARTCARD;
+		goto cleanup;
+	}
+
+	if ((ucs.ucs_status & UCCID_STATUS_F_CARD_ACTIVE) == 0) {
+		ret = SCARD_W_UNPOWERED_CARD;
+		goto cleanup;
+	}
+
+	if ((ucs.ucs_status & UCCID_STATUS_F_PARAMS_VALID) == 0) {
+		ret = SCARD_W_UNSUPPORTED_CARD;
+		goto cleanup;
+	}
+
+	if ((ucs.ucs_prot & prots) == 0) {
+		ret = SCARD_E_PROTO_MISMATCH;
+		goto cleanup;
+	}
+
+	return (SCARD_S_SUCCESS);
+cleanup:
+	(void) close(card->pcc_fd);
+	free(card);
+	return (ret);
+}
+
+LONG
+SCardDisconnect(SCARDHANDLE arg, DWORD disposition)
+{
+	pcsc_card_t *card = arg;
+
+	if (arg == NULL) {
+		return (SCARD_E_INVALID_HANDLE);
+	}
+
+	if (disposition != SCARD_LEAVE_CARD) {
+		return (SCARD_E_INVALID_VALUE);
+	}
+
+	if (close(card->pcc_fd) != 0) {
+		return (SCARD_F_UNKNOWN_ERROR);
+	}
+
+	free(card);
+	return (SCARD_S_SUCCESS);
 }

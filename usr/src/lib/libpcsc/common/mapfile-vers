@@ -34,7 +34,10 @@ SYMBOL_VERSION SUNWprivate {
 	SCardEstablishContext;
 	SCardReleaseContext;
 	SCardFreeMemory;
-	SCardListReaders;	
+	SCardListReaders;
+	SCardConnect;
+	SCardDisconnect;
+	pcsc_stringify_error;
     local:
 	*;
 };
