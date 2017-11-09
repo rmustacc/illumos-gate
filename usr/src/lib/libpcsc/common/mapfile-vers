@@ -37,6 +37,8 @@ SYMBOL_VERSION SUNWprivate {
 	SCardListReaders;
 	SCardConnect;
 	SCardDisconnect;
+	SCardBeginTransaction;
+	SCardEndTransaction;
 	pcsc_stringify_error;
     local:
 	*;

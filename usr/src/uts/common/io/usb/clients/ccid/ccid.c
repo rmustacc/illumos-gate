@@ -4803,6 +4803,7 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 		return (ENODEV);
 	}
 
+	/* XXX ENXIO may not be a good idea here */
 	if (slot->cs_excl_minor != cmp) {
 		mutex_exit(&slot->cs_ccid->ccid_mutex);
 		return (ENXIO);

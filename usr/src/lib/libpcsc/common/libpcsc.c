@@ -75,6 +75,8 @@ pcsc_stringify_error(const LONG err)
 		return ("communication error");
 	case SCARD_F_UNKNOWN_ERROR:
 		return ("unknown error");
+	case SCARD_E_READER_UNAVAILABLE:
+		return ("reader unavailable");
 	case SCARD_E_NO_SERVICE:
 		return ("service error");
 	case SCARD_E_UNSUPPORTED_FEATURE:
@@ -370,5 +372,90 @@ SCardDisconnect(SCARDHANDLE arg, DWORD disposition)
 	}
 
 	free(card);
+	return (SCARD_S_SUCCESS);
+}
+
+LONG
+SCardBeginTransaction(SCARDHANDLE arg)
+{
+	uccid_cmd_txn_begin_t txn;
+	pcsc_card_t *card = arg;
+
+	if (card == NULL) {
+		return (SCARD_E_INVALID_HANDLE);
+	}
+
+	/*
+	 * The semantics of pcsc are taht this operation does not block, but
+	 * instead fails if we cannot grab it immediately.
+	 */
+	bzero(&txn, sizeof (uccid_cmd_txn_begin_t));
+	txn.uct_version = UCCID_CURRENT_VERSION;
+	txn.uct_flags = UCCID_TXN_DONT_BLOCK;
+
+	if (ioctl(card->pcc_fd, UCCID_CMD_TXN_BEGIN, &txn) != 0) {
+		VERIFY3S(errno, !=, EFAULT);
+		switch (errno) {
+		case ENODEV:
+			return (SCARD_E_READER_UNAVAILABLE);
+		case EEXIST:
+			/*
+			 * This is an odd case. It's used to tell us that we
+			 * already ahve it. For now, just treat it as success.
+			 */
+			return (SCARD_S_SUCCESS);
+		case EBUSY:
+			return (SCARD_E_SHARING_VIOLATION);
+		/*
+		 * EINPROGRESS is a weird case. It means that we were tryign to
+		 * grab a hold while another instance using the same handle was.
+		 * For now, treat it as an unknown error.
+		 */
+		case EINPROGRESS:
+		case EINTR:
+		default:
+			return (SCARD_F_UNKNOWN_ERROR);
+		}
+	}
+	return (SCARD_S_SUCCESS);
+}
+
+LONG
+SCardEndTransaction(SCARDHANDLE arg, DWORD state)
+{
+	uccid_cmd_txn_end_t txn;
+	pcsc_card_t *card = arg;
+
+	if (card == NULL) {
+		return (SCARD_E_INVALID_HANDLE);
+	}
+
+	bzero(&txn, sizeof (uccid_cmd_txn_end_t));
+	txn.uct_version = UCCID_CURRENT_VERSION;
+
+	switch (state) {
+	case SCARD_LEAVE_CARD:
+		txn.uct_flags = UCCID_TXN_END_RELEASE;
+		break;
+	case SCARD_RESET_CARD:
+	       txn.uct_flags = UCCID_TXN_END_RESET;
+	       break;
+	case SCARD_UNPOWER_CARD:
+	case SCARD_EJECT_CARD:
+	default:
+		return (SCARD_E_INVALID_VALUE);
+	}
+
+	if (ioctl(card->pcc_fd, UCCID_CMD_TXN_END, &txn) != 0) {
+		VERIFY3S(errno, !=, EFAULT);
+		switch (errno) {
+		case ENODEV:
+			return (SCARD_E_READER_UNAVAILABLE);
+		case ENXIO:
+			return (SCARD_E_SHARING_VIOLATION);
+		default:
+			return (SCARD_F_UNKNOWN_ERROR);
+		}
+	}
 	return (SCARD_S_SUCCESS);
 }
