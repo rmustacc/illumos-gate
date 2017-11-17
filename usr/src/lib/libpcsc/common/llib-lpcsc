@@ -16,4 +16,5 @@
 /* LINTLIBRARY */
 /* PROTOLIB1 */
 
-#include <libpcsc.h>
+#include <wintypes.h>
+#include <winscard.h>

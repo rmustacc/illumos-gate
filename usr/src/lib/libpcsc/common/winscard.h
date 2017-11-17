@@ -13,8 +13,8 @@
  * Copyright (c) 2017 Joyent, Inc.
  */
 
-#ifndef _LIBPCSC_H
-#define	_LIBPCSC_H
+#ifndef _WINSCARD_H
+#define	_WINSCARD_H
 
 /*
  * This library provides a compatability interface with programs designed
@@ -27,23 +27,11 @@
  */
 
 #include <stdint.h>
+#include <wintypes.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/*
- * While we don't want to, this expects that we have Win32 style type names.
- * Deal with conversions between Win32 and reality. Remember that Windows is an
- * ILP32 system, but it is a LLP64 system.
- */
-
-typedef const void *LPCVOID;
-typedef uint32_t DWORD;
-typedef uint32_t *LPDWORD;
-typedef int32_t	LONG;
-typedef char *LPSTR;
-typedef const char *LPCSTR;
 
 /*
  * This is a departure from the PCSC system which treats this as a LONG. We
@@ -57,8 +45,24 @@ typedef void **PSCARDHANDLE;
 typedef void **LPSCARDHANDLE;
 
 /*
+ * Convenentionally this is suppsoed to be packed.
+ */
+#pragma pack(1)
+typedef struct {
+	unsigned long dwProtocol;
+	unsigned long cbPciLength;
+} SCARD_IO_REQUEST, *PSCARD_IO_REQUEST, *LPSCARD_IO_REQUEST;
+#pragma pack()
+
+extern SCARD_IO_REQUEST g_rgSCardT0Pci, g_rgSCardT1Pci, g_rgSCardRawPci;
+#define	SCARD_PCI_T0	(&g_rgSCardT0Pci)
+#define	SCARD_PCI_T1	(&g_rgSCardT1Pci)
+#define	SCARD_PCI_RAW	(&g_rgSCardRawPci)
+
+/*
  * Return values and error codes. We strive to use the same error codes as
  * Microsoft. Right now we only have the values 
+ * XXX These should all be cast to a long
  */
 #define	SCARD_S_SUCCESS			0x00000000
 #define	SCARD_F_INTERNAL_ERROR		0x80100001
@@ -82,6 +86,8 @@ typedef void **LPSCARDHANDLE;
 #define	SCARD_E_NO_READERS_AVAILABLE	0x8010002E
 #define	SCARD_W_UNSUPPORTED_CARD	0x80100065
 #define	SCARD_W_UNPOWERED_CARD		0x80100067
+#define	SCARD_W_RESET_CARD   		0x80100068
+#define	SCARD_W_REMOVED_CARD		0x80100069
 
 #define	SCARD_SCOPE_USER		0x0000
 #define	SCARD_SCOPE_TERMINAL		0x0001
@@ -120,9 +126,15 @@ extern LONG SCardDisconnect(SCARDHANDLE, DWORD);
 
 extern LONG SCardBeginTransaction(SCARDHANDLE);
 extern LONG SCardEndTransaction(SCARDHANDLE, DWORD);
+extern LONG SCardReconnect(SCARDHANDLE, DWORD, DWORD, DWORD, LPDWORD);
+
+extern LONG SCardTransmit(SCARDHANDLE, const SCARD_IO_REQUEST *, LPCBYTE,
+    DWORD, SCARD_IO_REQUEST *, LPBYTE, LPDWORD) ;
+
+extern const char *pcsc_stringify_error (const LONG);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* _LIBPCSC_H */
+#endif /* _WINSCARD_H */

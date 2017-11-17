@@ -31,6 +31,9 @@ $mapfile_version 2
 
 SYMBOL_VERSION SUNWprivate {
     global:
+	g_rgSCardRawPci;
+	g_rgSCardT0Pci;
+	g_rgSCardT1Pci;
 	SCardEstablishContext;
 	SCardReleaseContext;
 	SCardFreeMemory;
@@ -39,6 +42,8 @@ SYMBOL_VERSION SUNWprivate {
 	SCardDisconnect;
 	SCardBeginTransaction;
 	SCardEndTransaction;
+	SCardReconnect;
+	SCardTransmit;
 	pcsc_stringify_error;
     local:
 	*;

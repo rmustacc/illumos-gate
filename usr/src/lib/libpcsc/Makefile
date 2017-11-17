@@ -15,7 +15,7 @@
 
 include		../Makefile.lib
 
-HDRS =		libpcsc.h
+HDRS =		wintypes.h winscard.h
 HDRDIR =	common
 SUBDIRS =	$(MACH)
 $(BUILD64)SUBDIRS +=	$(MACH64)

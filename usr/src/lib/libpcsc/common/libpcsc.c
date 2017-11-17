@@ -22,9 +22,10 @@
 #include <strings.h>
 #include <unistd.h>
 #include <sys/debug.h>
+#include <sys/filio.h>
 #include <sys/usb/clients/ccid/uccid.h>
 
-#include <libpcsc.h>
+#include <winscard.h>
 
 /*
  * Implementation of the PCSC library leveraging the uccid framework.
@@ -38,6 +39,24 @@ typedef struct pcsc_hdl {
 typedef struct pcsc_card {
 	int pcc_fd;
 } pcsc_card_t;
+
+/*
+ * Required globals
+ */
+SCARD_IO_REQUEST g_rgSCardT0Pci = {
+	SCARD_PROTOCOL_T0,
+	0
+};
+
+SCARD_IO_REQUEST g_rgSCardT1Pci = {
+	SCARD_PROTOCOL_T1,
+	0
+};
+
+SCARD_IO_REQUEST g_rgSCardRawPci = {
+	SCARD_PROTOCOL_RAW,
+	0
+};
 
 const char *
 pcsc_stringify_error(const LONG err)
@@ -87,6 +106,10 @@ pcsc_stringify_error(const LONG err)
 		return ("ICC unsupported");
 	case SCARD_W_UNPOWERED_CARD:
 		return ("ICC is not powered");
+	case SCARD_W_RESET_CARD:
+		return ("ICC was reset");
+	case SCARD_W_REMOVED_CARD:
+		return ("ICC has been removed");
 	default:
 		return ("unknown error");
 	}
@@ -216,6 +239,7 @@ SCardListReaders(SCARDCONTEXT unused, LPCSTR groups, LPSTR bufp, LPDWORD lenp)
 		}
 		readers[npaths] = strdup(ent->fts_path);
 		npaths++;
+		len += plen;
 	}
 
 	if (npaths == 0) {
@@ -347,6 +371,8 @@ SCardConnect(SCARDCONTEXT hdl, LPCSTR reader, DWORD mode, DWORD prots,
 		goto cleanup;
 	}
 
+	*protp = ucs.ucs_prot;
+	*iccp = card;
 	return (SCARD_S_SUCCESS);
 cleanup:
 	(void) close(card->pcc_fd);
@@ -457,5 +483,146 @@ SCardEndTransaction(SCARDHANDLE arg, DWORD state)
 			return (SCARD_F_UNKNOWN_ERROR);
 		}
 	}
+	return (SCARD_S_SUCCESS);
+}
+
+LONG
+SCardReconnect(SCARDHANDLE arg, DWORD mode, DWORD prots, DWORD init, LPDWORD protp)
+{
+	uccid_cmd_status_t ucs;
+	pcsc_card_t *card = arg;
+
+	if (card == NULL) {
+		return (SCARD_E_INVALID_HANDLE);
+	}
+
+	if (protp == NULL) {
+		return (SCARD_E_INVALID_PARAMETER);
+	}
+
+	if (mode != SCARD_SHARE_SHARED) {
+		return (SCARD_E_INVALID_VALUE);
+	}
+
+	if ((prots & ~(SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1 |
+	    SCARD_PROTOCOL_RAW | SCARD_PROTOCOL_T15)) != 0) {
+		return (SCARD_E_INVALID_VALUE);
+	}
+
+	if ((prots & (SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1)) == 0) {
+		return (SCARD_E_UNSUPPORTED_FEATURE);
+	}
+
+	if (init != SCARD_LEAVE_CARD) {
+		return (SCARD_E_INVALID_VALUE);
+	}
+
+	/*
+	 * Get the status of this slot and find out information about the slot.
+	 * We need to see if there's an ICC present and if it matches the
+	 * current protocol. If not, then we have to fail this.
+	 */
+	bzero(&ucs, sizeof (uccid_cmd_status_t));
+	ucs.ucs_version = UCCID_CURRENT_VERSION;
+	if (ioctl(card->pcc_fd, UCCID_CMD_STATUS, &ucs) != 0) {
+		return (SCARD_F_UNKNOWN_ERROR);
+	}
+
+	if ((ucs.ucs_status & UCCID_STATUS_F_CARD_PRESENT) == 0) {
+		return (SCARD_W_REMOVED_CARD);
+	}
+
+	if ((ucs.ucs_status & UCCID_STATUS_F_CARD_ACTIVE) == 0) {
+		return (SCARD_W_UNPOWERED_CARD);
+	}
+
+	if ((ucs.ucs_status & UCCID_STATUS_F_PARAMS_VALID) == 0) {
+		return (SCARD_W_UNSUPPORTED_CARD);
+	}
+
+	if ((ucs.ucs_prot & prots) == 0) {
+		return (SCARD_E_PROTO_MISMATCH);
+	}
+
+	*protp = ucs.ucs_prot;
+	return (SCARD_S_SUCCESS);
+}
+
+LONG SCardTransmit(SCARDHANDLE arg, const SCARD_IO_REQUEST *sendreq,
+    LPCBYTE sendbuf, DWORD sendlen, SCARD_IO_REQUEST *recvreq, LPBYTE recvbuf,
+    LPDWORD recvlenp) 
+{
+	int len;
+	ssize_t ret;
+	pcsc_card_t *card = arg;
+
+	if (card == NULL) {
+		return (SCARD_E_INVALID_HANDLE);
+	}
+
+	/*
+	 * Ignore sendreq / recvreq.
+	 */
+	if (sendbuf == NULL || recvbuf == NULL || recvlenp == NULL) {
+		return (SCARD_E_INVALID_PARAMETER);
+	}
+
+	/*
+	 * The CCID write will always consume all data or none.
+	 */
+	ret = write(card->pcc_fd, sendbuf, sendlen);
+	if (ret == -1) {
+		switch (errno) {
+		case E2BIG:
+			return (SCARD_E_INVALID_PARAMETER);
+		case ENODEV:
+			return (SCARD_E_READER_UNAVAILABLE);
+		case EACCES:
+		case EBUSY:
+			return (SCARD_E_SHARING_VIOLATION);
+		case ENXIO:
+			return (SCARD_W_REMOVED_CARD);
+		case EFAULT:
+			return (SCARD_E_INVALID_PARAMETER);
+		case ENOMEM:
+		default:
+			return (SCARD_F_UNKNOWN_ERROR);
+		}
+	}
+	ASSERT3S(ret, ==, sendlen);
+
+	/*
+	 * Now, we should be able to block in read.
+	 */
+	ret = read(card->pcc_fd, recvbuf, *recvlenp);
+	if (ret == -1) {
+		switch (errno) {
+		case EINVAL:
+		case EOVERFLOW:
+			/*
+			 * This means that we need to update len with the real
+			 * one.
+			 */
+			if (ioctl(card->pcc_fd, FIONREAD, &len) != 0) {
+				return (SCARD_F_UNKNOWN_ERROR);
+			}
+			*recvlenp = len;
+			return (SCARD_E_INSUFFICIENT_BUFFER);
+		case ENODEV:
+			return (SCARD_E_READER_UNAVAILABLE);
+		case EACCES:
+		case EBUSY:
+			return (SCARD_E_SHARING_VIOLATION);
+		case EFAULT:
+			return (SCARD_E_INVALID_PARAMETER);
+		case ENODATA:
+			/* XXX */
+		default:
+			return (SCARD_F_UNKNOWN_ERROR);
+		}
+	}
+
+	*recvlenp = ret;
+
 	return (SCARD_S_SUCCESS);
 }
