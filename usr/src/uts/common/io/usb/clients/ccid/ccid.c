@@ -390,6 +390,7 @@
 #include <sys/stream.h>
 #include <sys/strsun.h>
 #include <sys/strsubr.h>
+#include <sys/filio.h>
 
 #define	USBDRV_MAJOR_VER	2
 #define	USBDRV_MINOR_VER	0
@@ -4161,10 +4162,12 @@ ccid_complete_tpdu_t1(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	ccid_command_bcopy(cc, buf, len);
 
 	/*
-	 * Now, finally drop the lock to queue the command.
+	 * Now, finally drop the lock to queue the command and mark that this is
+	 * our current command.
 	 *
 	 * XXX We should probably put the preparing flag here.
 	 */
+	slot->cs_io.ci_command = cc;
 	mutex_exit(&ccid->ccid_mutex);
 
 	if ((ret = ccid_command_queue(ccid, cc)) != 0) {
@@ -4820,6 +4823,50 @@ ccid_ioctl_txn_end(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
 }
 
 static int
+ccid_ioctl_fionread(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode)
+{
+	int data;
+
+	mutex_enter(&slot->cs_ccid->ccid_mutex);
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
+	if (!(cmp->cm_flags & CCID_MINOR_F_HAS_EXCL)) {
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		return (EACCES);
+	}
+
+	if ((slot->cs_io.ci_flags & CCID_IO_F_DONE) != 0) {
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		return (ENODATA);
+	}
+
+	/*
+	 * If there's an error, claim that there's at least one byte to read
+	 * even if it means we'll get the error and consume it. FIONREAD only
+	 * allows up to an int of data. Realistically because we don't allow
+	 * extended APDUs, the amount of data here should be always less than
+	 * INT_MAX.
+	 */
+	if (slot->cs_io.ci_errno != 0) {
+		data = 1;
+	} else {
+		size_t s = msgsize(slot->cs_io.ci_data);
+		data = MIN(s, INT_MAX);
+	}
+
+	if (ddi_copyout(&data, (void *)arg, sizeof (data), mode & FKIOCTL) != 0) {
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		return (EFAULT);
+	}
+
+	mutex_exit(&slot->cs_ccid->ccid_mutex);
+	return (0);
+}
+
+static int
 ccid_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp, int
     *rvalp)
 {
@@ -4846,6 +4893,8 @@ ccid_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp, int
 		return (ccid_ioctl_txn_end(slot, cmp, arg, mode));
 	case UCCID_CMD_STATUS:
 		return (ccid_ioctl_status(slot, arg, mode));
+	case FIONREAD:
+		return (ccid_ioctl_fionread(slot, cmp, arg, mode));
 	default:
 		break;
 	}
