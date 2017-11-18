@@ -2558,25 +2558,16 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 
 	/*
 	 * We need to check if the reader supports the protocols supported by
-	 * the ICC. If it does not, then we cannot use this ICC.
+	 * the ICC. If it does not, then we cannot use this ICC. If the reader
+	 * uses an APDU mode, then we do not enforce this restriction. This is
+	 * because some NFC readers that support APDU end up lying about the
+	 * protocols supported and the ATRs.
 	 */
-	if (usable == 0) {
+	if ((ccid->ccid_class.ccd_dwFeatures & (CCID_CLASS_F_SHORT_APDU_XCHG |
+	    CCID_CLASS_F_EXT_APDU_XCHG)) == 0 && usable == 0) {
 		ccid_error(ccid, "!reader and ICC do not support common "
 		    "protocols, reader 0x%x, ICC 0x%x\n",
 		    ccid->ccid_class.ccd_dwProtocols, sup);
-		return (B_FALSE);
-	}
-
-	/*
-	 * If we encounter an ICC that needs manual setting of the frequency and
-	 * data rates, we don't support that at this time. Warn about that fact.
-	 * When we do support this, this should be folded into the general
-	 * parameter logic detection as it will be driven based on
-	 * atr_data_rate().
-	 */
-	if ((ccid->ccid_flags & CCID_F_NEEDS_DATAFREQ) != 0) {
-		ccid_error(ccid, "!ccid reader requires unsupproted manual "
-		    "clock and data rate settings, failing to activate ICC");
 		return (B_FALSE);
 	}
 
@@ -2588,14 +2579,30 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 	 * If the card has automatic parameter negotiation according to various
 	 * specifications, then we don't bother trying to change the protocol
 	 * and thus we don't enter this if block.
+	 *
+	 * If we need to manually set the data and frequency, see if the ATR
+	 * logic allows us to. If not, then there's nothing that we can really
+	 * do.
 	 */
-	if ((ccid->ccid_flags & (CCID_F_NEEDS_PPS | CCID_F_NEEDS_PARAMS)) != 0) {
+	if ((ccid->ccid_flags & (CCID_F_NEEDS_PPS | CCID_F_NEEDS_PARAMS |
+	    CCID_F_NEEDS_DATAFREQ)) != 0) {
 		atr_data_rate_choice_t rate;
 		uint8_t fi, di;
 		boolean_t changeprot;
 
-		fi = atr_fi_index(data);
-		di = atr_di_index(data);
+		/*
+		 * In the future, here is where we should gather and use the
+		 * discrete data rate and clocks and make sure that we have them
+		 * (or have already done so when we first loaded the reader).
+		 */
+		if ((ccid->ccid_flags & CCID_F_NEEDS_DATAFREQ) != 0 &&
+		    (ccid->ccid_class.ccd_bNumClockSupported != 0 ||
+		    ccid->ccid_class.ccd_bNumDataRatesSupported != 0)) {
+			ccid_error(ccid, "!fetching discrete clocks and data "
+			    "rates is not supported, reader will be limited to "
+			    "the default clock and data rate");
+		}
+
 		rate = atr_data_rate(data, &ccid->ccid_class, NULL, 0, NULL);
 		switch (rate) {
 		case ATR_RATE_UNSUPPORTED:
@@ -2607,8 +2614,14 @@ ccid_slot_params_init(ccid_t *ccid, ccid_slot_t *slot, mblk_t *atr)
 			di = atr_fi_default_index();
 			break;
 		case ATR_RATE_USEATR:
+			fi = atr_fi_index(data);
+			di = atr_di_index(data);
 			break;
 		case ATR_RATE_USEATR_SETRATE:
+			/*
+			 * This case covers the times when CCID_F_NEEDS_DATAFREQ
+			 * is set and we'd need to gather those.
+			 */
 			ccid_error(ccid, "!ccid driver does not support "
 			    "manual data rate setting for ICC, cannot activate");
 			return (B_FALSE);

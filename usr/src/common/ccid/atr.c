@@ -1057,8 +1057,6 @@ atr_data_rate(atr_data_t *data, ccid_class_descr_t *class, uint32_t *rates,
 	    (uint64_t)class->ccd_dwMaxDataRate > defval) {
 		if (autospeed) {
 			return (ATR_RATE_USEATR);
-		} else {
-			return (ATR_RATE_UNSUPPORTED);
 		}
 	}
 
