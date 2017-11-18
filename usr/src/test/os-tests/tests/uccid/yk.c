@@ -64,13 +64,13 @@ main(int argc, char *argv[])
 		err(EXIT_FAILURE, "failed to read data");
 	}
 
-	printf("read %d bytes\n", ret);
+	(void) printf("read %d bytes\n", ret);
 	for (i = 0; i < ret; i++) {
-		printf("%02x", buf[i]);
+		(void) printf("%02x", buf[i]);
 		if (i == (ret - 1) || (i % 16) == 15) {
-			printf("\n");
+			(void) printf("\n");
 		} else {
-			printf(" ");
+			(void) printf(" ");
 		}
 	}
 

@@ -35,6 +35,8 @@ PROGS = 		\
 COMMON_OBJS = \
 	atr.o
 
+LNPROGS = $(PROGS:%=%.ln)
+
 include $(SRC)/cmd/Makefile.cmd
 include $(SRC)/test/Makefile.com
 
@@ -47,7 +49,7 @@ all: $(PROGS) $(PARITYPROGS)
 
 install: all $(CMDS)
 
-lint: lint_SRCS
+lint: $(LNPROGS)
 
 clobber: clean
 	-$(RM) $(PROGS) $(PARITYPROGS)
@@ -66,6 +68,9 @@ clean:
 %: %.o
 	$(LINK.c) -o $@ $< $(EXTRA_OBJS)
 	$(POST_PROCESS)
+
+%.ln: %
+	$(LINT.c) $<.c $(LDLIBS)
 
 $(PROGS): $(COMMON_OBJS)
 
