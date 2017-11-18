@@ -191,7 +191,7 @@ typedef enum atr_ti_flags {
 	ATR_TI_HAVE_TA	= 1 << 0,
 	ATR_TI_HAVE_TB	= 1 << 1,
 	ATR_TI_HAVE_TC	= 1 << 2,
-	ATR_TI_HAVE_TD	= 1 << 3,
+	ATR_TI_HAVE_TD	= 1 << 3
 } atr_ti_flags_t;
 
 typedef struct atr_ti {
@@ -209,7 +209,7 @@ typedef enum atr_flags {
 	ATR_F_USES_DIRECT	= 1 << 0,
 	ATR_F_USES_INVERSE	= 1 << 1,
 	ATR_F_HAS_CHECKSUM	= 1 << 2,
-	ATR_F_VALID		= 1 << 3,
+	ATR_F_VALID		= 1 << 3
 } atr_flags_t;
 
 
@@ -409,13 +409,11 @@ atr_protocol_to_string(atr_protocol_t prot)
 
 	if ((prot & ATR_P_T0) == ATR_P_T0) {
 		return ("T=0");
-	} else if (prot & ATR_P_T1) {
+	} else if ((prot & ATR_P_T1) == ATR_P_T1) {
 		return ("T=1");
 	} else {
 		return ("T=0, T=1");
 	}
-
-	return ("<invalid protocol>");
 }
 
 const char *
@@ -996,6 +994,7 @@ atr_t1_ifsc(atr_data_t *data)
  * the kernel (and this is shared). Importantly that means only integers are
  * allowed here.
  */
+/* ARGSUSED */
 atr_data_rate_choice_t
 atr_data_rate(atr_data_t *data, ccid_class_descr_t *class, uint32_t *rates,
     uint_t nrates, uint32_t *dataratep)

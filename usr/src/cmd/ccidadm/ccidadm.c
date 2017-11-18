@@ -280,10 +280,15 @@ static ofmt_field_t ccidadm_list_fields[] = {
 	{ NULL,		0,	0,			NULL	}
 };
 
+/* ARGSUSED */
 static void
 ccidadm_do_list(int argc, char *argv[])
 {
 	ofmt_handle_t ofmt;
+
+	if (argc != 0) {
+		errx(EXIT_USAGE, "list command does not take arguments\n");
+	}
 
 	if (ofmt_open(NULL, ccidadm_list_fields, 0, 0, &ofmt) != OFMT_SUCCESS) {
 		errx(EXIT_FAILURE, "failed to initialize ofmt state");
@@ -569,8 +574,10 @@ ccidadm_do_atr(int argc, char *argv[])
 			break;
 		case ':':
 			errx(EXIT_USAGE, "Option -%c requires an argument\n", optopt);
+			break;
 		case '?':
 			errx(EXIT_USAGE, "Unknown option: -%c\n", optopt);
+			break;
 		}
 	}
 
@@ -604,7 +611,7 @@ ccidadm_do_atr(int argc, char *argv[])
 static void
 ccidadm_atr_usage(FILE *out)
 {
-	(void) fprintf(stderr, "\tatr [-pvx]\t[device] ...\n");
+	(void) fprintf(out, "\tatr [-pvx]\t[device] ...\n");
 }
 
 static void
@@ -670,6 +677,7 @@ static ccidadm_pair_t ccidadm_p_pin[] = {
 	{ 0x0, NULL }
 };
 
+/* ARGSUSED */
 static void
 ccidadm_reader_print(int fd, const char *name, void *unused)
 {
