@@ -78,7 +78,7 @@ main(int argc, char *argv[])
 	bzero(&to, sizeof (timespec_t));
 	if (port_get(port, &pe, &to) != 0) {
 		err(EXIT_FAILURE, "failed to port_get()");
-	} 
+	}
 
 	VERIFY3S(pe.portev_source, ==, PORT_SOURCE_FD);
 	VERIFY3S(pe.portev_object, ==, fd);
