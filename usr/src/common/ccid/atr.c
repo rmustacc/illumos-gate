@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc. 
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 /*
@@ -61,7 +61,7 @@
  * of pre-defined global bytes that may be present.
  */
 #define	ATR_TD_PROT(x)	((x) & 0x0f)
-#define	ATR_TD_NBITS(x)	(((x) & 0xf0) >> 4) 
+#define	ATR_TD_NBITS(x)	(((x) & 0xf0) >> 4)
 #define	ATR_TA_MASK	0x1
 #define	ATR_TB_MASK	0x2
 #define	ATR_TC_MASK	0x4
@@ -487,7 +487,7 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 	 */
 	bzero(data, sizeof (atr_data_t));
 
-	if (len < ATR_LEN_MIN) { 
+	if (len < ATR_LEN_MIN) {
 		return (ATR_CODE_TOO_SHORT);
 	}
 
@@ -521,9 +521,9 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 	 * Ti is used to track the current iteration of T[A,B,C,D] that we are
 	 * on, as the ISO/IEC standard suggests. The way that values are
 	 * interpretted depends on the value of Ti.
-	 * 
-	 * When Ti is one, TA, TB, and TC represent global properties. TD's protocol
-	 * represents the preferred protocol.
+	 *
+	 * When Ti is one, TA, TB, and TC represent global properties. TD's
+	 * protocol represents the preferred protocol.
 	 *
 	 * When Ti is two TA, TB, and TC also represent global properties.
 	 * However, TC only has meaning if the protocol is T=0.
@@ -560,7 +560,7 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 		 * At the moment we opt to ignore reserved protocols.
 		 */
 		atp->atrti_protocol = prot;
-		atp->atrti_ti_val = Ti;	
+		atp->atrti_ti_val = Ti;
 		atp->atrti_td_idx = idx - 1;
 
 		if (cbits & ATR_TA_MASK) {
@@ -861,8 +861,10 @@ atr_t1_cwi(atr_data_t *data)
 
 	for (i = 2; i < data->atr_nti; i++) {
 		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T1) {
-			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TB) != 0) {
-				return (ATR_T1_TB0_CWI(data->atr_ti[i].atrti_tb));
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TB) !=
+			    0) {
+				uint8_t tb = data->atr_ti[i].atrti_tb;
+				return (ATR_T1_TB0_CWI(tb));
 			}
 
 			return (ATR_T1_CWI_DEFAULT);
@@ -879,8 +881,10 @@ atr_clock_stop(atr_data_t *data)
 
 	for (i = 0; i < data->atr_nti; i++) {
 		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T15) {
-			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TA) != 0) {
-				return (ATR_T15_TA0_CLOCK(data->atr_ti[i].atrti_ta));
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TA) !=
+			    0) {
+				uint8_t ta = data->atr_ti[i].atrti_ta;
+				return (ATR_T15_TA0_CLOCK(ta));
 			}
 
 			return (ATR_CLOCK_STOP_NONE);
@@ -901,7 +905,8 @@ atr_t1_checksum(atr_data_t *data)
 
 	for (i = 2; i < data->atr_nti; i++) {
 		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T1) {
-			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TC) != 0) {
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TC) !=
+			    0) {
 				if (ATR_T1_TC0_CRC(data->atr_ti[i].atrti_tc)) {
 					return (ATR_T1_CHECKSUM_CRC);
 				} else {
@@ -928,8 +933,10 @@ atr_t1_bwi(atr_data_t *data)
 
 	for (i = 2; i < data->atr_nti; i++) {
 		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T1) {
-			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TB) != 0) {
-				return (ATR_T1_TB0_BWI(data->atr_ti[i].atrti_tb));
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TB) !=
+			    0) {
+				uint8_t tb = data->atr_ti[i].atrti_tb;
+				return (ATR_T1_TB0_BWI(tb));
 			}
 
 			return (ATR_T1_BWI_DEFAULT);
@@ -950,7 +957,8 @@ atr_t1_ifsc(atr_data_t *data)
 
 	for (i = 2; i < data->atr_nti; i++) {
 		if (data->atr_ti[i].atrti_protocol == ATR_PROTOCOL_T1) {
-			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TA) != 0) {
+			if ((data->atr_ti[i].atrti_flags & ATR_TI_HAVE_TA) !=
+			    0) {
 				return (data->atr_ti[i].atrti_ta);
 			}
 
@@ -973,7 +981,7 @@ atr_t1_ifsc(atr_data_t *data)
  * ICC clock frequency change, then we use the _maximum_ rate. Otherwise we will
  * indicate that we can use the ATR's properties, but will require changing the
  * default data rate.
- * 
+ *
  * Now, some ICC devices are not negotiable. In those cases, we'll see if we can
  * fit it in with either the default or maximum data rates. If not, then we'll
  * not be able to support this card.
@@ -1202,8 +1210,8 @@ atr_pps_valid(void *reqbuf, size_t reqlen, void *respbuf, size_t resplen)
 }
 
 uint_t
-atr_pps_generate(uint8_t *buf, size_t buflen, atr_protocol_t prot, boolean_t pps1,
-    uint8_t fi, uint8_t di, boolean_t pps2, uint8_t spu)
+atr_pps_generate(uint8_t *buf, size_t buflen, atr_protocol_t prot,
+    boolean_t pps1, uint8_t fi, uint8_t di, boolean_t pps2, uint8_t spu)
 {
 	uint8_t protval, cksum, i;
 	uint_t len = 0;
@@ -1534,7 +1542,8 @@ atr_data_dump(atr_data_t *data, FILE *out)
 		 */
 		if (i <= 2) {
 			level = 0;
-		} else if (atp->atrti_protocol == data->atr_ti[i - 1].atrti_protocol) {
+		} else if (atp->atrti_protocol ==
+		    data->atr_ti[i - 1].atrti_protocol) {
 			level++;
 		} else {
 			level = 0;
@@ -1545,12 +1554,15 @@ atr_data_dump(atr_data_t *data, FILE *out)
 		} else {
 			(void) fprintf(out, "TD%u ", i);
 		}
-		(void) fprintf(out, "0x%02x\n", data->atr_raw[atp->atrti_td_idx]);
+		(void) fprintf(out, "0x%02x\n",
+		    data->atr_raw[atp->atrti_td_idx]);
 		(void) fprintf(out, "      |+-> ");
 		if (i == 0) {
-			(void) fprintf(out, "%u historical bytes\n", data->atr_nhistoric);
+			(void) fprintf(out, "%u historical bytes\n",
+			    data->atr_nhistoric);
 		} else {
-			(void) fprintf(out, "protocol T=%u\n", atp->atrti_protocol);
+			(void) fprintf(out, "protocol T=%u\n",
+			    atp->atrti_protocol);
 		}
 		(void) fprintf(out, "      v\n");
 		(void) fprintf(out, " 0r%u%u%u%u\n",

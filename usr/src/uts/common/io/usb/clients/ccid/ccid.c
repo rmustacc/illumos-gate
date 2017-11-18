@@ -4479,9 +4479,8 @@ ccid_read(dev_t dev, struct uio *uiop, cred_t *credp)
 	/*
 	 * If there's been no write I/O issued, then this read is not allowed.
 	 * While this may seem like a silly constraint, it certainly simplifies
-	 * a lot of the surrounding logic.
-	 *
-	 * XXX This is a stupid errno.
+	 * a lot of the surrounding logic and fits with the current consumer
+	 * model.
 	 */
 	if ((slot->cs_io.ci_flags & (CCID_IO_F_IN_PROGRESS | CCID_IO_F_DONE)) == 0) {
 		mutex_exit(&ccid->ccid_mutex);

@@ -116,7 +116,7 @@ t1_state_icc_init(t1_state_t *t1, atr_data_t *atr, size_t maxlen)
 	 * CCID header length and the length of a t1 prologue and epilogue.
 	 * The length field for a T1 header is a uint8_t. Therefore, if the
 	 * card's size is larger for some reason, we further shrink that amount
-	 * to fit within 
+	 * to fit within our constraints.
 	 */
 	csz = maxlen - sizeof (ccid_header_t) - t1len;
 	if (csz > T1_SIZE_MAX)
@@ -287,14 +287,15 @@ t1_validate_hdr(t1_state_t *t1, const void *buf, size_t len,
     t1_block_type_t *typep)
 {
 	uint8_t seq;
-	const t1_hdr_t *hdr; 
+	const t1_hdr_t *hdr;
 
 	/*
 	 * Do we have enough data to cover the protocol prologue and epilogue?
 	 */
 	if (len < t1->t1_protlen) {
 		return (t1_invalid(t1, T1_VALIDATE_SHORT, "data payload (%ld) "
-		    "less than required protocol length (%u)", len, t1->t1_protlen));
+		    "less than required protocol length (%u)", len,
+		    t1->t1_protlen));
 	}
 
 	/*
@@ -406,9 +407,9 @@ t1_validate_hdr(t1_state_t *t1, const void *buf, size_t len,
 		}
 
 		if (explen != hdr->t1h_len) {
-			return (t1_invalid(t1, T1_VALIDATE_BAD_LEN, "header length "
-			    "value (%d) does not match length required for S-block (%d)",
-			    hdr->t1h_len, explen));
+			return (t1_invalid(t1, T1_VALIDATE_BAD_LEN, "header "
+			    "length value (%d) does not match length required "
+			    "for S-block (%d)", hdr->t1h_len, explen));
 		}
 	} else {
 		return (t1_invalid(t1, T1_VALIDATE_BAD_PCB, "received invalid "
@@ -429,17 +430,19 @@ t1_validate_hdr(t1_state_t *t1, const void *buf, size_t len,
  * sblock, that it's the right op, and the value.
  */
 static t1_validate_t
-t1_validate_sblock(t1_state_t *t1, const void *buf, size_t len, t1_sblock_op_t op)
+t1_validate_sblock(t1_state_t *t1, const void *buf, size_t len,
+    t1_sblock_op_t op)
 {
 	uint8_t explen;
-	const t1_hdr_t *hdr; 
+	const t1_hdr_t *hdr;
 
 	/*
 	 * Do we have enough data to cover the protocol prologue and epilogue?
 	 */
 	if (len < t1->t1_protlen) {
 		return (t1_invalid(t1, T1_VALIDATE_SHORT, "data payload (%ld) "
-		    "less than required protocol length (%u)", len, t1->t1_protlen));
+		    "less than required protocol length (%u)", len,
+		    t1->t1_protlen));
 	}
 
 	/*
@@ -490,8 +493,8 @@ t1_validate_sblock(t1_state_t *t1, const void *buf, size_t len, t1_sblock_op_t o
 
 	if (explen != hdr->t1h_len) {
 		return (t1_invalid(t1, T1_VALIDATE_BAD_LEN, "header length "
-		    "value (%d) does not match length required for S-block (%d)",
-		    hdr->t1h_len, explen));
+		    "value (%d) does not match length required for S-block "
+		    "(%d)", hdr->t1h_len, explen));
 	}
 
 	if (hdr->t1h_len + t1->t1_protlen != len) {
@@ -513,7 +516,8 @@ t1_ifsd_resp(t1_state_t *t1, const void *buf, size_t len)
 	t1_validate_t t;
 	const t1_hdr_t *reqhdr, *resphdr;
 
-	if ((t = t1_validate_sblock(t1, buf, len, T1_SBLOCK_RESP_IFS)) != T1_VALIDATE_OK) {
+	if ((t = t1_validate_sblock(t1, buf, len, T1_SBLOCK_RESP_IFS)) !=
+	    T1_VALIDATE_OK) {
 		return (t);
 	}
 
@@ -559,7 +563,7 @@ t1_ifsd(t1_state_t *t1, size_t ifsd, const void **cmdbuf, size_t *lenp)
 }
 
 /*
- * We need to generate the next I-block, which may be part of a chain. 
+ * Generate the next I-block which may be part of a chain.
  */
 static void
 t1_generate_iblock(t1_state_t *t1)
@@ -717,7 +721,7 @@ t1_reply_iblock(t1_state_t *t1, mblk_t *mp)
 
 	/*
 	 * Append the mblock. We need to increment the read pointer for the
-	 * prologue and decrement the write pointer for the 
+	 * prologue and decrement the write pointer for the checksum.
 	 */
 	mp->b_rptr += sizeof (t1_hdr_t);
 	switch (t1->t1_checksum) {
@@ -786,7 +790,8 @@ t1_reply_rblock(t1_state_t *t1, const t1_hdr_t *hdr)
 	seqmatch = nr == t1->t1_send_ns;
 	if ((seqmatch && status == T1_RBLOCK_STATUS_OK) ||
 	    (!seqmatch && status != T1_RBLOCK_STATUS_OK)) {
-		/* XXX This represents the mismatch. This doesn't make semantic
+		/*
+		 * XXX This represents the mismatch. This doesn't make semantic
 		 * sense.
 		 */
 		t1->t1_flags |= T1_F_CMD_ERROR;
@@ -888,7 +893,8 @@ t1_reply(t1_state_t *t1, mblk_t *mp)
 	 * XXX In a number of these cases we should probably consider
 	 * transmitting an R-block rather than just resetting the device.
 	 */
-	if ((t = t1_validate_hdr(t1, mp->b_rptr, MBLKL(mp), &type)) != T1_VALIDATE_OK) {
+	if ((t = t1_validate_hdr(t1, mp->b_rptr, MBLKL(mp), &type)) !=
+	    T1_VALIDATE_OK) {
 		t1->t1_flags |= T1_F_CMD_ERROR;
 		return (t);
 	}
