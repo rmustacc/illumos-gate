@@ -10,7 +10,7 @@
  */
 
 /*
- * Copyright (c) 2017, Joyent, Inc. 
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #include <stdlib.h>
@@ -31,9 +31,13 @@
  * Implementation of the PCSC library leveraging the uccid framework.
  */
 
-/* XXX This is just a token structure */
+/*
+ * The library handle is basically unused today. We keep this around such that
+ * consumers which expect to receive a non-NULL opaque handle have something
+ * they can use.
+ */
 typedef struct pcsc_hdl {
-	void *pcsc_foo;
+	hrtime_t pcsc_create_time;
 } pcsc_hdl_t;
 
 typedef struct pcsc_card {
@@ -119,6 +123,7 @@ pcsc_stringify_error(const LONG err)
 /*
  * This is called when a caller wishes to open a new Library context.
  */
+/* ARGSUSED */
 LONG
 SCardEstablishContext(DWORD scope, LPCVOID unused0, LPCVOID unused1,
     LPSCARDCONTEXT outp)
@@ -138,6 +143,7 @@ SCardEstablishContext(DWORD scope, LPCVOID unused0, LPCVOID unused1,
 		return (SCARD_E_NO_MEMORY);
 	}
 
+	hdl->pcsc_create_time = gethrtime();
 	*outp = hdl;
 	return (SCARD_S_SUCCESS);
 }
@@ -157,6 +163,7 @@ SCardReleaseContext(SCARDCONTEXT hdl)
  * make sense to take a const pointer when being given memory to free. It just
  * means we have to cast it, but remember: this isn't our API.
  */
+/* ARGSUSED */
 LONG
 SCardFreeMemory(SCARDCONTEXT unused, LPCVOID mem)
 {
@@ -169,6 +176,7 @@ SCardFreeMemory(SCARDCONTEXT unused, LPCVOID mem)
  * If lenp is set to SCARD_AUTOALLOCATE, then we are responsible for dealing
  * with this memory.
  */
+/* ARGSUSED */
 LONG
 SCardListReaders(SCARDCONTEXT unused, LPCSTR groups, LPSTR bufp, LPDWORD lenp)
 {
@@ -259,7 +267,7 @@ SCardListReaders(SCARDCONTEXT unused, LPCSTR groups, LPSTR bufp, LPDWORD lenp)
 			ret = SCARD_E_INSUFFICIENT_BUFFER;
 			goto out;
 		}
-		
+
 		ubuf = bufp;
 	} else {
 		char **bufpp;
@@ -274,7 +282,7 @@ SCardListReaders(SCARDCONTEXT unused, LPCSTR groups, LPSTR bufp, LPDWORD lenp)
 			goto out;
 		}
 
-		bufpp = (char **)bufp;
+		bufpp = (void *)bufp;
 		*bufpp = ubuf;
 	}
 	ret = SCARD_S_SUCCESS;
@@ -296,6 +304,7 @@ out:
 	return (ret);
 }
 
+/* ARGSUSED */
 LONG
 SCardConnect(SCARDCONTEXT hdl, LPCSTR reader, DWORD mode, DWORD prots,
     LPSCARDHANDLE iccp, LPDWORD protp)
@@ -464,8 +473,8 @@ SCardEndTransaction(SCARDHANDLE arg, DWORD state)
 		txn.uct_flags = UCCID_TXN_END_RELEASE;
 		break;
 	case SCARD_RESET_CARD:
-	       txn.uct_flags = UCCID_TXN_END_RESET;
-	       break;
+		txn.uct_flags = UCCID_TXN_END_RESET;
+		break;
 	case SCARD_UNPOWER_CARD:
 	case SCARD_EJECT_CARD:
 	default:
@@ -487,7 +496,8 @@ SCardEndTransaction(SCARDHANDLE arg, DWORD state)
 }
 
 LONG
-SCardReconnect(SCARDHANDLE arg, DWORD mode, DWORD prots, DWORD init, LPDWORD protp)
+SCardReconnect(SCARDHANDLE arg, DWORD mode, DWORD prots, DWORD init,
+    LPDWORD protp)
 {
 	uccid_cmd_status_t ucs;
 	pcsc_card_t *card = arg;
@@ -548,9 +558,11 @@ SCardReconnect(SCARDHANDLE arg, DWORD mode, DWORD prots, DWORD init, LPDWORD pro
 	return (SCARD_S_SUCCESS);
 }
 
-LONG SCardTransmit(SCARDHANDLE arg, const SCARD_IO_REQUEST *sendreq,
+/* ARGSUSED */
+LONG
+SCardTransmit(SCARDHANDLE arg, const SCARD_IO_REQUEST *sendreq,
     LPCBYTE sendbuf, DWORD sendlen, SCARD_IO_REQUEST *recvreq, LPBYTE recvbuf,
-    LPDWORD recvlenp) 
+    LPDWORD recvlenp)
 {
 	int len;
 	ssize_t ret;
@@ -616,7 +628,6 @@ LONG SCardTransmit(SCARDHANDLE arg, const SCARD_IO_REQUEST *sendreq,
 		case EFAULT:
 			return (SCARD_E_INVALID_PARAMETER);
 		case ENODATA:
-			/* XXX */
 		default:
 			return (SCARD_F_UNKNOWN_ERROR);
 		}
