@@ -378,6 +378,14 @@
  *       o Outstanding I/O should be cleaned up as part of minor close
  *
  * o Proper POLLOUT on ICC insertion / activation
+ *
+ *
+ *
+ * o XXX We're not properly handling the case where we get a transport error,
+ * say we get a time extension and we fail to schedule the next bulk request.
+ * While today we'll clean up the I/O corectly, the actual ICC will still be
+ * expecting us to take action. In which case we should request a reset and make
+ * sure that write is blocked on that.
  */
 
 #include <sys/modctl.h>
@@ -414,16 +422,14 @@
 #define	CCID_NUM_ASYNC_REQS	2
 
 /*
- * Pick a number of default responses to have queued up with the device. This is
- * an arbitrary number. It was picked based on the theory that we don't want too
- * much overhead per-device, but we'd like at least a few. Even if this is
- * broken up into multiple chunks of DMA memory in the controller, it's unlikely
- * to exceed the ring size.
- *
- * We have double this amount allocated sitting around in the 
+ * This is the number of Bulk-IN requests that we will have cached per CCID
+ * device. While many commands will generate a single response, the commands
+ * also have the ability to generate time extensions, which means that we'll
+ * want to be able to schedule another Bulk-IN request immediately. If we run
+ * out, we will attempt to refill said cache and will not fail commands
+ * needlessly.
  */
-#define	CCID_BULK_NRESPONSES		2
-#define	CCID_BULK_NALLOCED		8
+#define	CCID_BULK_NALLOCED		16
 
 /*
  * XXX This is a time in seconds for the bulk-out command to run and be
@@ -1401,14 +1407,10 @@ ccid_reply_bulk_exc_cb(usb_pipe_handle_t ph, usb_bulk_req_t *ubrp)
 static void
 ccid_bulkin_cache_refresh(ccid_t *ccid)
 {
-	mutex_enter(&ccid->ccid_mutex);
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
 	while (ccid->ccid_bulkin_alloced < CCID_BULK_NALLOCED) {
 		usb_bulk_req_t *ubrp;
-		/*
-		 * Drop the lock during allocation to make sure we don't block
-		 * the rest of the driver needlessly.
-		 */
-		mutex_exit(&ccid->ccid_mutex);
+
 		ubrp = usb_alloc_bulk_req(ccid->ccid_dip, ccid->ccid_bufsize, 0);
 		if (ubrp == NULL)
 			return;
@@ -1421,18 +1423,31 @@ ccid_bulkin_cache_refresh(ccid_t *ccid)
 		ubrp->bulk_cb = ccid_reply_bulk_cb;
 		ubrp->bulk_exc_cb = ccid_reply_bulk_exc_cb;
 
-		mutex_enter(&ccid->ccid_mutex);
-		if (ccid->ccid_bulkin_alloced >= CCID_BULK_NALLOCED ||
-		    (ccid->ccid_flags & CCID_F_DETACHING)) {
-			mutex_exit(&ccid->ccid_mutex);
-			usb_free_bulk_req(ubrp);
-			return;
-		}
 		ccid->ccid_bulkin_cache[ccid->ccid_bulkin_alloced] = ubrp;
 		ccid->ccid_bulkin_alloced++;
 	}
 
-	mutex_exit(&ccid->ccid_mutex);
+}
+
+static usb_bulk_req_t *
+ccid_bulkin_cache_get(ccid_t *ccid)
+{
+	usb_bulk_req_t *ubrp;
+
+	VERIFY(MUTEX_HELD(&ccid->ccid_mutex));
+
+	if (ccid->ccid_bulkin_alloced == 0) {
+		ccid_bulkin_cache_refresh(ccid);
+		if (ccid->ccid_bulkin_alloced == 0)
+			return (NULL);
+	}
+
+	ccid->ccid_bulkin_alloced--;
+	ubrp = ccid->ccid_bulkin_cache[ccid->ccid_bulkin_alloced];
+	VERIFY3P(ubrp, !=, NULL);
+	ccid->ccid_bulkin_cache[ccid->ccid_bulkin_alloced] = NULL;
+
+	return (ubrp);
 }
 
 /*
@@ -1447,21 +1462,15 @@ ccid_bulkin_schedule(ccid_t *ccid)
 		usb_bulk_req_t *ubrp;
 		int ret;
 
-		/* XXX Maybe try to alloc again? */
-		if (ccid->ccid_bulkin_alloced == 0)
+		ubrp = ccid_bulkin_cache_get(ccid);
+		if (ubrp == NULL) {
 			return (USB_NO_RESOURCES);
-
-		ccid->ccid_bulkin_alloced--;
-		ubrp = ccid->ccid_bulkin_cache[ccid->ccid_bulkin_alloced];
-		VERIFY3P(ubrp, !=, NULL);
-		ccid->ccid_bulkin_cache[ccid->ccid_bulkin_alloced] = NULL;
+		}
 
 		if ((ret = usb_pipe_bulk_xfer(ccid->ccid_bulkin_pipe, ubrp,
 		    0)) != USB_SUCCESS) {
 			ccid_error(ccid, "failed to schedule Bulk-In response: %d", ret);
-			ccid->ccid_bulkin_cache[ccid->ccid_bulkin_alloced] =
-			    ubrp;
-			ccid->ccid_bulkin_alloced++;
+			usb_free_bulk_req(ubrp);
 			return (ret);
 		}
 
@@ -1528,12 +1537,6 @@ ccid_command_queue(ccid_t *ccid, ccid_command_t *cc)
 	id_t seq;
 	ccid_header_t *cchead;
 
-	/*
-	 * When queueing this command, go ahead and make sure our reply cache is
-	 * full.
-	 */
-	ccid_bulkin_cache_refresh(ccid);
-
 	seq = id_alloc_nosleep(ccid->ccid_seqs);
 	if (seq == -1)
 		return (ENOMEM);
@@ -1541,7 +1544,13 @@ ccid_command_queue(ccid_t *ccid, ccid_command_t *cc)
 	VERIFY3U(seq, <=, UINT8_MAX);
 	cchead = (void *)cc->cc_ubrp->bulk_data->b_rptr;
 	cchead->ch_seq = (uint8_t)seq;
+
 	mutex_enter(&ccid->ccid_mutex);
+	/*
+	 * Take a shot at filling up our reply cache while we're submitting this
+	 * command.
+	 */
+	ccid_bulkin_cache_refresh(ccid);
 	list_insert_tail(&ccid->ccid_command_queue, cc);
 	ccid_command_state_transition(cc, CCID_COMMAND_QUEUED);
 	cc->cc_queue_time = gethrtime();
@@ -3790,7 +3799,9 @@ ccid_attach(dev_info_t *dip, ddi_attach_cmd_t cmd)
 	 * Before we enable the interrupt pipe, take a shot at priming our
 	 * bulkin_cache.
 	 */
+	mutex_enter(&ccid->ccid_mutex);
 	ccid_bulkin_cache_refresh(ccid);
+	mutex_exit(&ccid->ccid_mutex);
 
 	if (ccid->ccid_flags & CCID_F_HAS_INTR) {
 		ccid_intr_poll_init(ccid);
@@ -4343,6 +4354,9 @@ ccid_complete_apdu(ccid_t *ccid, ccid_slot_t *slot, ccid_command_t *cc)
 	/*
 	 * Process this command and figure out what we should logically be
 	 * returning to the user.
+	 *
+	 * XXX If the command did not complete successfully, then we need to
+	 * request that the slot be reset.
 	 */
 	if (cc->cc_state != CCID_COMMAND_COMPLETE) {
 		slot->cs_io.ci_errno = EIO;
