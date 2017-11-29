@@ -17,6 +17,7 @@ include $(SRC)/Makefile.master
 
 ROOTOPTPKG = $(ROOT)/opt/os-tests
 TESTDIR = $(ROOTOPTPKG)/tests/uccid
+DATADIR = $(TESTDIR)/data
 
 PROGS = 		\
 	excl-basic	\
@@ -32,6 +33,10 @@ PROGS = 		\
 	txn-pollerr	\
 	yk
 
+DATA = \
+	smartcard_list.txt
+
+
 COMMON_OBJS = \
 	atr.o
 
@@ -42,20 +47,37 @@ include $(SRC)/test/Makefile.com
 
 CMDS = $(PROGS:%=$(TESTDIR)/%)
 $(CMDS) := FILEMODE = 0555
+ROOTDATA = $(DATA:%=$(DATADIR)/%)
+$(ROOTDATA) := FILEMODE = 0444
 
 CPPFLAGS += -D_REENTRANT -I$(SRC)/common/ccid/
 
-all: $(PROGS) $(PARITYPROGS)
+all: $(PROGS)
 
-install: all $(CMDS)
+install: all $(CMDS) $(ROOTDATA)
 
 lint: $(LNPROGS)
 
 clobber: clean
-	-$(RM) $(PROGS) $(PARITYPROGS)
+	-$(RM) $(PROGS)
 
 clean:
 	-$(RM) *.o
+
+$(PROGS): $(COMMON_OBJS)
+
+$(CMDS): $(TESTDIR) $(PROGS)
+
+$(ROOTDATA): $(DATADIR)
+
+$(TESTDIR) $(DATADIR):
+	$(INS.dir)
+
+$(TESTDIR)/%: %
+	$(INS.file)
+
+$(DATADIR)/%: %
+	$(INS.file)
 
 %.o: $(SRC)/common/ccid/%.c
 	$(COMPILE.c) -o $@ -c $<
@@ -71,13 +93,3 @@ clean:
 
 %.ln: %
 	$(LINT.c) $<.c $(LDLIBS)
-
-$(PROGS): $(COMMON_OBJS)
-
-$(CMDS): $(TESTDIR) $(PROGS)
-
-$(TESTDIR):
-	$(INS.dir)
-
-$(TESTDIR)/%: %
-	$(INS.file)
