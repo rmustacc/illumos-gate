@@ -1594,7 +1594,7 @@ atr_data_dump(atr_data_t *data, FILE *out)
 	atr_data_dump_historical(data, out);
 
 	if (data->atr_flags & ATR_F_HAS_CHECKSUM) {
-		(void) fprintf(out, "TCK  0x%2x\n", data->atr_cksum);
+		(void) fprintf(out, "TCK  0x%02x\n", data->atr_cksum);
 	} else {
 		(void) fprintf(out, "TCK  ----; Checksum not present\n");
 	}
