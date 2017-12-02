@@ -110,7 +110,7 @@
  */
 #define	ATR_PROTOCOL_T15	15
 
-#define	ATR_T15_TA0_CLOCK(x)	(((x) & 0xc) >> 6)
+#define	ATR_T15_TA0_CLOCK(x)	(((x) & 0xc0) >> 6)
 #define	ATR_T15_TA0_VOLTAGE(x)	((x) & 0x3f)
 
 #define	ATR_T15_TB0_SPU_STANDARD(x)	(((x & 0x80)) != 0)
@@ -1354,7 +1354,7 @@ atr_data_dump_ta(atr_ti_t *atp, FILE *out, uint_t level)
 			(void) fprintf(out, "; Clock stop: %s, Supported "
 			    "Voltage: %s",
 			    atr_clock_table[ATR_T15_TA0_CLOCK(ta)],
-			    atr_voltage_table[ATR_T15_TA0_VOLTAGE(ta)] == NULL ?
+			    atr_voltage_table[ATR_T15_TA0_VOLTAGE(ta)] != NULL ?
 			    atr_voltage_table[ATR_T15_TA0_VOLTAGE(ta)] : "RFU");
 			break;
 		default:
