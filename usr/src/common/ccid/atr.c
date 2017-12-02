@@ -537,7 +537,7 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 	 * normal workflow and make sure that we don't mistakenly do anything.
 	 */
 	prot = UINT32_MAX;
-	do {
+	for (;;) {
 		atp = &data->atr_ti[data->atr_nti];
 		data->atr_nti++;
 		ASSERT3U(data->atr_nti, <=, ATR_TI_MAX);
@@ -601,10 +601,9 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 			 */
 			Ti++;
 		} else {
-			ncbits = 0;
-			cbits = 0;
+			break;
 		}
-	} while (ncbits != 0);
+	}
 
 	/*
 	 * We've parsed all of the cbits. At this point, we should take into
