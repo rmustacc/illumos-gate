@@ -444,6 +444,8 @@ atr_strerror(atr_parsecode_t code)
 		return ("ATR data did not use all provided bytes");
 	case ATR_CODE_CHECKSUM_ERROR:
 		return ("ATR data did not checksum correctly");
+	case ATR_CODE_INVALID_TD1:
+		return ("ATR data has invalid protocol in TD1");
 	default:
 		return ("Unknown Parse Code");
 	}
@@ -585,6 +587,13 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 			ncbits = atr_count_cbits(cbits);
 			if (prot != 0)
 				ncksum = 1;
+
+			/*
+			 * T=15 is not allowed in TD1 per 8.2.3.
+			 */
+			if (Ti == 1 && prot == 0xf)
+				return (ATR_CODE_INVALID_TD1);
+
 			idx++;
 			/*
 			 * Encountering TD means that once we take the next loop
@@ -687,6 +696,14 @@ atr_supported_protocols(atr_data_t *data)
 			continue;
 		}
 	}
+
+	/*
+	 * It's possible we've found nothing specific in the above loop (for
+	 * example, only T=15 global bits were found). In that case, the card
+	 * defaults to T=0.
+	 */
+	if (prot == ATR_P_NONE)
+		prot = ATR_P_T0;
 
 	return (prot);
 }

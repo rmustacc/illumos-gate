@@ -48,7 +48,8 @@ typedef enum atr_parsecode {
 	ATR_CODE_INVALID_TS,
 	ATR_CODE_OVERRUN,
 	ATR_CODE_UNDERRUN,
-	ATR_CODE_CHECKSUM_ERROR
+	ATR_CODE_CHECKSUM_ERROR,
+	ATR_CODE_INVALID_TD1
 } atr_parsecode_t;
 
 typedef enum atr_protocol {

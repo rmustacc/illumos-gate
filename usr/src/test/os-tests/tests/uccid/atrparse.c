@@ -63,8 +63,15 @@ atr_test_t atr_tests[] = {
 	    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
 	    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
 	    0x80, 0x80, 0x80 }, ATR_CODE_OVERRUN },
+	{ "T0 w/ T=15 and no cksum", 5, { 0x3b, 0x80, 0x80, 0x1f, 0x00 },
+	    ATR_CODE_OVERRUN },
 	{ "Bad TS (1)", 2, { 0x3a, 0x00 }, ATR_CODE_INVALID_TS },
 	{ "Bad TS (2)", 2, { 0xff, 0x00 }, ATR_CODE_INVALID_TS },
+	{ "T0 w/ T=15 and bad cksum", 6, { 0x3b, 0x80, 0x80, 0x1f, 0x00, 0x00 },
+	    ATR_CODE_CHECKSUM_ERROR },
+	{ "T0 w/ T=15 and bad cksum (make sure no TS)", 6, { 0x3b, 0x80, 0x80, 0x1f, 0x00, 0x24 },
+	    ATR_CODE_CHECKSUM_ERROR },
+	{ "T=15 in TD1", 4, { 0x3b, 0x80, 0x0f, 0x8f }, ATR_CODE_INVALID_TD1 },
 	{
 		.ar_test = "Minimal T0 Direct",
 		.ar_len = 2,
@@ -234,9 +241,20 @@ atr_test_t atr_tests[] = {
 		.ar_guard = 0,
 		.ar_stop = ATR_CLOCK_STOP_NONE,
 		.ar_t0_wi = 0x35,
-	},
-
-
+	}, {
+		.ar_test = "T0 T15 empty (requires checksum)",
+		.ar_len = 5,
+		.ar_buf = { 0x3b, 0x80, 0x80, 0x0f, 0x0f },
+		.ar_sup = ATR_P_T0,
+		.ar_def = ATR_P_T0,
+		.ar_neg = B_TRUE,
+		.ar_fi = 1,
+		.ar_di = 1,
+		.ar_conv = ATR_CONVENTION_DIRECT,
+		.ar_guard = 0,
+		.ar_stop = ATR_CLOCK_STOP_NONE,
+		.ar_t0_wi = 10,
+	}
 
 };
 
@@ -381,6 +399,7 @@ atr_parse_one(atr_data_t *data, atr_test_t *test)
 		atr_data_dump(data, stderr);
 		return (1);
 	}
+
 	return (0);
 }
 
