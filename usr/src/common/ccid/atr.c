@@ -38,8 +38,6 @@
  * The ATR must have at least 2 bytes and then may have up to 33 bytes. The
  * first byte is always TS and the second required byte is T0.
  */
-#define	ATR_LEN_MIN	2
-#define	ATR_LEN_MAX	33
 #define	ATR_TS_IDX	0
 #define	ATR_T0_IDX	1
 
@@ -476,7 +474,7 @@ atr_parsecode_t
 atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 {
 	uint_t nhist, cbits, ncbits, idx, Ti, prot;
-	boolean_t ncksum = B_FALSE;
+	uint_t ncksum = 0;
 	atr_ti_t *atp;
 
 	/*
@@ -586,7 +584,7 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 			prot = ATR_TD_PROT(buf[idx]);
 			ncbits = atr_count_cbits(cbits);
 			if (prot != 0)
-				ncksum = B_TRUE;
+				ncksum = 1;
 			idx++;
 			/*
 			 * Encountering TD means that once we take the next loop
@@ -616,7 +614,7 @@ atr_parse(const uint8_t *buf, size_t len, atr_data_t *data)
 		bcopy(&buf[idx], data->atr_historic, nhist);
 	}
 
-	if (ncksum) {
+	if (ncksum > 0) {
 		size_t i;
 		uint8_t val;
 
@@ -700,15 +698,13 @@ atr_params_negotiable(atr_data_t *data)
 	if ((data->atr_flags & ATR_F_VALID) == 0)
 		return (B_FALSE);
 
-	if (data->atr_nti < 2) {
-		return (B_FALSE);
-	}
 
 	/*
 	 * Whether or not we're negotiable is in the second global page, so atr
 	 * index 1. If TA2 is missing, then the card always is negotiable.
 	 */
-	if ((data->atr_ti[1].atrti_flags & ATR_TI_HAVE_TA) == 0) {
+	if (data->atr_nti < 2 ||
+	    (data->atr_ti[1].atrti_flags & ATR_TI_HAVE_TA) == 0) {
 		return (B_TRUE);
 	}
 
@@ -842,7 +838,7 @@ atr_t0_wi(atr_data_t *data)
 	if (data->atr_nti >= 2 &&
 	    data->atr_ti[1].atrti_protocol == ATR_PROTOCOL_T0 &&
 	    (data->atr_ti[1].atrti_flags & ATR_TI_HAVE_TC) != 0) {
-		return (data->atr_ti[0].atrti_tc);
+		return (data->atr_ti[1].atrti_tc);
 	}
 
 	return (ATR_T0_WI_DEFAULT);

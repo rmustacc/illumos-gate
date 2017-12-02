@@ -35,6 +35,12 @@
 extern "C" {
 #endif
 
+/*
+ * The ATR must have at least 2 bytes and then may have up to 33 bytes.
+ */
+#define	ATR_LEN_MIN	2
+#define	ATR_LEN_MAX	33
+
 typedef enum atr_parsecode {
 	ATR_CODE_OK	= 0,
 	ATR_CODE_TOO_SHORT,
