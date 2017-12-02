@@ -17,9 +17,9 @@ include $(SRC)/Makefile.master
 
 ROOTOPTPKG = $(ROOT)/opt/os-tests
 TESTDIR = $(ROOTOPTPKG)/tests/uccid
-DATADIR = $(TESTDIR)/data
 
 PROGS = 		\
+	atrparse	\
 	excl-basic	\
 	excl-badread	\
 	excl-close	\
@@ -36,9 +36,10 @@ PROGS = 		\
 DATA = \
 	smartcard_list.txt
 
-
 COMMON_OBJS = \
 	atr.o
+
+atrparse := EXTRA_OBJS = $(COMMON_OBJS)
 
 LNPROGS = $(PROGS:%=%.ln)
 
@@ -47,7 +48,6 @@ include $(SRC)/test/Makefile.com
 
 CMDS = $(PROGS:%=$(TESTDIR)/%)
 $(CMDS) := FILEMODE = 0555
-ROOTDATA = $(DATA:%=$(DATADIR)/%)
 $(ROOTDATA) := FILEMODE = 0444
 
 CPPFLAGS += -D_REENTRANT -I$(SRC)/common/ccid/
@@ -68,15 +68,10 @@ $(PROGS): $(COMMON_OBJS)
 
 $(CMDS): $(TESTDIR) $(PROGS)
 
-$(ROOTDATA): $(DATADIR)
-
-$(TESTDIR) $(DATADIR):
+$(TESTDIR):
 	$(INS.dir)
 
 $(TESTDIR)/%: %
-	$(INS.file)
-
-$(DATADIR)/%: %
 	$(INS.file)
 
 %.o: $(SRC)/common/ccid/%.c
