@@ -3425,10 +3425,9 @@ ccid_minors_init(ccid_t *ccid)
 		(void) ccid_minor_idx_alloc(&ccid->ccid_slots[i].cs_idx, B_TRUE);
 
 		(void) snprintf(buf, sizeof (buf), "slot%d", i);
-		/* XXX I wonder if this should be a new DDI_NT type (ccid) */
 		if (ddi_create_minor_node(ccid->ccid_dip, buf, S_IFCHR,
-		    ccid->ccid_slots[i].cs_idx.cmi_minor, "ccid", 0) !=
-		    DDI_SUCCESS) {
+		    ccid->ccid_slots[i].cs_idx.cmi_minor,
+		    DDI_NT_CCID_ATTACHMENT_POINT, 0) != DDI_SUCCESS) {
 			ccid_minors_fini(ccid);
 			return (B_FALSE);
 		}

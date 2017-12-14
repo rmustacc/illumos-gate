@@ -26,7 +26,7 @@
 
 include $(SRC)/Makefile.master
 
-COMMON_SUBDIRS= scsi pci usb ib fp shp sbd
+COMMON_SUBDIRS= scsi pci usb ib fp shp sbd ccid
 sparc_SUBDIRS=	ac sysctrl
 
 i386_SUBDIRS= sata
