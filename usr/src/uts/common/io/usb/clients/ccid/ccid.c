@@ -4725,6 +4725,9 @@ ccid_ioctl_status(ccid_slot_t *slot, intptr_t arg, int mode)
 		return (ENODEV);
 	}
 
+	ucs.ucs_instance = ddi_get_instance(slot->cs_ccid->ccid_dip);
+	ucs.ucs_slot = slot->cs_slotno;
+
 	if (slot->cs_flags & CCID_SLOT_F_PRESENT)
 		ucs.ucs_status |= UCCID_STATUS_F_CARD_PRESENT;
 	if (slot->cs_flags & CCID_SLOT_F_ACTIVE)

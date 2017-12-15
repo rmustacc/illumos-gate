@@ -95,6 +95,8 @@ typedef enum {
 typedef struct uccid_cmd_status {
 	uint32_t	ucs_version;
 	uint32_t	ucs_status;
+	int32_t		ucs_instance;
+	uint32_t	ucs_slot;
 	uint8_t		ucs_atr[UCCID_ATR_MAX];
 	uint8_t		ucs_atrlen;
 	uint8_t		ucs_pad[6];
