@@ -221,6 +221,9 @@ void	atge_l1c_mii_write(void *, uint8_t, uint8_t, uint16_t);
 void	atge_l1e_mii_reset(void *);
 void	atge_l1_mii_reset(void *);
 void	atge_l1c_mii_reset(void *);
+uint16_t	atge_816x_mii_read(void *, uint8_t, uint8_t);
+void	atge_816x_mii_write(void *, uint8_t, uint8_t, uint16_t);
+void	atge_816x_mii_reset(void *);
 static void	atge_mii_notify(void *, link_state_t);
 void	atge_tx_reclaim(atge_t *atgep, int cons);
 
@@ -253,6 +256,17 @@ static	mii_ops_t atge_l1c_mii_ops = {
 	MII_OPS_VERSION,
 	atge_l1c_mii_read,
 	atge_l1c_mii_write,
+	atge_mii_notify,
+	NULL
+};
+
+/*
+ * 816x based chip
+ */
+static	mii_ops_t atge_816x_mii_ops = {
+	MII_OPS_VERSION,
+	atge_816x_mii_read,
+	atge_816x_mii_write,
 	atge_mii_notify,
 	NULL
 };
@@ -341,8 +355,26 @@ static ddi_dma_attr_t atge_dma_attr_buf = {
 #define	ATGE_AR8151V2_STR	"Atheros AR8151 v2.0 Gigabit Ethernet"
 #define	ATGE_AR8152V1_STR	"Atheros AR8152 v1.1 Fast Ethernet"
 #define	ATGE_AR8152V2_STR	"Atheros AR8152 v2.0 Fast Ethernet"
+#define	ATGE_CHIP_AR8161_STR	"Atheros AR8161 Gigabit Ethernet"
+#define	ATGE_CHIP_AR8162_STR	"Atheros AR8162 Fast Ethernet"
+#define	ATGE_CHIP_AR8171_STR	"Atheros QCA8171 Gigabit Ethernet"
+#define	ATGE_CHIP_AR8172_STR	"Atheros QCA8172 Fast Ethernet"
+#define	ATGE_CHIP_E2200_STR	"Killer E220x Gigabit Ethernet Controller"
+#define	ATGE_CHIP_E2400_STR	"Killer E2400 Gigabit Ethernet Controller"
+#define	ATGE_CHIP_E2500_STR	"Killer E2500 Gigabit Ethernet"
 
 static atge_cards_t atge_cards[] = {
+	{ATGE_VENDOR_ID, ATGE_CHIP_AR8161, ATGE_CHIP_AR8161_STR,
+	    ATGE_CHIP_816X },
+	{ATGE_VENDOR_ID, ATGE_CHIP_AR8162, ATGE_CHIP_AR8162_STR,
+	    ATGE_CHIP_816X },
+	{ATGE_VENDOR_ID, ATGE_CHIP_AR8171, ATGE_CHIP_AR8171_STR,
+	    ATGE_CHIP_816X },
+	{ATGE_VENDOR_ID, ATGE_CHIP_AR8172, ATGE_CHIP_AR8172_STR,
+	    ATGE_CHIP_816X },
+	{ATGE_VENDOR_ID, ATGE_CHIP_E2200, ATGE_CHIP_E2200_STR, ATGE_CHIP_816X },
+	{ATGE_VENDOR_ID, ATGE_CHIP_E2400, ATGE_CHIP_E2400_STR, ATGE_CHIP_816X },
+	{ATGE_VENDOR_ID, ATGE_CHIP_E2500, ATGE_CHIP_E2500_STR, ATGE_CHIP_816X },
 	{ATGE_VENDOR_ID, ATGE_CHIP_AR8151V2_DEV_ID, ATGE_AR8151V2_STR,
 	    ATGE_CHIP_L1C},
 	{ATGE_VENDOR_ID, ATGE_CHIP_AR8151V1_DEV_ID, ATGE_AR8151V1_STR,
@@ -443,6 +475,7 @@ atge_mac_config(atge_t *atgep)
 			break;
 		}
 		break;
+	/* XXX ATGE_CHIP_816x */
 	}
 
 	speed = mii_get_speed(atgep->atge_mii);
@@ -469,6 +502,7 @@ atge_mac_config(atge_t *atgep)
 	case ATGE_CHIP_L1C:
 		reg |= ATGE_CFG_TX_ENB | ATGE_CFG_RX_ENB;
 		break;
+	/* XXX ATGE_CHIP_816x */
 	}
 
 	OUTL(atgep, ATGE_MAC_CFG, reg);
@@ -498,6 +532,7 @@ atge_mac_config(atge_t *atgep)
 			reg |= MASTER_IM_TX_TIMER_ENB;
 		OUTL(atgep, ATGE_MASTER_CFG, reg);
 		break;
+	/* XXX ATGE_CHIP_816x */
 	}
 
 	ATGE_DB(("%s: %s() mac_cfg is : %x",
@@ -676,6 +711,7 @@ atge_add_intr_handler(atge_t *atgep, int intr_type)
 			err = ddi_intr_add_handler(atgep->atge_intr_handle[i],
 			    atge_l1c_interrupt, atgep, (caddr_t)(uintptr_t)i);
 			break;
+		/* XXX ATGE_CHIP_816x */
 		}
 
 		if (err != DDI_SUCCESS) {
@@ -845,22 +881,26 @@ atge_add_intr(atge_t *atgep)
 int
 atge_identify_hardware(atge_t *atgep)
 {
-	uint16_t vid, did;
+	uint16_t vid, did, svid, sdid;
 	int i;
 
 	vid = pci_config_get16(atgep->atge_conf_handle, PCI_CONF_VENID);
 	did = pci_config_get16(atgep->atge_conf_handle, PCI_CONF_DEVID);
+
+	atgep->atge_vid = vid;
+	atgep->atge_did = did;
+	atgep->atge_svid = pci_config_get16(atgep->atge_conf_handle,
+	    PCI_CONF_SUBVENID);
+	atgep->atge_sdid = pci_config_get16(atgep->atge_conf_handle,
+	    PCI_CONF_SUBSYSID);
+	atgep->atge_revid = pci_config_get8(atgep->atge_conf_handle,
+	    PCI_CONF_REVID);
 
 	atgep->atge_model = 0;
 	for (i = 0; i < (sizeof (atge_cards) / sizeof (atge_cards_t)); i++) {
 		if (atge_cards[i].vendor_id == vid &&
 		    atge_cards[i].device_id == did) {
 			atgep->atge_model = atge_cards[i].model;
-			atgep->atge_vid = vid;
-			atgep->atge_did = did;
-			atgep->atge_revid =
-			    pci_config_get8(atgep->atge_conf_handle,
-			    PCI_CONF_REVID);
 			atge_notice(atgep->atge_dip, "PCI-ID pci%x,%x,%x: %s",
 			    vid, did, atgep->atge_revid,
 			    atge_cards[i].cardname);
@@ -879,10 +919,6 @@ atge_identify_hardware(atge_t *atgep)
 	 * Assume it's L1C chip.
 	 */
 	atgep->atge_model = ATGE_CHIP_L1C;
-	atgep->atge_vid = vid;
-	atgep->atge_did = did;
-	atgep->atge_revid = pci_config_get8(atgep->atge_conf_handle,
-	    PCI_CONF_REVID);
 
 	/*
 	 * We will leave the decision to caller.
@@ -939,6 +975,7 @@ atge_device_reset(atge_t *atgep)
 	case ATGE_CHIP_L1C:
 		atge_device_reset_l1_l1e(atgep);
 		break;
+	/* XXX ATGE_CHIP_816x */
 	}
 }
 
@@ -1024,6 +1061,7 @@ atge_alloc_dma(atge_t *atgep)
 	case ATGE_CHIP_L1C:
 		err = atge_l1c_alloc_dma(atgep);
 		break;
+	/* XXX ATGE_CHIP_816x */
 	}
 
 	return (err);
@@ -1042,6 +1080,7 @@ atge_free_dma(atge_t *atgep)
 	case ATGE_CHIP_L1C:
 		atge_l1c_free_dma(atgep);
 		break;
+	/* XXX ATGE_CHIP_816x */
 	}
 }
 
@@ -1190,6 +1229,27 @@ atge_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 			break;
 		}
 		break;
+	case ATGE_CHIP_816X:
+		atgep->atge_flags |= ATGE_FLAG_JUMBO | ATGE_FLAG_SMB_BUG |
+		    ATGE_FLAG_CMB_BUG;
+		switch (ATGE_DID(atgep)) {
+		case ATGE_CHIP_AR8171:
+			break;
+		case ATGE_CHIP_AR8162:
+		case ATGE_CHIP_AR8172:
+			atgep->atge_flags |= ATGE_FLAG_FASTETHER;
+			break;
+		case ATGE_CHIP_E2200:
+		case ATGE_CHIP_E2400:
+		case ATGE_CHIP_E2500:
+			atgep->atge_flags |= ATGE_FLAG_E2X00;
+			/* FALLTHROUGH */
+		case ATGE_CHIP_AR8161:
+			if (atgep->atge_sdid == 0x0091 && atgep->atge_revid) {
+				atgep->atge_flags |= ATGE_FLAG_LINK_WAR;
+			}
+			break;
+		}
 	}
 
 	/*
@@ -1218,6 +1278,15 @@ atge_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 		atgep->atge_dma_wr_burst = ((burst >> 5) & 0x07) <<
 		    DMA_CFG_WR_BURST_SHIFT;
 
+		/*
+		 * It is reported that we need to set the maximum payload size
+		 * to 128 bytes on the E2X00 series, otherwise we will trigger
+		 * DMA write errors.
+		 */
+		if ((atgep->atge_flags & ATGE_FLAG_E2X00) != 0) {
+			atgep->atge_dma_wr_burst = DMA_CFG_RD_BURST_128;
+		}
+
 		ATGE_DB(("%s: %s() MRR : %d, MPS : %d",
 		    atgep->atge_name, __func__,
 		    (128 << ((burst >> 12) & 0x07)),
@@ -1236,6 +1305,17 @@ atge_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 		OUTL_AND(atgep, ATGE_LTSSM_ID_CFG, ~LTSSM_ID_WRO_ENB);
 		OUTL_OR(atgep, ATGE_PCIE_PHYMISC, PCIE_PHYMISC_FORCE_RCV_DET);
 		break;
+	case ATGE_CHIP_816X:
+		OUTL_AND(atgep, ATGE_PEX_UNC_ERR_SEV,
+		    ~(PEX_UNC_ERR_SEV_UC | PEX_UNC_ERR_SEV_FCP));
+		/* Clear WoL settings */
+		OUTL(atgep, ATGE_WOL_CFG, 0);
+		OUTL_AND(atgep, ATGE_PDLL_TRNS1, ~PDLL_TRNS1_D3PLLOFF_ENB);
+		/* Deal witih wol 25M & pclk */
+		if (
+		/* Disable ASPM */
+
+	/* XXX ATGE_CHIP_816X see FBSD alc_init_pcie() */
 	}
 
 	/*
@@ -1265,6 +1345,7 @@ atge_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	case ATGE_CHIP_L1C:
 		mii_ops = &atge_l1c_mii_ops;
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	if ((atgep->atge_mii = mii_alloc(atgep, devinfo,
@@ -1327,6 +1408,7 @@ atge_attach(dev_info_t *devinfo, ddi_attach_cmd_t cmd)
 	case ATGE_CHIP_L1C:
 		atge_l1c_mii_reset(atgep);
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	/*
@@ -1621,6 +1703,7 @@ atge_resume(dev_info_t *dip)
 		break;
 	case ATGE_CHIP_L1C:
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	mii_resume(atgep->atge_mii);
@@ -2064,6 +2147,7 @@ atge_device_start(atge_t *atgep)
 	case ATGE_CHIP_L1C:
 		atge_l1c_program_dma(atgep);
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	ATGE_DB(("%s: %s() dma, counters programmed ", atgep->atge_name,
@@ -2092,6 +2176,7 @@ atge_device_start(atge_t *atgep)
 		/* Clear MAC statistics. */
 		atge_l1c_clear_stats(atgep);
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	/*
@@ -2115,6 +2200,7 @@ atge_device_start(atge_t *atgep)
 		/* Disable header split(?) */
 		OUTL(atgep, ATGE_HDS_CFG, 0);
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	/*
@@ -2171,6 +2257,7 @@ atge_device_start(atge_t *atgep)
 		break;
 	case ATGE_CHIP_L1C:
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	/*
@@ -2190,6 +2277,7 @@ atge_device_start(atge_t *atgep)
 		break;
 	case ATGE_CHIP_L1C:
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	/*
@@ -2276,6 +2364,7 @@ atge_device_start(atge_t *atgep)
 			break;
 		}
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	switch (ATGE_MODEL(atgep)) {
@@ -2430,6 +2519,7 @@ atge_device_start(atge_t *atgep)
 		/* Configure CMB DMA write threshold not required. */
 		/* Set CMB/SMB timer and enable them not required. */
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	/*
@@ -2478,6 +2568,7 @@ atge_device_start(atge_t *atgep)
 	case ATGE_CHIP_L1C:
 		reg |= L1C_CFG_SINGLE_PAUSE_ENB;
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	OUTL(atgep, ATGE_MAC_CFG, reg);
@@ -2503,6 +2594,7 @@ atge_device_start(atge_t *atgep)
 		OUTL(atgep, ATGE_INTR_STATUS, 0);
 		OUTL(atgep, ATGE_INTR_MASK, atgep->atge_intrs);
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	atge_mac_config(atgep);
@@ -2605,6 +2697,7 @@ atge_device_stop(atge_t *atgep)
 	case ATGE_CHIP_L1:
 	case ATGE_CHIP_L1C:
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	/*
@@ -2676,6 +2769,7 @@ atge_device_stop(atge_t *atgep)
 		reg = reg & ~RXQ_CFG_ENB;
 		OUTL(atgep, ATGE_RXQ_CFG, reg);
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	for (t = ATGE_RESET_TIMEOUT; t > 0; t--) {
@@ -2734,6 +2828,7 @@ atge_device_init(atge_t *atgep)
 		/* Enable all clocks. */
 		OUTL(atgep, ATGE_CLK_GATING_CFG, 0);
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 }
 
@@ -2834,6 +2929,7 @@ atge_send_a_packet(atge_t *atgep, mblk_t *mp)
 		ATGE_PUT32(r->r_desc_ring, &txd->flags, cflags);
 		break;
 		}
+	/* XXX ATGE_CHIP_816X */
 	default:
 		{
 		atge_tx_desc_t	*txd;
@@ -2879,6 +2975,7 @@ atge_send_a_packet(atge_t *atgep, mblk_t *mp)
 	case ATGE_CHIP_L1C:
 		atge_l1c_send_packet(r);
 		break;
+	/* XXX ATGE_CHIP_816X */
 	}
 
 	r->r_atge->atge_opackets++;

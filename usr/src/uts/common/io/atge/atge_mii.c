@@ -25,7 +25,7 @@
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  */
 /*
- * Copyright (c) 2008, Pyun YongHyeon <yongari@FreeBSD.org>
+ * Copyright (c) 2009, Pyun YongHyeon <yongari@FreeBSD.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -60,26 +60,44 @@
 #include "atge_l1e_reg.h"
 #include "atge_l1_reg.h"
 
-uint16_t
-atge_mii_read(void *arg, uint8_t phy, uint8_t reg)
+static uint16_t
+atge_mii_read_common(atge_t *atgep, uint8_t phy, uint8_t reg)
 {
-	atge_t	*atgep = arg;
-	uint32_t v;
+	uint32_t clk, v, checkv;
 	int i;
 
-	mutex_enter(&atgep->atge_mii_lock);
+	ASSERT(MUTEX_HELD(&atgep->atge_mii_lock));
+
+	/*
+	 * There are two primary differences between the 816x and newer chips and
+	 * those that are older.
+	 *
+	 * 1. The clock varies based on whether or not the link is up.
+	 * 2. When checking if its done we only check MDIO_OP_BUSY on newer
+	 * chips where as we check MDIO_OP_EXECUTE | MDIO_OP_BUSY on older
+	 * chips.
+	 */
+	if (ATGE_MODEL(atgep) >= ATGE_CHIP_816X) {
+		checkv = MDIO_OP_BUSY;
+		if (atgep->atge_link_state == LINK_STATE_UP) {
+			clk = MDIO_CLK_25_128;
+		} else {
+			clk = MDIO_CLK_25_4;
+		}
+	} else {
+		checkv = MDIO_OP_EXECUTE | MDIO_OP_BUSY;
+		clk = MDIO_CLK_25_4;
+	}
 
 	OUTL(atgep, ATGE_MDIO, MDIO_OP_EXECUTE | MDIO_OP_READ |
-	    MDIO_SUP_PREAMBLE | MDIO_CLK_25_4 | MDIO_REG_ADDR(reg));
+	    MDIO_SUP_PREAMBLE | clk | MDIO_REG_ADDR(reg));
 
 	for (i = PHY_TIMEOUT; i > 0; i--) {
 		drv_usecwait(5);
 		v = INL(atgep, ATGE_MDIO);
-		if ((v & (MDIO_OP_EXECUTE | MDIO_OP_BUSY)) == 0)
+		if ((v & checkv) == 0)
 			break;
 	}
-
-	mutex_exit(&atgep->atge_mii_lock);
 
 	if (i == 0) {
 		atge_error(atgep->atge_dip, "PHY (%d) read timeout : %d",
@@ -103,32 +121,162 @@ atge_mii_read(void *arg, uint8_t phy, uint8_t reg)
 	return ((v & MDIO_DATA_MASK) >> MDIO_DATA_SHIFT);
 }
 
-void
-atge_mii_write(void *arg, uint8_t phy, uint8_t reg, uint16_t val)
+static void
+atge_mii_write_common(atge_t *atgep, uint8_t phy, uint8_t reg, uint16_t val)
 {
-	atge_t	*atgep = arg;
-	uint32_t v;
+	uint32_t v, clk, checkv;
 	int i;
 
-	mutex_enter(&atgep->atge_mii_lock);
+	ASSERT(MUTEX_HELD(&atgep->atge_mii_lock));
+
+	/*
+	 * There are two primary differences between the 816x and newer chips and
+	 * those that are older.
+	 *
+	 * 1. The clock varies based on whether or not the link is up.
+	 * 2. When checking if its done we only check MDIO_OP_BUSY on newer
+	 * chips where as we check MDIO_OP_EXECUTE | MDIO_OP_BUSY on older
+	 * chips.
+	 */
+	if (ATGE_MODEL(atgep) >= ATGE_CHIP_816X) {
+		checkv = MDIO_OP_BUSY;
+		if (atgep->atge_link_state == LINK_STATE_UP) {
+			clk = MDIO_CLK_25_128;
+		} else {
+			clk = MDIO_CLK_25_4;
+		}
+	} else {
+		checkv = MDIO_OP_EXECUTE | MDIO_OP_BUSY;
+		clk = MDIO_CLK_25_4;
+	}
 
 	OUTL(atgep, ATGE_MDIO, MDIO_OP_EXECUTE | MDIO_OP_WRITE |
 	    (val & MDIO_DATA_MASK) << MDIO_DATA_SHIFT |
-	    MDIO_SUP_PREAMBLE | MDIO_CLK_25_4 | MDIO_REG_ADDR(reg));
+	    MDIO_SUP_PREAMBLE | clk | MDIO_REG_ADDR(reg));
 
 	for (i = PHY_TIMEOUT; i > 0; i--) {
 		drv_usecwait(5);
 		v = INL(atgep, ATGE_MDIO);
-		if ((v & (MDIO_OP_EXECUTE | MDIO_OP_BUSY)) == 0)
+		if ((v & checkv) == 0)
 			break;
 	}
 
+	if (i == 0) {
+		atge_error(atgep->atge_dip, "PHY (%d) write timeout:reg %d,"
+		    "  val %u", phy, reg, val);
+	}
+}
+
+uint16_t
+atge_mii_read(void *arg, uint8_t phy, uint8_t reg)
+{
+	uint16_t ret;
+	atge_t *atgep = arg;
+
+	mutex_enter(&atgep->atge_mii_lock);
+	ret = atge_mii_read_common(atgep, phy, reg);
+	mutex_exit(&atgep->atge_mii_lock);
+
+	return (ret);
+}
+
+void
+atge_mii_write(void *arg, uint8_t phy, uint8_t reg, uint16_t val)
+{
+	atge_t *atgep = arg;
+
+	mutex_enter(&atgep->atge_mii_lock);
+	atge_mii_write_common(atgep, phy, reg, val);
+	mutex_exit(&atgep->atge_mii_lock);
+}
+
+uint16_t
+atge_miidbg_read(atge_t *atgep, uint8_t reg)
+{
+	uint16_t val;
+
+	mutex_enter(&atgep->atge_mii_lock);
+	atge_mii_write_common(atgep, atgep->atge_phyaddr, ATGE_MII_DBG_ADDR,
+	    reg);
+	val = atge_mii_read_common(atgep, atgep->atge_phyaddr,
+	    ATGE_MII_DBG_DATA);
+	mutex_exit(&atgep->atge_mii_lock);
+	return (val);
+}
+
+void
+atge_miidbg_write(atge_t *atgep, uint8_t reg, uint16_t val)
+{
+	mutex_enter(&atgep->atge_mii_lock);
+	atge_mii_write_common(atgep, atgep->atge_phyaddr, ATGE_MII_DBG_ADDR,
+	    reg);
+	atge_mii_write_common(atgep, atgep->atge_phyaddr, ATGE_MII_DBG_DATA,
+	    reg);
+	mutex_exit(&atgep->atge_mii_lock);
+}
+
+uint16_t
+atge_miiext_read(atge_t *atgep, uint8_t devaddr, uint16_t reg)
+{
+	uint32_t clk, v;
+	int i;
+
+	mutex_enter(&atgep->atge_mii_lock);
+	OUTL(atgep, ATGE_EXT_MDIO, EXT_MDIO_REG(reg) |
+	    EXT_MDIO_DEVADDR(devaddr));
+	if (atgep->atge_link_state == LINK_STATE_UP) {
+		clk = MDIO_CLK_25_128;
+	} else {
+		clk = MDIO_CLK_25_4;
+	}
+	OUTL(atgep, ATGE_MDIO, MDIO_OP_EXECUTE | MDIO_OP_READ |
+	    MDIO_SUP_PREAMBLE | clk | MDIO_MODE_EXT);
+	for (i = PHY_TIMEOUT; i > 0; i--) {
+		drv_usecwait(5);
+		v = INL(atgep, ATGE_MDIO);
+		if ((v & MDIO_OP_BUSY) == 0)
+			break;
+	}
 	mutex_exit(&atgep->atge_mii_lock);
 
 	if (i == 0) {
-		atge_error(atgep->atge_dip, "PHY (%d) write timeout:reg %d,"
-		    "  val :%d", phy, reg, val);
+		atge_error(atgep->atge_dip, "PHY (%u) ext read timeout : reg %u",
+		    devaddr, reg);
+		return (0xffff);
 	}
+
+	return ((v & MDIO_DATA_MASK) >> MDIO_DATA_SHIFT);
+}
+
+void
+atge_miiext_write(atge_t *atgep, uint8_t devaddr, uint16_t reg, uint16_t val)
+{
+	uint32_t clk, v;
+	int i;
+
+	mutex_enter(&atgep->atge_mii_lock);
+	OUTL(atgep, ATGE_EXT_MDIO, EXT_MDIO_REG(reg) |
+	    EXT_MDIO_DEVADDR(devaddr));
+	if (atgep->atge_link_state == LINK_STATE_UP) {
+		clk = MDIO_CLK_25_128;
+	} else {
+		clk = MDIO_CLK_25_4;
+	}
+	OUTL(atgep, ATGE_MDIO, MDIO_OP_EXECUTE | MDIO_OP_WRITE |
+	    ((val & MDIO_DATA_MASK) << MDIO_DATA_SHIFT) |
+	    MDIO_SUP_PREAMBLE | clk | MDIO_MODE_EXT);
+	for (i = PHY_TIMEOUT; i > 0; i--) {
+		drv_usecwait(5);
+		v = INL(atgep, ATGE_MDIO);
+		if ((v & MDIO_OP_BUSY) == 0)
+			break;
+	}
+
+	if (i == 0) {
+		atge_error(atgep->atge_dip, "PHY (%u) ext write timeout : reg %u, val %u",
+		    devaddr, reg, val);
+	}
+	mutex_exit(&atgep->atge_mii_lock);
 }
 
 void
@@ -380,4 +528,69 @@ atge_l1c_mii_write(void *arg, uint8_t phy, uint8_t reg, uint16_t val)
 	} else {
 		atge_mii_write(arg, phy, reg, val);
 	}
+}
+
+
+void
+atge_816x_mii_reset(void *arg)
+{
+	atge_t *atgep = arg;
+        uint32_t val;
+
+        val = INL(atgep, ATGE_GPHY_CTRL);
+        val &= ~(GPHY_CTRL_CLR| GPHY_CTRL_LED_MODE |
+            GPHY_CTRL_GATE_25M_ENB | GPHY_CTRL_PHY_IDDQ | GPHY_CTRL_PHY_PLL_ON |
+            GPHY_CTRL_PWDOWN_HW | GPHY_CTRL_100AB_ENB);
+        val |= GPHY_CTRL_SEL_ANA_RESET;
+
+        /* Disable PHY hibernation. */
+        val &= ~(GPHY_CTRL_HIB_PULSE | GPHY_CTRL_HIB_EN);
+
+        OUTL(atgep, ATGE_GPHY_CTRL, val);
+        drv_usecwait(10);
+        OUTL(atgep, ATGE_GPHY_CTRL, val | GPHY_CTRL_CLR);
+        drv_usecwait(800);
+
+        /* Disable PHY hibernation. */
+        atge_miidbg_write(atgep, MII_DBG_LEGCYPS,
+            DBG_LEGCYPS_DEFAULT & ~DBG_LEGCYPS_ENB);
+        atge_miidbg_write(atgep, MII_DBG_HIBNEG,
+            DBG_HIBNEG_DEFAULT & ~(DBG_HIBNEG_PSHIB_EN | DBG_HIBNEG_HIB_PULSE));
+        atge_miidbg_write(atgep, MII_DBG_GREENCFG, DBG_GREENCFG_DEFAULT);
+
+        /* Disable EEE. */
+        val = INL(atgep, ATGE_LPI_CTL);
+        val &= ~LPI_CTL_ENB;
+        OUTL(atgep, ATGE_LPI_CTL, val);
+        atge_miiext_write(atgep, MII_EXT_ANEG, MII_EXT_ANEG_LOCAL_EEEADV, 0);
+
+        /* PHY power saving. */
+        atge_miidbg_write(atgep, MII_DBG_TST10BTCFG, DBG_TST10BTCFG_DEFAULT);
+        atge_miidbg_write(atgep, MII_DBG_SRDSYSMOD, DBG_SRDSYSMOD_DEFAULT);
+        atge_miidbg_write(atgep, MII_DBG_TST100BTCFG, DBG_TST100BTCFG_DEFAULT);
+        atge_miidbg_write(atgep, MII_DBG_ANACTL, DBG_ANACTL_DEFAULT);
+        val = atge_miidbg_read(atgep, MII_DBG_GREENCFG2);
+        val &= ~DBG_GREENCFG2_GATE_DFSE_EN;
+        atge_miidbg_write(atgep, MII_DBG_GREENCFG2, val);
+
+        /* RTL8139C, 120m issue. */
+        atge_miiext_write(atgep, MII_EXT_ANEG, MII_EXT_ANEG_NLP78,
+            ANEG_NLP78_120M_DEFAULT);
+        atge_miiext_write(atgep, MII_EXT_ANEG, MII_EXT_ANEG_S3DIG10,
+            ANEG_S3DIG10_DEFAULT);
+
+        if ((atgep->atge_flags & ATGE_FLAG_LINK_WAR) != 0) {
+                /* Turn off half amplitude. */
+                val = atge_miiext_read(atgep, MII_EXT_PCS, MII_EXT_CLDCTL3);
+                val |= EXT_CLDCTL3_BP_CABLE1TH_DET_GT;
+                atge_miiext_write(atgep, MII_EXT_PCS, MII_EXT_CLDCTL3, val);
+                /* Turn off Green feature. */
+                val = atge_miidbg_read(atgep, MII_DBG_GREENCFG2);
+                val |= DBG_GREENCFG2_BP_GREEN;
+                atge_miidbg_write(atgep, MII_DBG_GREENCFG2, val);
+                /* Turn off half bias. */
+                val = atge_miiext_read(atgep, MII_EXT_PCS, MII_EXT_CLDCTL5);
+                val |= EXT_CLDCTL5_BP_VD_HLFBIAS;
+                atge_miiext_write(atgep, MII_EXT_PCS, MII_EXT_CLDCTL5, val);
+        }
 }

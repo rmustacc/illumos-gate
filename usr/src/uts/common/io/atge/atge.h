@@ -55,6 +55,8 @@
 #define	ATGE_FLAG_CMB_BUG	0x0100
 #define	ATGE_FLAG_SMB_BUG	0x0200
 #define	ATGE_FLAG_APS		0x1000
+#define	ATGE_FLAG_LINK_WAR	0x2000
+#define	ATGE_FLAG_E2X00		0x4000
 
 #define	ATGE_CHIP_L1_DEV_ID	0x1048
 #define	ATGE_CHIP_L2_DEV_ID	0x2048
@@ -65,6 +67,14 @@
 #define	ATGE_CHIP_AR8151V2_DEV_ID	0x1083
 #define	ATGE_CHIP_AR8152V1_DEV_ID	0x2060
 #define	ATGE_CHIP_AR8152V2_DEV_ID	0x2062
+#define	ATGE_CHIP_AR8161	0x1091
+#define	ATGE_CHIP_AR8162	0x1090
+#define	ATGE_CHIP_AR8171	0x10A1
+#define	ATGE_CHIP_AR8172	0x10A0
+#define	ATGE_CHIP_E2200		0xE091
+#define	ATGE_CHIP_E2400		0xE0A1
+#define	ATGE_CHIP_E2500		0xE0B1
+
 
 #define	ATGE_PROMISC		0x001
 #define	ATGE_ALL_MULTICST	0x002
@@ -166,6 +176,7 @@ typedef	enum {
 	ATGE_CHIP_L2,
 	ATGE_CHIP_L1E,
 	ATGE_CHIP_L1C,
+	ATGE_CHIP_816X
 } atge_model_t;
 
 typedef	struct	atge_cards {
@@ -289,6 +300,8 @@ typedef	struct	atge {
 	atge_model_t		atge_model;
 	uint16_t		atge_vid;
 	uint16_t		atge_did;
+	uint16_t		atge_svid;
+	uint16_t		atge_sdid;
 	int			atge_chip_rev;
 	uint8_t			atge_revid;
 
