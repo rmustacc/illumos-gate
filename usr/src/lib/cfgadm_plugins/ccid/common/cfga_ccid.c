@@ -126,7 +126,7 @@ cfga_ccid_modify(uccid_cmd_icc_modify_t *modify, const char *ap,
 		held = B_TRUE;
 	}
 
-	if (ioctl(fd, UCCID_CMD_ICC_MODIFY, &modify) != 0) {
+	if (ioctl(fd, UCCID_CMD_ICC_MODIFY, modify) != 0) {
 		int e = errno;
 		(void) close (fd);
 		return (cfga_ccid_error(CFGA_ERROR, errp,
