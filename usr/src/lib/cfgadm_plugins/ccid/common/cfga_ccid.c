@@ -55,11 +55,142 @@ cfga_ccid_error(cfga_err_t err, char **errp, const char *fmt, ...)
 }
 
 cfga_err_t
+cfga_ccid_modify(uccid_cmd_icc_modify_t *modify, const char *ap,
+    struct cfga_confirm *confp, struct cfga_msg *msgp, char **errp,
+    boolean_t force)
+{
+	int fd;
+	uccid_cmd_status_t ucs;
+	uccid_cmd_txn_begin_t begin;
+	boolean_t held = B_FALSE;
+
+	/*
+	 * Check ap is valid by doing a status request.
+	 */
+	if ((fd = open(ap, O_RDWR)) < 0) {
+		return (cfga_ccid_error(CFGA_LIB_ERROR, errp,
+		    "failed to open %s: %s", ap, strerror(errno)));
+	}
+
+	bzero(&ucs, sizeof (ucs));
+	ucs.ucs_version = UCCID_VERSION_ONE;
+
+	if (ioctl(fd, UCCID_CMD_STATUS, &ucs) != 0) {
+		int e = errno;
+		if (errno == ENODEV) {
+			(void) close(fd);
+			return (cfga_ccid_error(CFGA_LIB_ERROR, errp,
+			    "ap %s going away", ap));
+		}
+		(void) close(fd);
+		return (cfga_ccid_error(CFGA_ERROR, errp,
+		    "ioctl on ap %s failed: %s", ap, strerror(e)));
+	}
+
+	/*
+	 * Attempt to get a hold. If we cannot obtain a hold, we will not
+	 * perform this unless the user has said we should force this.
+	 */
+	bzero(&begin, sizeof (begin));
+	begin.uct_version = UCCID_CURRENT_VERSION;
+	begin.uct_flags = UCCID_TXN_DONT_BLOCK;
+	if (ioctl(fd, UCCID_CMD_TXN_BEGIN, &begin) != 0) {
+		if (errno != EBUSY) {
+			int e = errno;
+			(void) close(fd);
+			return (cfga_ccid_error(CFGA_ERROR, errp, "failed to "
+			    "begin ccid transaction on ap %s: %s", ap,
+			    strerror(e)));
+		}
+
+		/*
+		 * If the user didn't force this operation, prompt if we would
+		 * interfere.
+		 */
+		if (!force) {
+			int confirm = 0;
+			const char *prompt = "CCID slot is held exclusively "
+			    "by another program.  Proceeding may interrupt "
+			    "their functionality. Continue?";
+			if (confp != NULL && confp->appdata_ptr != NULL) {
+				confirm = (*confp->confirm)(confp->appdata_ptr,
+				    prompt);
+			}
+
+			if (confirm == 0) {
+				(void) close(fd);
+				return (CFGA_NACK);
+			}
+		}
+	} else {
+		held = B_TRUE;
+	}
+
+	if (ioctl(fd, UCCID_CMD_ICC_MODIFY, &modify) != 0) {
+		int e = errno;
+		(void) close (fd);
+		return (cfga_ccid_error(CFGA_ERROR, errp,
+		    "failed to modify state on ap %s: %s", ap,
+		    strerror(e)));
+	}
+
+	if (held) {
+		uccid_cmd_txn_end_t end;
+
+		bzero(&end, sizeof (end));
+		end.uct_version = UCCID_CURRENT_VERSION;
+		end.uct_flags = UCCID_TXN_END_RELEASE;
+
+		if (ioctl(fd, UCCID_CMD_TXN_END, &end) != 0) {
+			int e = errno;
+			(void) close(fd);
+			return (cfga_ccid_error(CFGA_ERROR, errp, "failed to "
+			    "end transaction on ap %s: %s", ap,
+			    strerror(e)));
+		}
+	}
+
+	(void) close(fd);
+	return (CFGA_OK);
+
+}
+
+cfga_err_t
 cfga_change_state(cfga_cmd_t cmd, const char *ap, const char *opts,
     struct cfga_confirm *confp, struct cfga_msg *msgp, char **errp,
     cfga_flags_t flags)
 {
-	return (CFGA_OPNOTSUPP);
+	uccid_cmd_icc_modify_t modify;
+
+	if (errp != NULL) {
+		*errp = NULL;
+	}
+
+	if (ap == NULL) {
+		return (cfga_ccid_error(CFGA_APID_NOEXIST, errp, NULL));
+	}
+
+	if (opts != NULL) {
+		return (cfga_ccid_error(CFGA_ERROR, errp,
+		    "hardware specific options are not supported"));
+	}
+
+	bzero(&modify, sizeof (modify));
+	modify.uci_version = UCCID_CURRENT_VERSION;
+	switch (cmd) {
+	case CFGA_CMD_CONFIGURE:
+		modify.uci_action = UCCID_ICC_POWER_ON;
+		break;
+	case CFGA_CMD_UNCONFIGURE:
+		modify.uci_action = UCCID_ICC_POWER_OFF;
+		break;
+	default:
+		(void) cfga_help(msgp, opts, flags);
+		return (CFGA_OPNOTSUPP);
+	}
+
+	return (cfga_ccid_modify(&modify, ap, confp, msgp, errp,
+	    (flags & CFGA_FLAG_FORCE) != 0));
 }
 
 cfga_err_t
@@ -67,7 +198,35 @@ cfga_private_func(const char *function, const char *ap, const char *opts,
     struct cfga_confirm *confp, struct cfga_msg *msgp, char **errp,
     cfga_flags_t flags)
 {
-	return (CFGA_OPNOTSUPP);
+	uccid_cmd_icc_modify_t modify;
+
+	if (errp != NULL) {
+		*errp = NULL;
+	}
+
+	if (function == NULL) {
+		return (CFGA_ERROR);
+	}
+
+	if (ap == NULL) {
+		return (cfga_ccid_error(CFGA_APID_NOEXIST, errp, NULL));
+	}
+
+	if (opts != NULL) {
+		return (cfga_ccid_error(CFGA_ERROR, errp,
+		    "hardware specific options are not supported"));
+	}
+
+	if (strcmp(function, "warm_reset") != 0) {
+		return (CFGA_OPNOTSUPP);
+	}
+
+	bzero(&modify, sizeof (modify));
+	modify.uci_version = UCCID_CURRENT_VERSION;
+	modify.uci_action = UCCID_ICC_WARM_RESET;
+
+	return (cfga_ccid_modify(&modify, ap, confp, msgp, errp,
+	    (flags & CFGA_FLAG_FORCE) != 0));
 }
 
 /*
@@ -154,25 +313,34 @@ cfga_list_ext(const char *ap, struct cfga_list_data **ap_list, int *nlist,
 		*errp = NULL;
 	}
 
+	if (ap == NULL) {
+		return (cfga_ccid_error(CFGA_APID_NOEXIST, errp, NULL));
+	}
+
 	if (opts != NULL) {
-		return (cfga_ccid_error(CFGA_ERROR, errp, "hardware specific options are not supported"));
+		return (cfga_ccid_error(CFGA_ERROR, errp,
+		    "hardware specific options are not supported"));
 	}
 
 	if ((fd = open(ap, O_RDWR)) < 0) {
-		return (cfga_ccid_error(CFGA_LIB_ERROR, errp, "failed to open %s: %s", ap, strerror(errno)));
+		return (cfga_ccid_error(CFGA_LIB_ERROR, errp,
+		    "failed to open %s: %s", ap, strerror(errno)));
 	}
 
 	bzero(&ucs, sizeof (ucs));
 	ucs.ucs_version = UCCID_VERSION_ONE;
 
 	if (ioctl(fd, UCCID_CMD_STATUS, &ucs) != 0) {
-		if (errno == ENODEV) {
+		int e = errno;
+		(void) close(fd);
+		if (e == ENODEV) {
 			return (cfga_ccid_error(CFGA_LIB_ERROR, errp,
 			    "ap %s going away", ap));
 		}
 		return (cfga_ccid_error(CFGA_ERROR, errp,
-		    "ioctl on ap %s failed: %s", ap, strerror(errno)));
+		    "ioctl on ap %s failed: %s", ap, strerror(e)));
 	}
+	(void) close(fd);
 
 	if ((cld = calloc(1, sizeof (*cld))) == NULL) {
 		return (cfga_ccid_error(CFGA_LIB_ERROR, errp, "failed to "

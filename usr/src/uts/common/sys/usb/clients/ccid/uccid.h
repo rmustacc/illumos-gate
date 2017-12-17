@@ -112,6 +112,20 @@ typedef struct uccid_cmd_status {
  */
 #define	UCCID_CMD_STATUS	(UCCID_IOCTL | 0x3)
 
+#define	UCCID_ICC_POWER_ON	0x01
+#define	UCCID_ICC_POWER_OFF	0x02
+#define	UCCID_ICC_WARM_RESET	0x03
+
+typedef struct uccid_cmd_icc_modify {
+	uint32_t uci_version;
+	uint32_t uci_action;
+} uccid_cmd_icc_modify_t;
+
+/*
+ * Modify the state of the ICC, if present.
+ */
+#define	UCCID_CMD_ICC_MODIFY	(UCCID_IOCTL | 0x04)
+
 #ifdef __cplusplus
 }
 #endif

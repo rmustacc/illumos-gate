@@ -4895,6 +4895,46 @@ ccid_ioctl_fionread(ccid_slot_t *slot, ccid_minor_t *cmp, intptr_t arg, int mode
 }
 
 static int
+ccid_ioctl_icc_modify(ccid_slot_t *slot, intptr_t arg, int mode)
+{
+	int ret;
+	uccid_cmd_icc_modify_t uci;
+	ccid_t *ccid;
+
+	if (ddi_copyin((void *)arg, &uci, sizeof (uci), mode & FKIOCTL) != 0) {
+		return (EFAULT);
+	}
+
+	if (uci.uci_version != UCCID_VERSION_ONE) {
+		return (EINVAL);
+	}
+
+	switch (uci.uci_action) {
+	case UCCID_ICC_POWER_ON:
+	case UCCID_ICC_POWER_OFF:
+	case UCCID_ICC_WARM_RESET:
+		break;
+	default:
+		return (EINVAL);
+	}
+
+	ccid = slot->cs_ccid;
+	mutex_enter(&ccid->ccid_mutex);
+	if ((slot->cs_ccid->ccid_flags & CCID_F_DISCONNECTED) != 0) {
+		mutex_exit(&slot->cs_ccid->ccid_mutex);
+		return (ENODEV);
+	}
+
+	/*
+	 * XXX
+	 */
+
+	mutex_exit(&ccid->ccid_mutex);
+
+	return (0);
+}
+
+static int
 ccid_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp, int
     *rvalp)
 {
@@ -4923,6 +4963,8 @@ ccid_ioctl(dev_t dev, int cmd, intptr_t arg, int mode, cred_t *credp, int
 		return (ccid_ioctl_status(slot, arg, mode));
 	case FIONREAD:
 		return (ccid_ioctl_fionread(slot, cmp, arg, mode));
+	case UCCID_CMD_ICC_MODIFY:
+		return (ccid_ioctl_icc_modify(slot, arg, mode));
 	default:
 		break;
 	}
