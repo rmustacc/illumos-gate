@@ -37,11 +37,6 @@ lint := 	TARGET= lint
 _msg :=		TARGET= _msg
 package := 	TARGET= package
 
-TEXT_DOMAIN= 	SUNW_OST_OSLIB
-XGETFLAGS=	-a -x ccid.xcl
-POFILE=		ccid.po
-POFILES=	generic.po
-
 SED=	sed
 GREP=	grep
 
@@ -54,9 +49,10 @@ clobber: $(SUBDIRS)
 $(SUBDIRS):	FRC
 	@cd $@; pwd; $(MAKE) $(TARGET)
 
-_msg:	$(MSGDOMAIN) $(POFILE)
-	$(RM) $(MSGDOMAIN)/$(POFILE)
-	$(CP) $(POFILE) $(MSGDOMAIN)
+#
+# We don't build any gettext libraries here
+#
+_msg:
 
 $(POFILE):	$(POFILES)
 	$(RM) $@

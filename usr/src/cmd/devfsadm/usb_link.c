@@ -326,7 +326,6 @@ usb_process(di_minor_t minor, di_node_t node)
 	case DRIVER_HUBD:
 	case DRIVER_OHCI:
 	case DRIVER_EHCI:
-	case DRIVER_XHCI:
 	case DRIVER_UHCI:
 	case DRIVER_XHCI:
 		rules[0] = hub_rules[0];	/* For HUBs */
