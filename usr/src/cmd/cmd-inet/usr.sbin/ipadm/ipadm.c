@@ -672,14 +672,13 @@ do_show_ifprop(int argc, char **argv, const char *use)
 	ofmt_handle_t	ofmt;
 	ofmt_status_t	oferr;
 	uint_t		ofmtflags = 0;
-	uint_t		proto;
+	uint_t		proto = MOD_PROTO_NONE;
 	boolean_t	m_arg = _B_FALSE;
-	char		*protostr;
 	ipadm_if_info_t	*ifinfo, *ifp;
 	ipadm_status_t	status;
 	show_prop_state_t state;
+	boolean_t	p_arg = _B_FALSE;
 
-	protostr = "ip";
 	opterr = 0;
 	bzero(&state, sizeof (state));
 	state.sps_propval = NULL;
@@ -690,6 +689,9 @@ do_show_ifprop(int argc, char **argv, const char *use)
 	    show_ifprop_longopts, NULL)) != -1) {
 		switch (option) {
 		case 'p':
+			if (p_arg)
+				die("-p must be specified once only");
+			p_arg = _B_TRUE;
 			if (ipadm_str2nvlist(optarg, &proplist,
 			    IPADM_NORVAL) != 0)
 				die("invalid interface properties specified");
@@ -704,7 +706,12 @@ do_show_ifprop(int argc, char **argv, const char *use)
 			if (m_arg)
 				die("cannot specify more than one -m");
 			m_arg = _B_TRUE;
-			protostr = optarg;
+
+			if ((proto = ipadm_str2proto(optarg)) ==
+			    MOD_PROTO_NONE) {
+				die("invalid protocol '%s' specified",
+				    optarg);
+			}
 			break;
 		default:
 			die_opterr(optopt, option, use);
@@ -719,8 +726,9 @@ do_show_ifprop(int argc, char **argv, const char *use)
 	else
 		ifname = NULL;
 
-	if ((proto = ipadm_str2proto(protostr)) == MOD_PROTO_NONE)
-		die("invalid protocol '%s' specified", protostr);
+	if (p_arg && proto == MOD_PROTO_NONE) {
+		die("protocol must be specified when property name is used");
+	}
 
 	state.sps_proto = proto;
 	state.sps_proplist = proplist;

@@ -161,6 +161,8 @@ extern mod_prop_getf_t	mod_get_boolean, mod_get_uint32,
 
 extern int		mod_uint32_value(const void *, mod_prop_info_t *,
     uint_t, unsigned long *);
+extern int		mod_boolean_value(const void *, mod_prop_info_t *,
+    uint_t, boolean_t *);
 extern mod_prop_info_t	*mod_prop_lookup(mod_prop_info_t[], const char *,
     uint_t);
 extern int		mod_set_buf_prop(mod_prop_info_t[], netstack_t *,

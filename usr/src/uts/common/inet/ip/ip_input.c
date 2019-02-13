@@ -260,7 +260,6 @@ ip_input_common_v4(ill_t *ill, ill_rx_ring_t *ip_ring, mblk_t *mp_chain,
 
 		ASSERT(DB_TYPE(mp) == M_DATA);
 
-
 		/*
 		 * if db_ref > 1 then copymsg and free original. Packet
 		 * may be changed and we do not want the other entity

@@ -1206,6 +1206,10 @@ enum {
  * There is a separate ill_t representing IPv4 and IPv6 which has a
  * backpointer to the phyint structure for accessing common state.
  */
+typedef enum {
+	PHYINT_TCP_FLAG_LRO	= (1 << 0)
+} phyint_tcp_flags_t;
+
 typedef struct phyint {
 	struct ill_s	*phyint_illv4;
 	struct ill_s	*phyint_illv6;
@@ -1216,6 +1220,7 @@ typedef struct phyint {
 	kmutex_t	phyint_lock;
 	struct ipsq_s	*phyint_ipsq;		/* back pointer to ipsq */
 	struct ipmp_grp_s *phyint_grp;		/* associated IPMP group */
+	phyint_tcp_flags_t	phyint_tcp_flags;	/* various flags */
 	char		phyint_name[LIFNAMSIZ];	/* physical interface name */
 	uint64_t	phyint_kstats0[IPMP_KSTAT_MAX];	/* baseline kstats */
 } phyint_t;
@@ -3797,6 +3802,22 @@ extern int	inet_pton(int, char *, void *);
 
 extern sin_t	sin_null;	/* Zero address for quick clears */
 extern sin6_t	sin6_null;	/* Zero address for quick clears */
+
+/*
+ * This provides a means for modules such as TCP to get and set properties on a
+ * per-datalink basis, this means something that's true regardless of
+ * whether you're on top of an IPv4 or IPv6 interface. Today, this uses the
+ * phyint_t as the storage for such things. The corresponding module like TCP or
+ * UDP must perform all appropriate credential checks before reaching here. We
+ * call such properties 'Link Module Properties' or LMPs for short.
+ */
+typedef enum {
+	IP_LMP_TCP_LRO	= 1
+} ip_lmp_t;
+
+extern int ip_set_lmp(netstack_t *, const char *, ip_lmp_t, const void *,
+    size_t);
+extern int ip_get_lmp(netstack_t *, const char *, ip_lmp_t, void *, size_t *);
 
 #endif	/* _KERNEL */
 

@@ -19226,3 +19226,198 @@ ip_sioctl_get_lifhwaddr(ipif_t *ipif, sin_t *dummy_sin, queue_t *q, mblk_t *mp,
 
 	return (0);
 }
+
+static int
+ip_get_lmp_tcp_lro(ip_stack_t *ipst, const char *name, boolean_t *state)
+{
+	phyint_t		*phyint;
+
+	rw_enter(&ipst->ips_ill_g_lock, RW_READER);
+	phyint = avl_find(&ipst->ips_phyint_g_list->phyint_list_avl_by_name,
+	    name, NULL);
+	if (phyint == NULL) {
+		rw_exit(&ipst->ips_ill_g_lock);
+		return (ENOENT);
+	}
+
+	mutex_enter(&phyint->phyint_lock);
+	*state = (phyint->phyint_tcp_flags & PHYINT_TCP_FLAG_LRO) != 0;
+	mutex_exit(&phyint->phyint_lock);
+	rw_exit(&ipst->ips_ill_g_lock);
+
+	return (0);
+}
+
+static int
+ip_set_lmp_tcp_lro(ip_stack_t *ipst, const char *name, boolean_t enable)
+{
+	int			ret;
+	phyint_t		*phyint;
+	ill_t			*ill;
+	ill_dld_capab_t		*idc;
+	mac_perim_handle_t	mph;
+	dld_capab_lro_t		lro;
+	uint_t			dlflag;
+
+	rw_enter(&ipst->ips_ill_g_lock, RW_READER);
+	phyint = avl_find(&ipst->ips_phyint_g_list->phyint_list_avl_by_name,
+	    name, NULL);
+	if (phyint == NULL) {
+		rw_exit(&ipst->ips_ill_g_lock);
+		return (ENOENT);
+	}
+
+	/*
+	 * Because we hold the ill_g_lock, we do not need to hold the
+	 * phyint_lock to change this as it must be held to change the mapping
+	 * between the ill_t and phyint_t.
+	 */
+	if (phyint->phyint_illv4 != NULL) {
+		ill = phyint->phyint_illv4;
+	} else {
+		ill = phyint->phyint_illv6;
+	}
+
+	if (ill == NULL) {
+		rw_exit(&ipst->ips_ill_g_lock);
+		return (ENOTSUP);
+	}
+
+	mutex_enter(&ill->ill_lock);
+	if (ILL_IS_CONDEMNED(ill)) {
+		mutex_exit(&ill->ill_lock);
+		rw_exit(&ipst->ips_ill_g_lock);
+		return (ENOENT);
+	}
+
+	if (IS_LOOPBACK(ill)) {
+		mutex_exit(&ill->ill_lock);
+		rw_exit(&ipst->ips_ill_g_lock);
+		return (ENOTSUP);
+	}
+
+	ill_refhold_locked(ill);
+	mutex_exit(&ill->ill_lock);
+	rw_exit(&ipst->ips_ill_g_lock);
+
+	/*
+	 * Now that we have a hold on the ill_t, go ahead and try to enter the
+	 * ipsq and the mac perimeter so we can set this value.
+	 */
+	if (!ipsq_enter(ill, B_FALSE, NEW_OP)) {
+		ill_refrele(ill);
+		return (EIO);
+	}
+
+	if ((ill->ill_capabilities & ILL_CAPAB_DLD) == 0 ||
+	    ill->ill_dld_capab == NULL) {
+		ret = ENOTSUP;
+		goto out;
+	}
+
+	idc = ill->ill_dld_capab;
+
+	if (enable) {
+		dlflag = DLD_ENABLE;
+	} else {
+		dlflag = DLD_DISABLE;
+	}
+
+	lro.lro_flags = DLD_CAPAB_LRO_TCP;
+	ill_mac_perim_enter(ill, &mph);
+	ret = idc->idc_capab_df(idc->idc_capab_dh, DLD_CAPAB_LRO, &lro, dlflag);
+	ill_mac_perim_exit(ill, mph);
+
+out:
+	ipsq_exit(phyint->phyint_ipsq);
+
+	mutex_enter(&phyint->phyint_lock);
+	if (ret == 0) {
+		if (enable) {
+			phyint->phyint_tcp_flags |= PHYINT_TCP_FLAG_LRO;
+		} else {
+			phyint->phyint_tcp_flags &= ~PHYINT_TCP_FLAG_LRO;
+		}
+	}
+	mutex_exit(&phyint->phyint_lock);
+
+	ill_refrele(ill);
+	return (ret);
+}
+
+/*
+ * The following routines are used by modules to have per-datalink property
+ * storage which we tack onto the phyint_t.
+ */
+int
+ip_set_lmp(netstack_t *ns, const char *name, ip_lmp_t prop, const void *pval,
+    size_t psize)
+{
+	int		ret;
+	ip_stack_t	*ipst;
+	const boolean_t	*bval;
+
+	if (ns == NULL || name == NULL || name[0] == '\0' || pval == NULL ||
+	    psize == 0) {
+		return (EINVAL);
+	}
+
+	ipst = ns->netstack_ip;
+	if (ipst == NULL) {
+		return (ENOTSUP);
+	}
+
+	switch (prop) {
+	case IP_LMP_TCP_LRO:
+		if (psize != sizeof (boolean_t)) {
+			ret = EINVAL;
+			break;
+		}
+
+		bval = pval;
+		ret = ip_set_lmp_tcp_lro(ipst, name, *bval);
+		break;
+	default:
+		ret = EINVAL;
+		break;
+	}
+
+	return (ret);
+}
+
+
+int
+ip_get_lmp(netstack_t *ns, const char *name, ip_lmp_t prop, void *pval,
+    size_t *psize)
+{
+	int		ret;
+	ip_stack_t	*ipst;
+	boolean_t	*bval;
+
+	if (ns == NULL || name == NULL || name[0] == '\0' || pval == NULL ||
+	    psize == NULL || *psize == 0) {
+		return (EINVAL);
+	}
+
+	ipst = ns->netstack_ip;
+	if (ipst == NULL) {
+		return (ENOTSUP);
+	}
+
+	switch (prop) {
+	case IP_LMP_TCP_LRO:
+		if (*psize != sizeof (boolean_t)) {
+			ret = EINVAL;
+			break;
+		}
+
+		bval = pval;
+		ret = ip_get_lmp_tcp_lro(ipst, name, bval);
+		break;
+	default:
+		ret = EINVAL;
+		break;
+	}
+
+	return (ret);
+}

@@ -1588,6 +1588,21 @@ mac_rx_bypass_disable(mac_client_handle_t mch)
 }
 
 /*
+ * Enable/Disable rx TCP LRO. By default, LRO is disabled.
+ */
+void
+mac_rx_tcp_lro_enable(mac_client_handle_t mch)
+{
+	((mac_client_impl_t *)mch)->mci_state_flags |= MCIS_RX_TCP_LRO;
+}
+
+void
+mac_rx_tcp_lro_disable(mac_client_handle_t mch)
+{
+	((mac_client_impl_t *)mch)->mci_state_flags &= ~MCIS_RX_TCP_LRO;
+}
+
+/*
  * Set the receive callback for the specified MAC client. There can be
  * at most one such callback per MAC client.
  */

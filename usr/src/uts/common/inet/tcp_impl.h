@@ -92,6 +92,20 @@ extern sock_downcalls_t sock_tcp_downcalls;
 #define	TCPOPT_MAX_SACK_LEN	36
 #define	TCPOPT_HEADER_LEN	2
 
+/*
+ * RFC7323-recommended phrasing of TSTAMP option, for easier parsing
+ */
+
+#ifdef _BIG_ENDIAN
+#define	TCPOPT_NOP_NOP_TSTAMP ((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16) | \
+	(TCPOPT_TSTAMP << 8) | 10)
+#else
+#define	TCPOPT_NOP_NOP_TSTAMP ((10 << 24) | (TCPOPT_TSTAMP << 16) | \
+	(TCPOPT_NOP << 8) | TCPOPT_NOP)
+#endif
+
+
+
 /* Round up the value to the nearest mss. */
 #define	MSS_ROUNDUP(value, mss)		((((value) - 1) / (mss) + 1) * (mss))
 

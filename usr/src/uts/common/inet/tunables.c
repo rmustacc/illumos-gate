@@ -92,6 +92,30 @@ mod_set_boolean(netstack_t *stack, cred_t *cr, mod_prop_info_t *pinfo,
 	return (0);
 }
 
+int
+mod_boolean_value(const void *pval, mod_prop_info_t *pinfo, uint_t flags,
+    boolean_t *bp)
+{
+	char 		*end;
+	ulong_t		new_value;
+
+	if (flags & MOD_PROP_DEFAULT) {
+		*bp = pinfo->prop_def_bval;
+		return (0);
+	}
+
+	if (ddi_strtoul(pval, &end, 10, &new_value) != 0 || *end != '\0')
+		return (EINVAL);
+	if (new_value != B_TRUE && new_value != B_FALSE) {
+		return (EINVAL);
+	}
+
+	*bp = (boolean_t)new_value;
+
+	return (0);
+}
+
+
 /*
  * Retrieves property permission, default value, current value or possible
  * values for those properties whose value type is boolean_t.

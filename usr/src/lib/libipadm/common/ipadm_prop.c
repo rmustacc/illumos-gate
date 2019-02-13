@@ -67,7 +67,8 @@ static ipadm_status_t	i_ipadm_validate_if(ipadm_handle_t, const char *,
 static ipadm_pd_getf_t	i_ipadm_get_prop, i_ipadm_get_ifprop_flags,
 			i_ipadm_get_mtu, i_ipadm_get_metric,
 			i_ipadm_get_usesrc, i_ipadm_get_forwarding,
-			i_ipadm_get_ecnsack, i_ipadm_get_hostmodel;
+			i_ipadm_get_ecnsack, i_ipadm_get_hostmodel,
+			i_ipadm_get_prop_onoff;
 
 /*
  * Callback function to set property values. These functions translate the
@@ -78,7 +79,8 @@ static ipadm_pd_setf_t	i_ipadm_set_prop, i_ipadm_set_mtu,
 			i_ipadm_set_ifprop_flags,
 			i_ipadm_set_metric, i_ipadm_set_usesrc,
 			i_ipadm_set_forwarding, i_ipadm_set_eprivport,
-			i_ipadm_set_ecnsack, i_ipadm_set_hostmodel;
+			i_ipadm_set_ecnsack, i_ipadm_set_hostmodel,
+			i_ipadm_set_prop_onoff;
 
 /* array of protocols we support */
 static int protocols[] = { MOD_PROTO_IP, MOD_PROTO_RAWIP,
@@ -180,6 +182,9 @@ static ipadm_prop_desc_t ipadm_tcp_prop_table[] = {
 
 	{ "smallest_nonpriv_port", NULL, IPADMPROP_CLASS_MODULE, MOD_PROTO_TCP,
 	    0, i_ipadm_set_prop, i_ipadm_get_prop, i_ipadm_get_prop },
+
+	{ "lro", NULL, IPADMPROP_CLASS_IF, MOD_PROTO_TCP, 0,
+	    i_ipadm_set_prop_onoff, i_ipadm_get_onoff, i_ipadm_get_prop_onoff },
 
 	{ NULL, NULL, 0, 0, 0, NULL, NULL, NULL }
 };
@@ -1089,6 +1094,27 @@ i_ipadm_get_prop(ipadm_handle_t iph, const void *arg,
 	return (status);
 }
 
+static ipadm_status_t
+i_ipadm_get_prop_onoff(ipadm_handle_t iph, const void *arg,
+    ipadm_prop_desc_t *pdp, char *buf, uint_t *bufsize, uint_t proto,
+    uint_t valtype)
+{
+	ipadm_status_t	status = IPADM_SUCCESS;
+
+	status = i_ipadm_get_prop(iph, arg, pdp, buf, bufsize, proto, valtype);
+	if (status != IPADM_SUCCESS) {
+		return (status);
+	}
+
+	if (strcmp(buf, "1") == 0) {
+		(void) snprintf(buf, *bufsize, IPADM_ONSTR);
+	} else if (strcmp(buf, "0") == 0) {
+		(void) snprintf(buf, *bufsize, IPADM_OFFSTR);
+	}
+
+	return (status);
+}
+
 /*
  * Populates the ipmgmt_prop_arg_t based on the class of property.
  *
@@ -1347,6 +1373,22 @@ i_ipadm_set_prop(ipadm_handle_t iph, const void *arg,
 	}
 	free(mip);
 	return (status);
+}
+
+static ipadm_status_t
+i_ipadm_set_prop_onoff(ipadm_handle_t iph, const void *arg,
+    ipadm_prop_desc_t *pdp, const void *pval, uint_t proto, uint_t flags)
+{
+	const char *onnum = "1";
+	const char *offnum = "0";
+
+	if (strcmp(pval, IPADM_ONSTR) == 0) {
+		pval = onnum;
+	} else if (strcmp(pval, IPADM_OFFSTR) == 0) {
+		pval = offnum;
+	}
+
+	return (i_ipadm_set_prop(iph, arg, pdp, pval, proto, flags));
 }
 
 /*

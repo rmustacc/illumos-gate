@@ -122,6 +122,8 @@ struct mac_soft_ring_s {
 	mac_soft_ring_drain_func_t s_ring_drain_func;
 
 	mac_tx_stats_t	s_st_stat;
+	mac_lro_state_t *s_lro;
+	uint_t		s_lro_len;
 };
 
 typedef void (*mac_srs_drain_proc_t)(mac_soft_ring_set_t *, uint_t);

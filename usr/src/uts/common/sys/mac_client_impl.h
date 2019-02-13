@@ -386,6 +386,10 @@ extern	int	mac_tx_percpu_cnt;
  *
  *	This client has no MAC unicast addresss associated with it.
  *
+ * MCIS_RX_TCP_LRO
+ *
+ * 	This client has requested that TCP LRO be performed.
+ *
  */
 /* MCI state flags */
 #define	MCIS_IS_VNIC			0x0001
@@ -402,6 +406,7 @@ extern	int	mac_tx_percpu_cnt;
 #define	MCIS_IS_AGGR_CLIENT		0x0800
 #define	MCIS_RX_BYPASS_DISABLE		0x1000
 #define	MCIS_NO_UNICAST_ADDR		0x2000
+#define	MCIS_RX_TCP_LRO			0x4000
 
 /* Mac protection flags */
 #define	MPT_FLAG_V6_LOCAL_ADDR_SET	0x0001

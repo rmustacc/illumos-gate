@@ -4686,6 +4686,43 @@ mac_rx_soft_ring_process(mac_client_impl_t *mcip, mac_soft_ring_t *ringp,
 	ASSERT(MUTEX_NOT_HELD(&ringp->s_ring_lock));
 
 	mutex_enter(&ringp->s_ring_lock);
+	/*
+	 * If this is a TCP ring and the client is OK receiving LRO packets,
+	 * attempt to perform software LRO. Don't do this if we don't have at
+	 * least one packet.
+	 */
+	if ((ringp->s_ring_type & ST_RING_TCP) != 0 &&
+	    (mcip->mci_state_flags & MCIS_RX_TCP_LRO) != 0 &&
+	    cnt > 1) {
+		int altcnt = cnt;
+		size_t altsz = sz;
+
+		mutex_exit(&ringp->s_ring_lock);
+		mac_sw_lro(ringp->s_lro, ringp->s_lro_len, &mp_chain,
+		    &tail, &altcnt, &sz);
+		if (altcnt != cnt || altsz != sz) {
+			mac_srs_rx_t *srs_rx = &mac_srs->srs_rx;
+			/*
+			 * XXX Update the srs counts here without doing any
+			 * signaling logic. This is required to make sure that
+			 * we properly end up handling 
+			 */
+			mutex_enter(&mac_srs->srs_lock);
+			srs_rx->sr_poll_pkt_cnt -= (cnt - altcnt);
+			if (mac_srs->srs_type & SRST_BW_CONTROL) {
+				/* XXX Used to be MAC_TX_UPDATE_BW_INFO */
+				mutex_enter(&mac_srs->srs_bw->mac_bw_lock);
+				mac_srs->srs_bw->mac_bw_sz -= (sz - altsz);
+				mac_srs->srs_bw->mac_bw_used += (sz - altsz);
+				mutex_exit(&mac_srs->srs_bw->mac_bw_lock);
+			}
+			mutex_exit(&mac_srs->srs_lock);
+			sz = altsz;
+			cnt = altcnt;
+		}
+		mutex_enter(&ringp->s_ring_lock);
+	}
+
 	ringp->s_ring_total_inpkt += cnt;
 	ringp->s_ring_total_rbytes += sz;
 	if ((mac_srs->srs_rx.sr_poll_pkt_cnt <= 1) &&
@@ -4718,7 +4755,7 @@ mac_rx_soft_ring_process(mac_client_impl_t *mcip, mac_soft_ring_t *ringp,
 			 * We are the chain of 1 packet so
 			 * go through this fast path.
 			 */
-			ASSERT(mp_chain->b_next == NULL);
+			ASSERT3P(mp_chain->b_next, ==, NULL);
 
 			(*proc)(arg1, arg2, mp_chain, NULL);
 
@@ -4775,6 +4812,23 @@ mac_rx_soft_ring_process(mac_client_impl_t *mcip, mac_soft_ring_t *ringp,
 	} else {
 		/* ST_RING_WORKER_ONLY case */
 		SOFT_RING_ENQUEUE_CHAIN(ringp, mp_chain, tail, cnt, sz);
+#ifdef	DEBUG
+		{
+			mblk_t *nmp = mp_chain;
+			mblk_t *cont;
+			while (nmp != NULL) {
+				cont = nmp->b_cont;
+				while (cont != NULL) {
+					ASSERT3P(cont->b_next, ==, NULL);
+					cont = cont->b_cont;
+				}
+				nmp = nmp->b_next;
+			}
+		}
+#endif
+
+
+
 		mac_soft_ring_worker_wakeup(ringp);
 		mutex_exit(&ringp->s_ring_lock);
 	}

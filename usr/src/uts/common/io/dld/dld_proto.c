@@ -1561,6 +1561,33 @@ dld_capab_lso(dld_str_t *dsp, void *data, uint_t flags)
 }
 
 static int
+dld_capab_lro(dld_str_t *dsp, void *data, uint_t flags)
+{
+	dld_capab_lro_t	*lro = data;
+	ASSERT(MAC_PERIM_HELD(dsp->ds_mh));
+
+	if (dsp->ds_sap != ETHERTYPE_IP &&
+	    dsp->ds_sap != ETHERTYPE_IPV6)
+		return (ENOTSUP);
+
+	if ((lro->lro_flags & ~DLD_CAPAB_LRO_TCP) != 0)
+		return (EINVAL);
+
+	switch (flags) {
+	case DLD_ENABLE:
+		mac_rx_tcp_lro_enable(dsp->ds_mch);
+		break;
+	case DLD_DISABLE:
+		mac_rx_tcp_lro_disable(dsp->ds_mch);
+		break;
+	default:
+		return (ENOTSUP);
+	}
+
+	return (0);
+}
+
+static int
 dld_capab(dld_str_t *dsp, uint_t type, void *data, uint_t flags)
 {
 	int	err;
@@ -1598,6 +1625,10 @@ dld_capab(dld_str_t *dsp, uint_t type, void *data, uint_t flags)
 
 	case DLD_CAPAB_IPCHECK:
 		err = dld_capab_ipcheck(dsp, data, flags);
+		break;
+
+	case DLD_CAPAB_LRO:
+		err = dld_capab_lro(dsp, data, flags);
 		break;
 
 	default:

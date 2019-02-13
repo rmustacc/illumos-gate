@@ -609,16 +609,6 @@ so_process_new_message(struct sonode *so, mblk_t *mp_head, mblk_t *mp_last_head)
 			mp_head->b_next = NULL;
 			so->so_rcv_q_last_head = mp_last_head;
 		} else {
-#ifdef DEBUG
-			{
-				mblk_t *tmp_mblk;
-				tmp_mblk = mp_head;
-				while (tmp_mblk != NULL) {
-					ASSERT(tmp_mblk->b_prev != NULL);
-					tmp_mblk = tmp_mblk->b_next;
-				}
-			}
-#endif
 			so->so_rcv_q_last_head->b_next = mp_head;
 			so->so_rcv_q_last_head = mp_last_head;
 		}
@@ -1047,6 +1037,15 @@ so_enqueue_msg(struct sonode *so, mblk_t *mp, size_t msg_size)
 #ifdef DEBUG
 	if (so_debug_length) {
 		ASSERT(so_check_length(so));
+	}
+
+	if (mp != NULL) {
+		mblk_t *nmp = mp;
+
+		while (nmp != NULL) {
+			VERIFY3P(nmp->b_next, ==, NULL);
+			nmp = nmp->b_cont;
+		}
 	}
 #endif
 	so->so_rcv_queued += msg_size;

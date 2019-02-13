@@ -907,6 +907,13 @@ extern void mac_led_init(mac_impl_t *);
 extern int mac_led_get(mac_handle_t, mac_led_mode_t *, mac_led_mode_t *);
 extern int mac_led_set(mac_handle_t, mac_led_mode_t);
 
+typedef struct mac_lro_state_s mac_lro_state_t;
+
+extern void mac_lro_alloc(mac_lro_state_t **, uint_t *);
+extern void mac_lro_free(mac_lro_state_t *, uint_t);
+extern void mac_sw_lro(mac_lro_state_t *, uint_t, mblk_t **, mblk_t **, int *,
+    size_t *);
+
 #ifdef	__cplusplus
 }
 #endif

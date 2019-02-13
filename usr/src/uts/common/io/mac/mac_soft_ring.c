@@ -228,6 +228,10 @@ mac_soft_ring_create(int id, clock_t wait, uint16_t type,
 
 	mac_soft_ring_stat_create(ringp);
 
+	if (type & ST_RING_TCP) {
+		mac_lro_alloc(&ringp->s_lro, &ringp->s_lro_len);
+	}
+
 	return (ringp);
 }
 
@@ -243,6 +247,11 @@ mac_soft_ring_free(mac_soft_ring_t *softring)
 	    (S_RING_CONDEMNED | S_RING_CONDEMNED_DONE | S_RING_PROC)) ==
 	    (S_RING_CONDEMNED | S_RING_CONDEMNED_DONE));
 	mac_drop_chain(softring->s_ring_first, "softring free");
+	if (softring->s_ring_type & ST_RING_TCP) {
+		mac_lro_free(softring->s_lro, softring->s_lro_len);
+		softring->s_lro = NULL;
+		softring->s_lro_len = 0;
+	}
 	softring->s_ring_tx_arg2 = NULL;
 	mac_soft_ring_stat_delete(softring);
 	mac_callback_free(softring->s_ring_notify_cb_list);
@@ -375,6 +384,22 @@ mac_rx_soft_ring_drain(mac_soft_ring_t *ringp)
 	while ((ringp->s_ring_first != NULL) &&
 	    !(ringp->s_ring_state & S_RING_PAUSE)) {
 		mp = ringp->s_ring_first;
+
+#ifdef	DEBUG
+		{
+			mblk_t *nmp = mp;
+			mblk_t *cont;
+			while (nmp != NULL) {
+				cont = nmp->b_cont;
+				while (cont != NULL) {
+					ASSERT3P(cont->b_next, ==, NULL);
+					cont = cont->b_cont;
+				}
+				nmp = nmp->b_next;
+			}
+		}
+#endif
+
 		ringp->s_ring_first = NULL;
 		ringp->s_ring_last = NULL;
 		cnt = ringp->s_ring_count;
