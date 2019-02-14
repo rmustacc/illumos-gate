@@ -484,11 +484,17 @@ t1_validate_sblock(t1_state_t *t1, const void *buf, size_t len,
 	case T1_SBLOCK_REQ_ABORT:
 	case T1_SBLOCK_RESP_ABORT:
 		explen = 0;
+		break;
 	case T1_SBLOCK_REQ_WTX:
 	case T1_SBLOCK_RESP_WTX:
 	case T1_SBLOCK_REQ_IFS:
 	case T1_SBLOCK_RESP_IFS:
 		explen = 1;
+		break;
+	default:
+		return (t1_invalid(t1, T1_VALIDATE_BAD_SBLOCK_OP, "asked to "
+		    "process S-block operation 0x%x with an operation type "
+		    "that isn't an S-block", op));
 	}
 
 	if (explen != hdr->t1h_len) {
