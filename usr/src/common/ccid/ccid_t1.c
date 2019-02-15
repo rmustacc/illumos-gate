@@ -478,6 +478,7 @@ t1_validate_sblock(t1_state_t *t1, const void *buf, size_t len,
 		    hdr->t1h_pcb & T1_SBLOCK_OP_MASK));
 	}
 
+	/* XXX This had some gcc7 warnings, come back and verify it's correct */
 	switch (op) {
 	case T1_SBLOCK_REQ_RESYNCH:
 	case T1_SBLOCK_RESP_RSYNCH:

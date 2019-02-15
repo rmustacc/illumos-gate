@@ -801,7 +801,7 @@ ccidadm_do_reader(int argc, char *argv[])
 static void
 ccidadm_reader_usage(FILE *out)
 {
-	(void) fprintf(out, "\treader\t[reader] ...\n");
+	(void) fprintf(out, "\treader\t\t[reader] ...\n");
 }
 
 typedef struct ccidadm_cmdtab {

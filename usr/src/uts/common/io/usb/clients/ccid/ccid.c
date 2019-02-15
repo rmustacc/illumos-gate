@@ -524,7 +524,7 @@ typedef enum ccid_slot_flags {
     CCID_SLOT_F_INTR_ADD)
 #define	CCID_SLOT_F_WORK_MASK	(CCID_SLOT_F_INTR_MASK | \
     CCID_SLOT_F_NEED_TXN_RESET)
-#define	CCID_SLOT_F_NOEXCL_MASK	(CCID_SLOT_F_NEED_TXN_RESET| CCID_SLOT_F_NEED_IO_TEARDOWN)
+#define	CCID_SLOT_F_NOEXCL_MASK	(CCID_SLOT_F_NEED_TXN_RESET | CCID_SLOT_F_NEED_IO_TEARDOWN)
 
 typedef void (*icc_init_func_t)(struct ccid *, struct ccid_slot *);
 typedef int (*icc_transmit_func_t)(struct ccid *, struct ccid_slot *);
@@ -3975,6 +3975,7 @@ ccid_read_copyout(struct uio *uiop, const mblk_t *mp)
 		}
 	}
 
+	uiop->uio_loffset = off;
 	return (0);
 }
 
