@@ -4678,6 +4678,28 @@ pt_auxv(mdb_tgt_t *t, const auxv_t **auxvp)
 	return (set_errno(EMDB_NOPROC));
 }
 
+static int
+pt_addr_to_lineinfo(mdb_tgt_t *t, uintptr_t addr, mdb_lineinfo_t *linep)
+{
+	int ret;
+	prlineinfo_t line;
+
+	if (t->t_pshandle == NULL) {
+		return (set_errno(EMDB_NOPROC));
+	}
+
+	if ((ret = Paddr_to_lineinfo(t->t_pshandle, addr, &line)) != 0) {
+		return (set_errno(ret));
+	}
+
+	linep->ml_file = line.prl_srcfile;
+	linep->ml_line = line.prl_line;
+	linep->ml_column = line.prl_column;
+	linep->ml_line_start_addr = line.prl_min_addr;
+	linep->ml_line_end_addr = line.prl_max_addr;
+
+	return (0);
+}
 
 static const mdb_tgt_ops_t proc_ops = {
 	pt_setflags,				/* t_setflags */
@@ -4730,7 +4752,8 @@ static const mdb_tgt_ops_t proc_ops = {
 	pt_getareg,				/* t_getareg */
 	pt_putareg,				/* t_putareg */
 	pt_stack_iter,				/* t_stack_iter */
-	pt_auxv					/* t_auxv */
+	pt_auxv,				/* t_auxv */
+	pt_addr_to_lineinfo			/* t_addr_to_lineinfo */
 };
 
 /*

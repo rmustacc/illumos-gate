@@ -37,6 +37,7 @@ CMNOBJS =	\
 	Pgcore.o	\
 	Pidle.o		\
 	Pisprocdir.o	\
+	Plineinfo.o	\
 	Plwpregs.o	\
 	Pservice.o	\
 	Psymtab.o	\
@@ -85,7 +86,8 @@ include ../../Makefile.rootfs
 SRCS =		$(CMNOBJS:%.o=../common/%.c) $(ISAOBJS:%.o=%.c)
 
 LIBS =		$(DYNLIB) $(LINTLIB)
-LDLIBS +=	-lrtld_db -lelf -lctf -lc
+LDLIBS +=	-lrtld_db -lelf -lctf -lc -ldwarf -lavl
+CPPFLAGS +=	-I$(SRC)/lib/libdwarf/common
 CSTD =	$(CSTD_GNU99)
 CPPFLAGS +=	$($(MACH64)_CPPFLAGS)
 

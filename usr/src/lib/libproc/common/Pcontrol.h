@@ -47,6 +47,7 @@
 #include <libproc.h>
 #include <thread.h>
 #include <sys/secflags.h>
+#include <sys/avl.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -126,6 +127,8 @@ typedef struct file_info {	/* symbol information for a mapped file */
 	uintptr_t *file_saddrs; /* section header addresses */
 	uint_t  file_nsaddrs;   /* number of section header addresses */
 	boolean_t file_cvt;	/* Have we tried to convert this? */
+	int file_dwarf;		/* Have we processed dwarf for this object? */
+	avl_tree_t file_lines;	/* line information */
 } file_info_t;
 
 typedef struct map_info {	/* description of an address space mapping */

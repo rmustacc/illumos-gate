@@ -2310,3 +2310,12 @@ mdb_tgt_register_regvars(mdb_tgt_t *t, const mdb_tgt_regdesc_t *rdp,
 		    (uintptr_t)t, MDB_NV_PERSIST | flags);
 	}
 }
+
+int
+mdb_tgt_addr_to_lineinfo(mdb_tgt_t *t, uintptr_t addr, mdb_lineinfo_t *linep)
+{
+	if (t->t_ops->t_addr_to_line == NULL) {
+		return (set_errno(EMDB_TGTNOTSUP));
+	}
+	return (t->t_ops->t_addr_to_line(t, addr, linep));
+}

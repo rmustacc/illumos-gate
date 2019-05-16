@@ -96,6 +96,7 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	Paddr_to_loadobj;
 	Paddr_to_map;
 	Paddr_to_text_map;
+	Paddr_to_lineinfo;
 	Pasfd;
 	Pclearfault;
 	Pclearsig;

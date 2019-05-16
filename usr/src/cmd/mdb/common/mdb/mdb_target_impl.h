@@ -134,6 +134,7 @@ typedef struct mdb_tgt_ops {
 	    mdb_tgt_stack_f *, void *);
 
 	int (*t_auxv)(mdb_tgt_t *, const auxv_t **auxvp);
+	int (*t_addr_to_line)(mdb_tgt_t *, uintptr_t, mdb_lineinfo_t *);
 } mdb_tgt_ops_t;
 
 /*

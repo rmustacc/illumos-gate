@@ -71,6 +71,7 @@
 #include <mdb/mdb_macalias.h>
 #include <mdb/mdb_tab.h>
 #include <mdb/mdb_typedef.h>
+#include <mdb/mdb_source.h>
 #ifdef _KMDB
 #include <kmdb/kmdb_kdi.h>
 #endif
@@ -3247,6 +3248,7 @@ const mdb_dcmd_t mdb_dcmd_builtins[] = {
 	{ "run", "[ args ... ]", "run a new target process", cmd_run },
 	{ "sigbp", "?[+/-dDestT] [-c cmd] [-n count] SIG ...", "stop on "
 	    "delivery of the specified signals", cmd_sigbp, sigbp_help },
+	{ "source", "?", "dispaly source code near addr", cmd_source, cmd_source_help },
 	{ "step", "[ over | out ] [SIG]",
 	    "single-step target to next instruction", cmd_step },
 	{ "sysbp", "?[+/-dDestT] [-io] [-c cmd] [-n count] syscall ...",

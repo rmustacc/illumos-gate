@@ -776,6 +776,20 @@ extern int proc_finistdio(void);
 typedef int proc_fdinfo_f(void *, prfdinfo_t *);
 extern int Pfdinfo_iter(struct ps_prochandle *, proc_fdinfo_f *, void *);
 
+/*
+ * Functions that are used to get information about source files.
+ */
+typedef struct prlineinfo {
+	uintptr_t	prl_addr;
+	uint64_t	prl_line;
+	uint64_t	prl_column;
+	uint64_t	prl_min_addr;
+	uint64_t	prl_max_addr;
+	const char	*prl_srcfile;
+} prlineinfo_t;
+
+extern int Paddr_to_lineinfo(struct ps_prochandle *, uintptr_t, prlineinfo_t *);
+
 #ifdef	__cplusplus
 }
 #endif

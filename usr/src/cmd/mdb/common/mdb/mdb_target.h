@@ -538,6 +538,22 @@ typedef int mdb_tgt_xdata_f(void *, const char *, const char *, size_t);
 extern int mdb_tgt_xdata_iter(mdb_tgt_t *, mdb_tgt_xdata_f *, void *);
 extern ssize_t mdb_tgt_getxdata(mdb_tgt_t *, const char *, void *, size_t);
 
+/*
+ * Line Information Interfaces
+ *
+ * These interfaces are used to give a target the ability to map a given
+ * instruction to its corresponding source line information, if it is available.
+ */
+typedef struct mdb_lineinfo {
+	const char	*ml_file;
+	uint64_t	ml_line;
+	uint64_t	ml_column;
+	uint64_t	ml_line_start_addr;
+	uint64_t	ml_line_end_addr;
+} mdb_lineinfo_t;
+
+extern int mdb_tgt_addr_to_lineinfo(mdb_tgt_t *, uintptr_t, mdb_lineinfo_t *);
+
 #ifdef	__cplusplus
 }
 #endif
