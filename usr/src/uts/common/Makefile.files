@@ -2287,3 +2287,6 @@ BNX_OBJS += \
 	bnx_lm_main.o \
 	bnx_lm_recv.o \
 	bnx_lm_send.o
+
+ICE_OBJS += ice.o ice_controlq.o ice_dma.o ice_hw.o ice_nvm.o ice_gld.o \
+		ice_intr.o

@@ -52,6 +52,8 @@ SYMBOL_SCOPE {
 	cv_destroy			{ FLAGS = EXTERN };
 	cv_init				{ FLAGS = EXTERN };
 	cv_reltimedwait			{ FLAGS = EXTERN };
+	cv_signal			{ FLAGS = EXTERN };
+	cv_wait				{ FLAGS = EXTERN };
 	ddi_cb_register			{ FLAGS = EXTERN };
 	ddi_cb_unregister		{ FLAGS = EXTERN };
 	ddi_dev_regsize			{ FLAGS = EXTERN };
@@ -140,6 +142,7 @@ SYMBOL_SCOPE {
 	list_next			{ FLAGS = EXTERN };
 	list_remove			{ FLAGS = EXTERN };
 	list_remove_head		{ FLAGS = EXTERN };
+	list_remove_tail		{ FLAGS = EXTERN };
 	memcpy				{ FLAGS = EXTERN };
 	memset				{ FLAGS = EXTERN };
 	miocack				{ FLAGS = EXTERN };
@@ -187,6 +190,8 @@ SYMBOL_SCOPE {
 	strlen				{ FLAGS = EXTERN };
 	timeout				{ FLAGS = EXTERN };
 	untimeout			{ FLAGS = EXTERN };
+	vcmn_err			{ FLAGS = EXTERN };
+	vdev_err			{ FLAGS = EXTERN };
 	vsnprintf			{ FLAGS = EXTERN };
 	vsprintf			{ FLAGS = EXTERN };
 };
