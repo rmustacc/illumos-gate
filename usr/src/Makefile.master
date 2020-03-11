@@ -1145,6 +1145,11 @@ PKGARCHIVE=$(SRC)/../../packages/$(MACH)/nightly$(PKGARCHIVESUFFIX)
 PKGPUBLISHER_REDIST=	on-nightly
 PKGPUBLISHER_NONREDIST=	on-extra
 
+#
+# Root directory for object files and everything else.
+#
+WORKROOT=$(SRC)/../../work/
+
 #	Default build rules which perform comment section post-processing.
 #
 .c:

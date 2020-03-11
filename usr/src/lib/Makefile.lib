@@ -37,6 +37,11 @@ LORDER=		lorder
 TSORT=		tsort
 
 #
+# Target Architecture
+#
+TARGETMACH=	$(MACH)
+
+#
 # By default, we define the source directory for libraries to be
 # one level up from the ISA-specific directory, where the code is
 # actually built.  Many libraries define a 'common' directory to
@@ -67,6 +72,7 @@ MAPFILES =	$(MAPFILEDIR)/mapfile-vers
 #
 HDRDIR=		/__nonexistent_directory__
 
+
 #
 # We don't build archive (*.a) libraries by default anymore.
 # If a component of the build needs to build an archive library
@@ -78,14 +84,13 @@ HDRDIR=		/__nonexistent_directory__
 # Archive libraries must not be installed in the proto area.
 #
 LIBS=
-MACHLIBS=	$(LIBS:%=$(MACH)/%)
-MACHLIBS64=	$(LIBS:%=$(MACH64)/%)
 DYNLIB=		$(LIBRARY:.a=.so$(VERS))
 DYNLIBPSR=	$(LIBRARY:.a=_psr.so$(VERS))
 DYNLIBCCC=	$(LIBRARYCCC:.a=.so$(VERS))
 LIBLINKS=	$(LIBRARY:.a=.so)
 LIBLINKSCCC=	$(LIBRARYCCC:.a=.so)
 LIBNAME=	$(LIBRARY:lib%.a=%)
+LIBWORKNAME=	$(LIBRARY:%.a=%)
 LIBLINKPATH=
 LIBNULL=	null.a
 ROOTHDRDIR=	$(ROOT)/usr/include
@@ -108,6 +113,18 @@ ROOTLINKSCCC=	$(ROOTLIBDIR)/$(LIBLINKSCCC)
 ROOTLINKSCCC64=	$(ROOTLIBDIR64)/$(LIBLINKSCCC)
 ROOTFS_LINKSCCC=	$(ROOTFS_LIBDIR)/$(LIBLINKSCCC)
 ROOTFS_LINKSCCC64=	$(ROOTFS_LIBDIR64)/$(LIBLINKSCCC)
+
+#
+# Construct the work directory that this library should be built in.
+#
+WORKDIR=	$(WORKROOT)/lib/$(LIBWORKNAME)/$(TARGETMACH)
+WORKDIRS=	$(WORKDIR)/objs $(WORKDIR)/pics
+
+#
+# This should be the new target that library Makefiles use for the 'all'
+# target.
+#
+ALL_LIBS=	$(LIBS:%=$(WORKDIR)/%)
 
 # Demo rules
 DEMOFILES=
@@ -132,8 +149,8 @@ DYNFLAGS=	$(HSONAME) $(ZTEXT) $(ZDEFS) $(BDIRECT) \
 
 LDLIBS=		$(LDLIBS.lib)
 
-OBJS=		$(OBJECTS:%=objs/%)
-PICS=		$(OBJECTS:%=pics/%)
+OBJS=		$(OBJECTS:%=$(WORKDIR)/objs/%)
+PICS=		$(OBJECTS:%=$(WORKDIR)/pics/%)
 
 # Declare that all library .o's can all be made in parallel.
 # The DUMMY target is for those instances where OBJS and PICS
@@ -224,11 +241,6 @@ objs/%.o pics/%.o: %.cc
 
 # Define the majority text domain in this directory.
 TEXT_DOMAIN= SUNW_OST_OSLIB
-
-#
-# Target Architecture
-#
-TARGETMACH=	$(MACH)
 
 #
 # Allow people to define their own clobber rules.  Normal makefiles

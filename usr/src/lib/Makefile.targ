@@ -45,13 +45,13 @@ $(ROOTLIBDIR64)/$(DYNLIBCCC) :=	FILEMODE= 755
 $(ROOTHDRDIR)/%: $(HDRDIR)/%
 	$(INS.file)
 
-$(ROOTLIBDIR)/%: %
+$(ROOTLIBDIR)/%: $(WORKDIR)/%
 	$(INS.file)
-$(ROOTLIBDIR64)/%: %
+$(ROOTLIBDIR64)/%: $(WORKDIR)/%
 	$(INS.file)
-$(ROOTFS_LIBDIR)/%: %
+$(ROOTFS_LIBDIR)/%: $(WORKDIR)/%
 	$(INS.file)
-$(ROOTFS_LIBDIR64)/%: %
+$(ROOTFS_LIBDIR64)/%: $(WORKDIR)/%
 	$(INS.file)
 
 $(ROOTLIBDIR)/$(LIBLINKS): $(ROOTLIBDIR)/$(LIBLINKS)$(VERS)
@@ -64,46 +64,35 @@ $(ROOTLIBDIR)/$(LIBLINKSCCC): $(ROOTLIBDIR)/$(LIBLINKSCCC)$(VERS)
 $(ROOTLIBDIR64)/$(LIBLINKSCCC): $(ROOTLIBDIR64)/$(LIBLINKSCCC)$(VERS)
 	$(INS.liblinkccc64)
 
-$(ROOTLINTDIR)/%: $(SRCDIR)/%
-	$(INS.file)
-$(ROOTFS_LINTDIR)/%: $(SRCDIR)/%
-	$(INS.file)
-
 $(ROOTDEMODIRS):
 	$(INS.dir)
 $(ROOTDEMODIRBASE)/%: $(DEMOFILESRCDIR)/%
 	$(INS.file)
 
-objs/%.o pics/%.o: $(SRCDIR)/%.c
+$(WORKDIRS):
+	-@mkdir -p $@
+
+$(WORKDIR)/objs/%.o $(WORKDIR)/pics/%.o: $(SRCDIR)/%.c $(WORKDIRS)
 	$(COMPILE.c) -o $@ $<
 	$(POST_PROCESS_O)
 
-objs/%.o pics/%.o: $(SRCDIR)/%.cc
+$(WORKDIR)/objs/%.o $(WORKDIR)/pics/%.o: $(SRCDIR)/%.cc $(WORKDIRS)
 	$(COMPILE.cc) -o $@ $<
 	$(POST_PROCESS_CC_O)
 
-objs pics:
-	-@mkdir -p $@
-
-$(LIBRARY): objs .WAIT $$(OBJS)
+$(WORKDIR)/$(LIBRARY): objs .WAIT $$(OBJS)
 	$(BUILD.AR)
 	$(POST_PROCESS_A)
 
-$(DYNLIB): $$(MAPFILES)
+$(WORKDIR)/$(DYNLIB): $$(MAPFILES)
 
-$(DYNLIB): pics .WAIT $$(PICS) $$(ALTPICS) $$(EXTPICS)
+$(WORKDIR)/$(DYNLIB): $(WORKDIRS) .WAIT $$(PICS) $$(ALTPICS) $$(EXTPICS)
 	$(BUILD.SO)
 	$(POST_PROCESS_SO)
 
-$(DYNLIBCCC): pics .WAIT $$(PICS) $$(ALTPICS) $$(EXTPICS)
+$(WORKDIR)/$(DYNLIBCCC): $(WORKDIRS) .WAIT $$(PICS) $$(ALTPICS) $$(EXTPICS)
 	$(BUILDCCC.SO)
 	$(POST_PROCESS_SO)
-
-$(LINTLIB): $$(SRCS)
-	$(LINT.c) -o $(LIBNAME) $(SRCS) > $(LINTOUT) 2>&1
-
-lintcheck: $$(SRCS)
-	$(LINT.c) $(LINTCHECKFLAGS) $(SRCS) $(LDLIBS)
 
 $(TYPECHECK): $(TYPECHECK_LIB32) $(TYPECHECK_LIB64)
 	$(TYPECHECK.lib)
