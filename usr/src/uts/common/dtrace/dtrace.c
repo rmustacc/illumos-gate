@@ -17100,6 +17100,60 @@ dtrace_ioctl(dev_t dev, int cmd, intptr_t arg, int md, cred_t *cr, int *rv)
 		return (0);
 	}
 
+	case DTRACEIOC_PLOCDESC: {
+		dtrace_plocdesc_t loc;
+		dtrace_probe_t *probe;
+		dtrace_provider_t *prov;
+
+		if (copyin((void *)arg, &loc, sizeof (loc)) != 0)
+			return (EFAULT);
+
+		if (loc.dtpld_id == DTRACE_IDNONE)
+			return (EINVAL);
+
+		mutex_enter(&dtrace_provider_lock);
+		mutex_enter(&mod_lock);
+		mutex_enter(&dtrace_lock);
+
+		if (loc.dtpld_id > dtrace_nprobes) {
+			mutex_exit(&dtrace_lock);
+			mutex_exit(&mod_lock);
+			mutex_exit(&dtrace_provider_lock);
+			return (EINVAL);
+		}
+
+		if ((probe = dtrace_probes[loc.dtpld_id - 1]) == NULL) {
+			mutex_exit(&dtrace_lock);
+			mutex_exit(&mod_lock);
+			mutex_exit(&dtrace_provider_lock);
+			return (EINVAL);
+		}
+
+		mutex_exit(&dtrace_lock);
+
+		prov = probe->dtpr_provider;
+		if (prov->dtpv_pops.dtps_getlocdesc == NULL) {
+			/*
+			 * If the provider doesn't know, set this to zero which
+			 * ensures that anything that's relying on the exact
+			 * number will fail.
+			 */
+			loc.dtpld_nlocs = 0;
+			loc.dtpld_loc0 = 0;
+		} else {
+			prov->dtpv_pops.dtps_getlocdesc(prov->dtpv_arg,
+			    probe->dtpr_id, probe->dtpr_arg, &loc);
+		}
+
+		mutex_exit(&mod_lock);
+		mutex_exit(&dtrace_provider_lock);
+
+		if (copyout(&loc, (void *)arg, sizeof (loc)) != 0)
+			return (EFAULT);
+
+		return (0);
+	}
+
 	default:
 		break;
 	}

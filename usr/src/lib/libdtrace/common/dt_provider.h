@@ -86,6 +86,7 @@ typedef struct dt_probe {
 	dt_node_t **pr_xargv;		/* translated argument vector */
 	uint_t pr_xargc;		/* translated argument count */
 	uint8_t *pr_mapping;		/* translated argument mapping */
+	dt_idhash_t *pr_locals;		/* inline translated locals */
 	dt_probe_instance_t *pr_inst;	/* list of functions and offsets */
 	dtrace_typeinfo_t *pr_argv;	/* output argument types */
 	int pr_argc;			/* output argument count */
@@ -110,6 +111,10 @@ extern int dt_probe_define(dt_provider_t *, dt_probe_t *,
     const char *, const char *, uint32_t, int);
 
 extern dt_node_t *dt_probe_tag(dt_probe_t *, uint_t, dt_node_t *);
+
+extern void dt_provider_fill_locals(dtrace_hdl_t *, dt_probe_t *);
+extern boolean_t dt_probe_append_local(dtrace_hdl_t *, dt_probe_t *, const char *,
+    char *);
 
 #ifdef	__cplusplus
 }

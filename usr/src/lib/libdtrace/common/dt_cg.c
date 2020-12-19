@@ -1347,7 +1347,6 @@ dt_cg_inline(dt_node_t *dnp, dt_irlist_t *dlp, dt_regset_t *drp)
 	int i;
 
 	assert(idp->di_flags & DT_IDFLG_INLINE);
-	assert(idp->di_ops == &dt_idops_inline);
 
 	if (idp->di_kind == DT_IDENT_ARRAY) {
 		for (i = 0, pnp = dnp->dn_args;
@@ -2021,6 +2020,19 @@ dt_cg_node(dt_node_t *dnp, dt_irlist_t *dlp, dt_regset_t *drp)
 					dt_cg_assoc_op(dnp, dlp, drp);
 				else
 					dt_cg_array_op(dnp, dlp, drp);
+				break;
+			}
+
+			if (dnp->dn_ident->di_kind == DT_IDENT_IXLATE) {
+				/*
+				 * An inline translator has been found. In this
+				 * case it has a single child that contains the
+				 * actual code generation that we care about.
+				 */
+				assert(dnp->dn_args != NULL);
+				assert(dnp->dn_ident->di_id == 0);
+				dt_cg_node(dnp->dn_args, dlp, drp);
+				dnp->dn_reg = dnp->dn_args->dn_reg;
 				break;
 			}
 

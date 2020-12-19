@@ -1181,6 +1181,22 @@ typedef struct dtrace_argdesc {
 } dtrace_argdesc_t;
 
 /*
+ * DTrace Probe Location Description
+ *
+ * Several providers will have a single semantic probe map to several different
+ * points of instantiation. That is, something like 'pid123::foo:return' will
+ * map to more than one actual location. To aid libdtrace in using features that
+ * depend on the actual instantiation locations (such as debugging information
+ * found in DWARF), the following structure can be used to get additional
+ * information from a provider.
+ */
+typedef struct dtrace_plocdesc {
+	dtrace_id_t dtpld_id;		/* probe identifiers */
+	uint_t dtpld_nlocs;		/* number of instantiation locs. */
+	uint64_t dtpld_loc0;		/* location of entry zero */
+} dtrace_plocdesc_t;
+
+/*
  * DTrace Stability Attributes
  *
  * Each DTrace provider advertises the name and data stability of each of its
@@ -1270,6 +1286,7 @@ typedef struct dtrace_providerdesc {
 #define	DTRACEIOC_FORMAT	(DTRACEIOC | 16)	/* get format str */
 #define	DTRACEIOC_DOFGET	(DTRACEIOC | 17)	/* get DOF */
 #define	DTRACEIOC_REPLICATE	(DTRACEIOC | 18)	/* replicate enab */
+#define	DTRACEIOC_PLOCDESC	(DTRACEIOC | 19)	/* probe location */
 
 /*
  * DTrace Helpers
@@ -1706,6 +1723,39 @@ typedef struct dof_helper {
  *   back into at all.  mod_lock is held.  cpu_lock is not held, and may not be
  *   acquired.
  *
+ * 1.12  void dtps_getlocdesc(void *arg, dtrace_id_t id, void *parg,
+ *            dtrace_plocdesc_t *desc)
+ *
+ * 1.12.1  Overview
+ *
+ *   Called to retrieve the number of program text locations a probe was
+ *   instantiated. This is used to make sure that when debug information is
+ *   being used, it can take into account where in instruction text the probe
+ *   is.
+ *
+ * 1.12.2  Arguments and notes
+ *
+ *   The first argument is the cookie as passed to dtrace_register(). The
+ *   second argument is the identifier of the current probe. The third
+ *   argument is the probe argument as passed to dtrace_probe_create(). The
+ *   fourth argument is a pointer to the argument description.  This
+ *   description is an output parameter:  it expects the number of locations
+ *   that the probe identified by 'id' has and then, if there is only a single
+ *   location, the program text address of that.
+ *
+ * 1.12.3  Return value
+ *
+ *   None.  The dtpld_nlocs, and dtpld_loc0 members of the dtrace_plocdesc_t
+ *   structure are all output values.
+ *
+ * 1.12.4  Caller's context
+ *
+ *   dtps_getlocdesc() is called from ioctl() context. mod_lock is held, and
+ *   the DTrace framework is locked in such a way that providers may not
+ *   register or unregister.  This means that the provider may not call any
+ *   DTrace API that affects its registration with the framework, including
+ *   dtrace_register(), dtrace_unregister(), dtrace_invalidate(), and
+ *   dtrace_condense().
  *
  * 2 Provider-to-Framework API
  *
@@ -2065,6 +2115,8 @@ typedef struct dtrace_pops {
 	    int argno, int aframes);
 	int (*dtps_mode)(void *arg, dtrace_id_t id, void *parg);
 	void (*dtps_destroy)(void *arg, dtrace_id_t id, void *parg);
+	void (*dtps_getlocdesc)(void *arg, dtrace_id_t id, void *parg,
+	    dtrace_plocdesc_t *desc);
 } dtrace_pops_t;
 
 #define	DTRACE_MODE_KERNEL			0x01

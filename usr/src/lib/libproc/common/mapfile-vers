@@ -93,6 +93,7 @@ SYMBOL_VERSION SUNWprivate_1.1 {
 	Lxecbkpt;
 	Lxecwapt;
 	Paddr_to_ctf;
+	Paddr_to_dbgelf;
 	Paddr_to_loadobj;
 	Paddr_to_map;
 	Paddr_to_text_map;

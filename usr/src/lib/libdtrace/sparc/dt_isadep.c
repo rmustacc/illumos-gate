@@ -336,3 +336,9 @@ dt_pid_create_glob_offset_probes(struct ps_prochandle *P, dtrace_hdl_t *dtp,
 
 	return (ftp->ftps_noffs);
 }
+
+boolean_t
+dt_dwarf_isareg(uint32_t class, uint32_t dwarf_reg, uint32_t *regno)
+{
+	return (B_FALSE);
+}

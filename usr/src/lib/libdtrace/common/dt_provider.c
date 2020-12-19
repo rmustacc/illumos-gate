@@ -446,6 +446,7 @@ dt_probe_create(dtrace_hdl_t *dtp, dt_ident_t *idp, int protoc,
 	prp->pr_xargv = dt_alloc(dtp, sizeof (dt_node_t *) * xargc);
 	prp->pr_xargc = xargc;
 	prp->pr_mapping = dt_alloc(dtp, sizeof (uint8_t) * xargc);
+	prp->pr_locals = NULL;
 	prp->pr_inst = NULL;
 	prp->pr_argv = dt_alloc(dtp, sizeof (dtrace_typeinfo_t) * xargc);
 	prp->pr_argc = xargc;
@@ -520,6 +521,9 @@ dt_probe_destroy(dt_probe_t *prp)
 		dt_free(dtp, pip->pi_enoffs);
 		dt_free(dtp, pip);
 	}
+
+	if (prp->pr_locals != NULL)
+		dt_idhash_destroy(prp->pr_locals);
 
 	dt_free(dtp, prp->pr_mapping);
 	dt_free(dtp, prp->pr_argv);
@@ -894,5 +898,85 @@ dtrace_probe_iter(dtrace_hdl_t *dtp,
 		return (dt_set_errno(dtp, EDT_BADPGLOB));
 	default:
 		return (dt_set_errno(dtp, errno));
+	}
+}
+
+boolean_t
+dt_probe_append_local(dtrace_hdl_t *dtp, dt_probe_t *probe, const char *name,
+    char *expr)
+{
+	dt_idhash_t *dhp = probe->pr_locals;
+	dt_ident_t *idp;
+
+	idp = dt_idhash_lookup(dhp, name);
+	if (idp == NULL) {
+		dtrace_attribute_t attr;
+		dtrace_typeinfo_t dtt;
+		dt_ixlnode_t *ixl;
+
+		/*
+		 * Unfortunately, we can make no guarantees about the stability
+		 * of this as we're getting something from the underlying
+		 * program itself. This will always change, even the name of the
+		 * variable itself. We mark the name and data as external, as it
+		 * is in fact owned by the program itself.
+		 */
+		attr.dtat_name = DTRACE_STABILITY_EXTERNAL;
+		attr.dtat_data = DTRACE_STABILITY_EXTERNAL;
+		attr.dtat_class = DTRACE_CLASS_UNKNOWN;
+
+		if ((ixl = malloc(sizeof (dt_ixlnode_t))) == NULL)
+			longjmp(yypcb->pcb_jmpbuf, EDT_NOMEM);
+
+
+		/* XXX xyerror and actual scheme */
+		if (dt_type_lookup("uint64_t", &dtt) == -1) {
+			xyerror(D_UNKNOWN, "failed to resolve type of local %s: %s\n",
+			    name, dtrace_errmsg(dtp, dtrace_errno(dtp)));
+		}
+
+		ixl->dix_expr = expr;
+		idp = dt_idhash_insert(dhp, name, DT_IDENT_IXLATE, DT_IDFLG_IXLATE,
+		    0, attr, 0, &dt_idops_locals, ixl, dtp->dt_gen);
+		idp->di_ctfp = dtt.dtt_ctfp;
+		idp->di_type = dtt.dtt_type;
+	} else {
+		dt_ixlnode_t *ixl = idp->di_iarg;;
+		free(ixl->dix_expr);
+		ixl->dix_expr = expr;
+	}
+
+	return (B_TRUE);
+}
+
+void
+dt_provider_fill_locals(dtrace_hdl_t *dtp, dt_probe_t *probe)
+{
+	dtrace_plocdesc_t locdesc;
+	const dtrace_probedesc_t *desc = yypcb->pcb_pdesc;
+
+	memset(&locdesc, '\0', sizeof (locdesc));
+	locdesc.dtpld_id = probe->pr_ident->di_id;
+	if (dt_ioctl(dtp, DTRACEIOC_PLOCDESC, &locdesc) != 0) {
+		xyerror(D_UNKNOWN, "unable to confirm with provider that "
+		    "%s:%s:%s:%s only supports a single location, which is "
+		    "required for inline translation (use of \"locals\")",
+		    desc->dtpd_provider, desc->dtpd_mod, desc->dtpd_func,
+		    desc->dtpd_name);
+	}
+
+	if (locdesc.dtpld_nlocs != 1) {
+		xyerror(D_UNKNOWN, "probe requieres several locations to "
+		    "instantiate; however inline translation of \"locals\" "
+		    "requires a single location");
+	}
+
+	probe->pr_locals = dt_idhash_create("local inline translators",
+	    NULL, 0, 0);
+	if (probe->pr_locals == NULL)
+		longjmp(yypcb->pcb_jmpbuf, EDT_NOMEM);
+
+	if (strncmp(probe->pr_pvp->pv_desc.dtvd_name, "pid", 3) == 0) {
+		dt_pid_get_locals(dtp, desc, probe, locdesc.dtpld_loc0);
 	}
 }

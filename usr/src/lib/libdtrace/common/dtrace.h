@@ -118,7 +118,8 @@ typedef struct dtrace_proginfo {
 #define	DTRACE_C_DEFARG	0x0800	/* Use 0/"" as value for unspecified args */
 #define	DTRACE_C_NOLIBS	0x1000	/* Do not process D system libraries */
 #define	DTRACE_C_CTL	0x2000	/* Only process control directives */
-#define	DTRACE_C_MASK	0x3bff	/* mask of all valid flags to dtrace_*compile */
+#define	DTRACE_C_INTRAN	0x4000	/* Complile an inline translator */
+#define	DTRACE_C_MASK	0x7bff	/* mask of all valid flags to dtrace_*compile */
 
 extern dtrace_prog_t *dtrace_program_strcompile(dtrace_hdl_t *,
     const char *, dtrace_probespec_t, uint_t, int, char *const []);
@@ -522,6 +523,9 @@ extern int dtrace_type_fcompile(dtrace_hdl_t *,
 
 extern struct dt_node *dt_compile_sugar(dtrace_hdl_t *,
     struct dt_node *);
+
+extern int dtrace_inline_compile(dtrace_hdl_t *, const char *,
+    struct dt_node **);
 
 
 /*

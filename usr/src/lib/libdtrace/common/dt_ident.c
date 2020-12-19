@@ -303,6 +303,67 @@ dt_idcook_func(dt_node_t *dnp, dt_ident_t *idp, int argc, dt_node_t *args)
 	dt_idcook_sign(dnp, idp, argc, args, "", "( )");
 }
 
+/* XXX audit all D_UNKNOWN error codes */
+static void
+dt_idcook_locals(dt_node_t *dnp, dt_ident_t *idp, int argc, dt_node_t *ap)
+{
+	dtrace_hdl_t *dtp = yypcb->pcb_hdl;
+
+	dt_node_t *comp;
+	dt_ixlnode_t *ixl;
+	dtrace_attribute_t attr;
+	char n1[DT_TYPE_NAMELEN];
+
+	assert(idp->di_kind == DT_IDENT_IXLATE);
+	assert((idp->di_flags & DT_IDFLG_IXLATE) != 0);
+	assert(argc == 0);
+	assert(ap == NULL);
+	assert(idp->di_iarg != NULL);
+
+	/*
+	 * This node will get cooked twice. The first time, will be when it is
+	 * thought of as an identifier and we reach here though dt_xcook_ident.
+	 * However, that will itself translate it into an uncooked variable. As
+	 * such, we wait until we come back here a second time to make sure to
+	 * do most of the work. What's important at this point is that we denote
+	 * that this is referenced.
+	 */
+	if (dnp->dn_kind == DT_NODE_IDENT) {
+		idp->di_flags |= DT_IDFLG_REF;
+		return;
+	}
+
+	assert(dnp->dn_kind == DT_NODE_VAR);
+
+	ixl = idp->di_iarg;
+	if (dtrace_inline_compile(dtp, ixl->dix_expr, &comp) != 0) {
+		xyerror(D_UNKNOWN, "failed to compilate inline translator "
+		    "\"%s\" for \"locals->%s\"", ixl->dix_expr, idp->di_name);
+	}
+
+	/*
+	 * Transform the dt_node from an ident into the inline translator.
+	 */
+	free(dnp->dn_string);
+	dnp->dn_kind = DT_NODE_VAR;
+	dnp->dn_ident = idp;
+	dnp->dn_args = comp;
+
+	attr = dt_node_list_cook(&comp, DT_IDFLG_REF);
+	dt_node_attr_assign(dnp, dt_attr_min(attr, idp->di_attr));
+	dt_node_type_assign(dnp, idp->di_ctfp, idp->di_type, B_FALSE);
+}
+
+static void
+dt_iddtor_locals(dt_ident_t *idp)
+{
+	if (idp->di_data != NULL) {
+		dt_ixlnode_t *ixl = idp->di_data;
+		free(ixl->dix_expr);
+	}
+	free(idp->di_data);
+}
+
 /*
  * Cook a reference to the dynamically typed args[] array.  We verify that the
  * reference is using a single integer constant, and then construct a new ident
@@ -585,6 +646,12 @@ const dt_idops_t dt_idops_args = {
 const dt_idops_t dt_idops_regs = {
 	dt_idcook_regs,
 	dt_iddtor_free,
+	dt_idsize_none,
+};
+
+const dt_idops_t dt_idops_locals = {
+	dt_idcook_locals,
+	dt_iddtor_locals,
 	dt_idsize_none,
 };
 
@@ -1037,6 +1104,7 @@ dt_idkind_name(uint_t kind)
 	case DT_IDENT_PRAGAT:	return ("#pragma attributes");
 	case DT_IDENT_PRAGBN:	return ("#pragma binding");
 	case DT_IDENT_PROBE:	return ("probe definition");
+	case DT_IDENT_IXLATE:	return ("inline translator");
 	default:		return ("<?>");
 	}
 }

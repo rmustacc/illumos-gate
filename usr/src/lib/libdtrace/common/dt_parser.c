@@ -556,6 +556,8 @@ dt_node_free(dt_node_t *dnp)
 {
 	uchar_t kind = dnp->dn_kind;
 
+	dt_dprintf("freeing %p\n", dnp);
+
 	dnp->dn_kind = DT_NODE_FREE;
 
 	switch (kind) {
@@ -3658,16 +3660,59 @@ asgn_common:
 		 */
 		if (lp->dn_kind == DT_NODE_IDENT) {
 			dt_idhash_t *dhp = NULL;
+			boolean_t create = B_TRUE;
 
 			if (strcmp(lp->dn_string, "self") == 0) {
 				dhp = dtp->dt_tls;
 			} else if (strcmp(lp->dn_string, "this") == 0) {
 				dhp = yypcb->pcb_locals;
+			} else if (strcmp(lp->dn_string, "locals") == 0) {
+				/*
+				 * The locals keyword indicates that we are
+				 * trying to access a local variable in the
+				 * context of the actual underlying thing that
+				 * we are probing. These are instantiated on an
+				 * as-needed basis. As a result, we will cons up
+				 * the hash table to cook this.
+				 */
+				dt_probe_t *prp = yypcb->pcb_probe;
+				char n1[DT_TYPE_NAMELEN];
+
+				if (yypcb->pcb_pdesc == NULL) {
+					xyerror(D_ARGS_NONE, "\"locals->\" may "
+					    "not be referenced outside of a "
+					    "probe clause\n");
+				}
+
+				if (prp == NULL) {
+					xyerror(D_ARGS_MULTI,
+					    "\"locals->\" may not be "
+					    "referenced because probe "
+					    "description %s matches an "
+					    "unstable set of probes\n",
+					    dtrace_desc2str(yypcb->pcb_pdesc,
+					    n1, sizeof (n1)));
+				}
+
+
+				if (prp->pr_locals == NULL) {
+					dt_provider_fill_locals(dtp, prp);
+				}
+				dhp = prp->pr_locals;
+
+				/*
+				 * While the other types of special pointers are
+				 * allowed to create new variables, this is
+				 * generally speaking, read-only and therefore
+				 * cannot be.
+				 */
+				create = B_FALSE;
 			}
+
 			if (dhp != NULL) {
 				if (rp->dn_kind != DT_NODE_VAR) {
 					dt_xcook_ident(rp, dhp,
-					    DT_IDENT_SCALAR, B_TRUE);
+					    DT_IDENT_SCALAR, create);
 				}
 
 				if (idflags != 0)
@@ -4853,11 +4898,14 @@ dt_node_printr(dt_node_t *dnp, FILE *fp, int depth)
 	case DT_NODE_VAR:
 		(void) fprintf(fp, "VARIABLE %s%s (%s)\n",
 		    (dnp->dn_ident->di_flags & DT_IDFLG_LOCAL) ? "this->" :
-		    (dnp->dn_ident->di_flags & DT_IDFLG_TLS) ? "self->" : "",
+		    (dnp->dn_ident->di_flags & DT_IDFLG_TLS) ? "self->" :
+		    (dnp->dn_ident->di_flags & DT_IDFLG_IXLATE) ? "locals->" : "",
 		    dnp->dn_ident->di_name, buf);
 
-		if (dnp->dn_args != NULL)
+		if (dnp->dn_args != NULL &&
+		    dnp->dn_ident->di_kind != DT_IDENT_IXLATE) {
 			(void) fprintf(fp, "%*s[\n", depth * 2, "");
+		}
 
 		for (arg = dnp->dn_args; arg != NULL; arg = arg->dn_list) {
 			dt_node_printr(arg, fp, depth + 1);
@@ -4865,8 +4913,10 @@ dt_node_printr(dt_node_t *dnp, FILE *fp, int depth)
 				(void) fprintf(fp, "%*s,\n", depth * 2, "");
 		}
 
-		if (dnp->dn_args != NULL)
+		if (dnp->dn_args != NULL &&
+		    dnp->dn_ident->di_kind != DT_IDENT_IXLATE) {
 			(void) fprintf(fp, "%*s]\n", depth * 2, "");
+		}
 		break;
 
 	case DT_NODE_SYM:

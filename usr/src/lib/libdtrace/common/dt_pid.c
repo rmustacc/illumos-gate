@@ -36,6 +36,8 @@
 #include <alloca.h>
 #include <libgen.h>
 #include <stddef.h>
+#include <libdwarf.h>
+#include <dwarf.h>
 #include <sys/sysmacros.h>
 
 #include <dt_impl.h>
@@ -43,6 +45,13 @@
 #include <dt_pid.h>
 #include <dt_string.h>
 #include <dt_module.h>
+#include <dt_provider.h>
+#include <dt_dwarf.h>
+
+/* XXX */
+#define	UNUSEDARG
+#include <dwarf_base_types.h>
+#include <dwarf_opaque.h>
 
 typedef struct dt_pid_probe {
 	dtrace_hdl_t *dpp_dtp;
@@ -862,12 +871,12 @@ dt_pid_get_types(dtrace_hdl_t *dtp, const dtrace_probedesc_t *pdp,
 	if (Pxlookup_by_name(p, lmid, mptr, pdp->dtpd_func,
 	    &sym, &si) != 0) {
 		dt_dprintf("failed to find function %s in %s`%s\n",
-		    pdp->dtpd_func, pdp->dtpd_provider, pdp->dtpd_mod);
+		    pdp->dtpd_func, pdp->dtpd_provider, mptr);
 		goto out;
 	}
 	if (ctf_func_info(fp, si.prs_id, &f) == CTF_ERR) {
 		dt_dprintf("failed to get ctf information for %s in %s`%s\n",
-		    pdp->dtpd_func, pdp->dtpd_provider, pdp->dtpd_mod);
+		    pdp->dtpd_func, pdp->dtpd_provider, mptr);
 		goto out;
 	}
 
@@ -916,6 +925,286 @@ dt_pid_get_types(dtrace_hdl_t *dtp, const dtrace_probedesc_t *pdp,
 		}
 	}
 out:
+	dt_proc_unlock(dtp, p);
+	dt_proc_release(dtp, p);
+}
+
+typedef struct {
+	Dwarf_Die	pvc_cu;
+	Dwarf_Die	pvc_die;
+	uintptr_t	pvc_addr;
+	uint32_t	pvc_elfclass;
+	dt_probe_t	*pvc_probe;
+	dt_module_t	*pvc_module;
+	dtrace_hdl_t	*pvc_dtp;
+} dt_pid_var_cb_t;
+
+/*
+ * To consider processing a variable, the following all must be true:
+ *
+ * o The variable must have a name that we recognize.
+ * o We currently ignore non-defining declarations (that is DW_AT_declaration is
+ *   present and the flag is set to yes).
+ * o DW_AT_location is present and covers our target address.
+ * o There is no DW_AT_start_scope (as we need to modify our logic for handling
+ *   that)
+ */
+static int
+dt_pid_var_cb(Dwarf_Debug dw, Dwarf_Die die, Dwarf_Half tag, void *arg)
+{
+	const char *name;
+	int ret;
+	boolean_t decl;
+	Dwarf_Attribute attr = NULL;
+	Dwarf_Error derr;
+	Dwarf_Half form, vers, size;
+	enum Dwarf_Form_Class class;
+	Dwarf_Loc_Head_c loc_head = NULL;
+	Dwarf_Unsigned loc_count, loc;
+	Dwarf_Addr loc_baddr;
+	dt_pid_var_cb_t *cb = arg;
+
+	name = dt_dwarf_string(die, DW_AT_name);
+	if (name == NULL) {
+		return (EIO);
+	}
+
+	ret = dt_dwarf_flag(die, DW_AT_declaration, &decl);
+	if (ret != 0 && ret != ENOENT) {
+		return (ret);
+	} else if (ret == 0 && decl) {
+		return (ENOTSUP);
+	}
+
+	if (dwarf_attr(die, DW_AT_start_scope, &attr, &derr) == DW_DLV_OK) {
+		dwarf_dealloc_attribute(attr);
+		dt_dprintf("eliminated local %s due to DW_AT_start_scope",
+		    name);
+		ret = ENOTSUP;
+		goto out;
+	}
+
+	if (dwarf_attr(die, DW_AT_location, &attr, &derr) != DW_DLV_OK) {
+		dt_dprintf("eliminated local %s due to lack of DW_AT_location",
+		    name);
+		ret = ENOTSUP;
+		goto out;
+	}
+
+	if (dwarf_whatform(attr, &form, &derr) != DW_DLV_OK) {
+		dt_dprintf("eliminated local %s due to lack of location "
+		    "form: %s", dwarf_errmsg(derr));
+		ret = EIO;
+		goto out;
+	}
+
+	if (dwarf_get_version_of_die(die, &vers, &size) != DW_DLV_OK) {
+		dt_dprintf("failed ot get die version and size");
+		ret = EIO;
+		goto out;
+	}
+
+	class = dwarf_get_form_class(vers, DW_AT_location, size, form);
+
+	switch (class) {
+	case DW_FORM_CLASS_LOCLIST:
+		break;
+	default:
+		dt_dprintf("unknown dwarf location form/class: %u/%u",
+		    form, class);
+		ret = ENOTSUP;
+		goto out;
+	}
+
+	if (dwarf_get_loclist_c(attr, &loc_head, &loc_count, &derr) !=
+	    DW_DLV_OK) {
+		dt_dprintf("failed to get location list for %s: %s",
+		    name, dwarf_errmsg(derr));
+		ret = EIO;
+		goto out;
+	}
+
+	if (dt_dwarf_loc_need_base(loc_head)) {
+		if (dwarf_lowpc(cb->pvc_cu, &loc_baddr, &derr) != DW_DLV_OK) {
+			loc_baddr = 0;
+		}
+	} else {
+		loc_baddr = 0;
+	}
+
+	for (loc = 0; loc < loc_count; loc++) {
+		Dwarf_Small lle, kind;
+		Dwarf_Unsigned raw_lowpc, raw_hipc, count, expr_out, desc_off;
+		Dwarf_Bool unavail;
+		Dwarf_Addr lowpc, hipc;
+		Dwarf_Locdesc_c descs;
+		boolean_t match;
+
+		if (dwarf_get_locdesc_entry_d(loc_head, loc, &lle, &raw_lowpc,
+		    &raw_hipc, &unavail, &lowpc, &hipc, &count, &descs,
+		    &kind, &expr_out, &desc_off, &derr) != 0) {
+			dt_dprintf("failed to get location description %llu for "
+			    "%s: %s", count, name, dwarf_errmsg(derr));
+			ret = EIO;
+			goto out;
+		}
+
+		if (unavail) { 
+			continue;
+		}
+
+		if (dt_dwarf_range_match(cb->pvc_addr, loc_baddr, lle, lowpc, hipc,
+		    &match) == 0 && match) {
+			char *dexpr;
+
+			dexpr = dt_dwarf_loc_compile(descs, count,
+			    cb->pvc_elfclass);
+			if (dexpr != NULL) {
+				dt_dprintf("compiled variable %s as %s\n",
+				    name, dexpr);
+				if (!dt_probe_append_local(cb->pvc_dtp,
+				    cb->pvc_probe, name, dexpr)) {
+					free(dexpr);
+					ret = ENOMEM;
+					goto out;
+				}
+			}
+			break;
+		}
+	}
+
+	ret = 0;
+
+out:
+	if (loc_head != NULL) {
+		dwarf_loc_head_c_dealloc(loc_head);
+	}
+
+	if (attr != NULL) {
+		dwarf_dealloc_attribute(attr);
+	}
+
+	return (ret);
+}
+
+void
+dt_pid_get_locals(dtrace_hdl_t *dtp, const dtrace_probedesc_t *pdp,
+    dt_probe_t *probe, uint64_t addr)
+{
+	dt_module_t *dmp;
+	struct ps_prochandle *p;
+	GElf_Sym sym;
+	prsyminfo_t si;
+	const char *mptr;
+	char *eptr;
+	Lmid_t lmid;
+	Elf *elf;
+	Dwarf_Debug dw = NULL;
+	Dwarf_Die cu, die;
+	Dwarf_Error derr;
+	dt_pid_var_cb_t cb;
+
+	dmp = dt_module_create(dtp, pdp->dtpd_provider);
+	if (dmp == NULL) {
+		dt_dprintf("failed to find module for %s\n",
+		    pdp->dtpd_provider);
+		return;
+	}
+
+	if (dt_module_load(dtp, dmp) != 0) {
+		dt_dprintf("failed to load module for %s\n",
+		    pdp->dtpd_provider);
+		return;
+	}
+
+	p = dt_proc_grab(dtp, dmp->dm_pid, 0, PGRAB_RDONLY | PGRAB_FORCE);
+	if (p == NULL) {
+		dt_dprintf("failed to grab pid\n");
+		return;
+	}
+	dt_proc_lock(dtp, p);
+
+	/*
+	 * Check to see if the D module has a link map ID and separate that out
+	 * for properly interrogating libproc. XXX copied from above.
+	 * Generalize?
+	 */
+	if ((mptr = strchr(pdp->dtpd_mod, '`')) != NULL) {
+		if (strlen(pdp->dtpd_mod) < 3) {
+			dt_dprintf("found weird modname with linkmap, "
+			    "aborting: %s\n", pdp->dtpd_mod);
+			goto out;
+		}
+		if (pdp->dtpd_mod[0] != 'L' || pdp->dtpd_mod[1] != 'M') {
+			dt_dprintf("missing leading 'LM', "
+			    "aborting: %s\n", pdp->dtpd_mod);
+			goto out;
+		}
+		errno = 0;
+		lmid = strtol(pdp->dtpd_mod + 2, &eptr, 16);
+		if (errno == ERANGE || eptr != mptr) {
+			dt_dprintf("failed to parse out lmid, aborting: %s\n",
+			    pdp->dtpd_mod);
+			goto out;
+		}
+		mptr++;
+	} else {
+		mptr = pdp->dtpd_mod;
+		lmid = 0;
+	}
+
+	/*
+	 * libdtrace only gives us as specified a name as it has in the probe
+	 * description. While discovering a probe we have more detailed
+	 * information; however, we lose that. This should be OK, as if this
+	 * works, there should only be a single probe that we match. XXX We may
+	 * want to reconsider moving this to be done as part of probe discovery,
+	 * but we don't want to cache the dwarf unless we need to.
+	 */
+	if (*mptr == '\0') {
+		mptr = PR_OBJ_EVERY;
+	}
+
+	if (Pxlookup_by_name(p, lmid, mptr, pdp->dtpd_func,
+	    &sym, &si) != 0) {
+		dt_dprintf("failed to find function %s in %s\n",
+		    pdp->dtpd_func, pdp->dtpd_provider);
+		goto out;
+	}
+
+	if (Paddr_to_dbgelf(p, sym.st_value, &elf) != 0) {
+		dt_dprintf("failed to find function %s in %s\n",
+		    pdp->dtpd_func, pdp->dtpd_provider);
+		goto out;
+	}
+
+	if (dwarf_elf_init(elf, DW_DLC_READ, NULL, NULL, &dw, &derr) !=
+	    DW_DLV_OK) {
+		dt_dprintf("failed to open DWARF handle: %s",
+		    dwarf_errmsg(derr));
+		goto out;
+	}
+
+	if (dt_dwarf_find_function(dw, &sym, &si, &cu, &die) != 0) {
+		dt_dprintf("failed to find compilation unit %s", "XXX");
+		goto out;
+	}
+
+	cb.pvc_cu = cu;
+	cb.pvc_die = die;
+	cb.pvc_addr = addr;
+	cb.pvc_probe = probe;
+	cb.pvc_elfclass = gelf_getclass(elf);
+	cb.pvc_dtp = dtp;
+
+	dt_dprintf("found die %p for func\n", die);
+	(void) dt_dwarf_var_iter(dw, die, dt_pid_var_cb, &cb);
+	dwarf_dealloc_die(die);
+
+out:
+	if (dw != NULL) {
+		dwarf_finish(dw, &derr);
+	}
 	dt_proc_unlock(dtp, p);
 	dt_proc_release(dtp, p);
 }

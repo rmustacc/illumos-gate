@@ -34,6 +34,7 @@
 #include <libproc.h>
 #include <sys/fasttrap.h>
 #include <dt_impl.h>
+#include <dt_provider.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -60,6 +61,8 @@ extern int dt_pid_create_glob_offset_probes(struct ps_prochandle *,
 
 extern void dt_pid_get_types(dtrace_hdl_t *, const dtrace_probedesc_t *,
     dtrace_argdesc_t *, int *);
+extern void dt_pid_get_locals(dtrace_hdl_t *, const dtrace_probedesc_t *,
+    dt_probe_t *, uint64_t);
 
 #ifdef	__cplusplus
 }

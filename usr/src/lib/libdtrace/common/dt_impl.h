@@ -201,6 +201,14 @@ typedef struct dt_lib_depend {
 	dt_list_t dtld_dependents;	/* linked-list of lib dependents */
 } dt_lib_depend_t;
 
+typedef enum dt_dwarf {
+	DT_DWARF_NONE	= 0,
+	DT_DWARF_ARGS	= 1 << 0,
+	DT_DWARF_LOCALS	= 1 << 1
+} dt_dwarf_t;
+
+#define	DT_DWARF_ALL	(DT_DWARF_ARGS | DT_DWARF_LOCALS)
+
 typedef uint32_t dt_version_t;		/* encoded version (see below) */
 
 struct dtrace_hdl {
@@ -321,6 +329,7 @@ struct dtrace_hdl {
 	dtrace_epid_t dt_last_epid;	/* most recently consumed EPID */
 	uint64_t dt_last_timestamp;	/* most recently consumed timestamp */
 	boolean_t dt_has_sugar;	/* syntactic sugar used? */
+	dt_dwarf_t dt_dwarf;	/* enabled dwarf options */
 };
 
 /*

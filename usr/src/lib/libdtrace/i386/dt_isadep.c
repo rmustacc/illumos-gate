@@ -38,6 +38,7 @@
 #include <dt_pid.h>
 
 #include <dis_tables.h>
+#include <sys/regset.h>
 
 #define	DT_POPL_EBP	0x5d
 #define	DT_RET		0xc3
@@ -490,4 +491,140 @@ dt_instr_size(uchar_t *instr, dtrace_hdl_t *dtp, pid_t pid, uintptr_t addr,
 		return (-1);
 
 	return (x86dis.d86_len);
+}
+
+/*
+ * Convert DWARF registers to ones that we can actually process in uregs[].
+ * These are defined in the i386 and amd64 psABIs. We do not include a large set
+ * of ones that we cannot process. See the regs.* files to understand how we map
+ * these together.
+ */
+#define	REG64_BASE	19
+boolean_t
+dt_dwarf_isareg(uint32_t class, uint32_t dwarf_reg, uint32_t *regno)
+{
+	switch (class) {
+	case ELFCLASS32:
+		switch (dwarf_reg) {
+		case 0:
+			*regno = EAX;
+			return (B_TRUE);
+		case 1:
+			*regno = ECX;
+			return (B_TRUE);
+		case 2:
+			*regno = EDX;
+			return (B_TRUE);
+		case 3:
+			*regno = EBX;
+			return (B_TRUE);
+		case 4:
+			*regno = ESP;
+			return (B_TRUE);
+		case 5:
+			*regno = EBP;
+			return (B_TRUE);
+		case 6:
+			*regno = ESI;
+			return (B_TRUE);
+		case 7:
+			*regno = EDI;
+			return (B_TRUE);
+		case 9:
+			*regno = EFL;
+			return (B_TRUE);
+		case 50:
+			*regno = ES;
+			return (B_TRUE);
+		case 51:
+			*regno = CS;
+			return (B_TRUE);
+		case 52:
+			*regno = SS;
+			return (B_TRUE);
+		case 53:
+			*regno = DS;
+			return (B_TRUE);
+		case 54:
+			*regno = FS;
+			return (B_TRUE);
+		case 55:
+			*regno = GS;
+			return (B_TRUE);
+		default:
+			break;
+		}
+	case ELFCLASS64:
+		switch (dwarf_reg) {
+		case 0:
+			*regno = REG64_BASE + REG_RAX;
+			return (B_TRUE);
+		case 1:
+			*regno = REG64_BASE + REG_RDX;
+			return (B_TRUE);
+		case 2:
+			*regno = REG64_BASE + REG_RCX;
+			return (B_TRUE);
+		case 3:
+			*regno = REG64_BASE + REG_RBX;
+			return (B_TRUE);
+		case 4:
+			*regno = REG64_BASE + REG_RSI;
+			return (B_TRUE);
+		case 5:
+			*regno = REG64_BASE + REG_RDI;
+			return (B_TRUE);
+		case 6:
+			*regno = REG64_BASE + REG_RBP;
+			return (B_TRUE);
+		case 7:
+			*regno = REG64_BASE + REG_RSP;
+			return (B_TRUE);
+		case 8:
+			*regno = REG64_BASE + REG_R8;
+			return (B_TRUE);
+		case 9:
+			*regno = REG64_BASE + REG_R9;
+			return (B_TRUE);
+		case 10:
+			*regno = REG64_BASE + REG_R10;
+			return (B_TRUE);
+		case 11:
+			*regno = REG64_BASE + REG_R11;
+			return (B_TRUE);
+		case 12:
+			*regno = REG64_BASE + REG_R12;
+			return (B_TRUE);
+		case 13:
+			*regno = REG64_BASE + REG_R13;
+			return (B_TRUE);
+		case 14:
+			*regno = REG64_BASE + REG_R14;
+			return (B_TRUE);
+		case 15:
+			*regno = REG64_BASE + REG_R15;
+			return (B_TRUE);
+		case 49:
+			*regno = REG64_BASE + REG_RFL;
+			return (B_TRUE);
+		case 50:
+			*regno = ES;
+			return (B_TRUE);
+		case 51:
+			*regno = CS;
+			return (B_TRUE);
+		case 52:
+			*regno = SS;
+			return (B_TRUE);
+		case 53:
+			*regno = FS;
+			return (B_TRUE);
+		case 54:
+			*regno = GS;
+			return (B_TRUE);
+		}
+	default:
+		return (B_FALSE);
+	}
+	return (B_FALSE);
 }

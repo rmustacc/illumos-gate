@@ -1117,6 +1117,26 @@ fasttrap_pid_getargdesc(void *arg, dtrace_id_t id, void *parg,
 	(void) strcpy(desc->dtargd_xlate, str);
 }
 
+static void
+fasttrap_pid_getlocdesc(void *arg, dtrace_id_t id, void *parg,
+    dtrace_plocdesc_t *desc)
+{
+	fasttrap_probe_t *probe = parg;
+
+	if (probe->ftp_prov->ftp_retired != 0) {
+		desc->dtpld_nlocs = 0;
+		desc->dtpld_loc0 = 0;
+		return;
+	} 
+
+	desc->dtpld_nlocs = probe->ftp_ntps;
+	if (desc->dtpld_nlocs == 1) {
+		desc->dtpld_loc0 = probe->ftp_tps[0].fit_tp->ftt_pc;
+	} else {
+		desc->dtpld_loc0 = 0;
+	}
+}
+
 /*ARGSUSED*/
 static void
 fasttrap_pid_destroy(void *arg, dtrace_id_t id, void *parg)
@@ -1162,7 +1182,8 @@ static dtrace_pops_t pid_pops = {
 	fasttrap_pid_getargdesc,
 	fasttrap_pid_getarg,
 	NULL,
-	fasttrap_pid_destroy
+	fasttrap_pid_destroy,
+	fasttrap_pid_getlocdesc
 };
 
 static dtrace_pops_t usdt_pops = {
@@ -1175,7 +1196,8 @@ static dtrace_pops_t usdt_pops = {
 	fasttrap_pid_getargdesc,
 	fasttrap_usdt_getarg,
 	NULL,
-	fasttrap_pid_destroy
+	fasttrap_pid_destroy,
+	fasttrap_pid_getlocdesc
 };
 
 static fasttrap_proc_t *

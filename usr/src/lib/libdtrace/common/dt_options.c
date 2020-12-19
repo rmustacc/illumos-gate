@@ -235,6 +235,24 @@ dt_opt_debug(dtrace_hdl_t *dtp, const char *arg, uintptr_t option)
 	return (0);
 }
 
+static int
+dt_opt_dwarf(dtrace_hdl_t *dtp, const char *arg, uintptr_t option)
+{
+	if (arg != NULL) {
+		if (strcmp(arg, "args") == 0) {
+			dtp->dt_dwarf |= DT_DWARF_ARGS;
+		} else if (strcmp(arg, "locals") == 0) {
+			dtp->dt_dwarf |= DT_DWARF_LOCALS;
+		} else {
+			return (dt_set_errno(dtp, EDT_BADOPTVAL));
+		}
+	} else {
+		dtp->dt_dwarf = DT_DWARF_ALL;
+	}
+
+	return (0);
+}
+
 /*ARGSUSED*/
 static int
 dt_opt_iregs(dtrace_hdl_t *dtp, const char *arg, uintptr_t option)
@@ -939,6 +957,7 @@ static const dt_option_t _dtrace_ctoptions[] = {
 	{ "debug", dt_opt_debug },
 	{ "define", dt_opt_cpp_opts, (uintptr_t)"-D" },
 	{ "droptags", dt_opt_droptags },
+	{ "dwarf", dt_opt_dwarf },
 	{ "empty", dt_opt_cflags, DTRACE_C_EMPTY },
 	{ "encoding", dt_opt_encoding },
 	{ "errtags", dt_opt_cflags, DTRACE_C_ETAGS },

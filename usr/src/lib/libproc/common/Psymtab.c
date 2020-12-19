@@ -3555,3 +3555,26 @@ again:
 
 	return (ret);
 }
+
+int
+Paddr_to_dbgelf(struct ps_prochandle *P, uintptr_t addr, Elf **outp)
+{
+	map_info_t *mptr;
+	file_info_t *fptr;
+
+	if ((mptr = Paddr2mptr(P, addr)) == NULL || mptr->map_file == NULL) {
+		return (ENOENT);
+	}
+	fptr = mptr->map_file;
+
+	Pbuild_file_symtab(P, fptr);
+	if (fptr->file_dbgelf != NULL) {
+		*outp = fptr->file_dbgelf;
+	} else if (fptr->file_elf != NULL) {
+		*outp = fptr->file_elf;
+	} else {
+		return (ENOTSUP);
+	}
+
+	return (0);
+}

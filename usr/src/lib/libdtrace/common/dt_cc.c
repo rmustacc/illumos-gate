@@ -2482,6 +2482,19 @@ dt_compile(dtrace_hdl_t *dtp, int context, dtrace_probespec_t pspec, void *arg,
 		break;
 
 	case DT_CTX_DEXPR:
+		/*
+		 * This expression belongs to a translation that we're going to
+		 * inline into the program. All we care about is parsing this.
+		 * It will be cooked in the context of everything else.
+		 */
+		if ((cflags & DTRACE_C_INTRAN) != 0) {
+			dt_node_t **outp = arg;
+			*outp = yypcb->pcb_root;
+			yypcb->pcb_root = NULL;
+			yypcb->pcb_list = NULL;
+			rv = NULL;
+			break;
+		}
 		(void) dt_node_cook(yypcb->pcb_root, DT_IDFLG_REF);
 		dt_cg(yypcb, yypcb->pcb_root);
 		rv = dt_as(yypcb);
@@ -2551,5 +2564,13 @@ dtrace_type_fcompile(dtrace_hdl_t *dtp, FILE *fp, dtrace_typeinfo_t *dtt)
 {
 	(void) dt_compile(dtp, DT_CTX_DTYPE,
 	    DTRACE_PROBESPEC_NONE, dtt, 0, 0, NULL, fp, NULL);
+	return (dtp->dt_errno ? -1 : 0);
+}
+
+int
+dtrace_inline_compile(dtrace_hdl_t *dtp, const char *str, dt_node_t **dnpp)
+{
+	(void) dt_compile(dtp, DT_CTX_DEXPR, DTRACE_PROBESPEC_NONE, dnpp,
+	    DTRACE_C_INTRAN, 0, NULL, NULL, str);
 	return (dtp->dt_errno ? -1 : 0);
 }

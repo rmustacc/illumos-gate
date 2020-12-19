@@ -798,6 +798,11 @@ extern int Pfdinfo_iter(struct ps_prochandle *, proc_fdinfo_f *, void *);
 extern int Pupanic(struct ps_prochandle *, prupanic_t **);
 extern void Pupanic_free(prupanic_t *);
 
+/*
+ * Get the underlying elf handle to the debug information of a given symbol.
+ */
+extern int Paddr_to_dbgelf(struct ps_prochandle *, uintptr_t, Elf **);
+
 #ifdef	__cplusplus
 }
 #endif

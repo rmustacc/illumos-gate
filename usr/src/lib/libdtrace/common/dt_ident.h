@@ -60,6 +60,10 @@ typedef struct dt_idnode {
 	int din_argc;		  /* length of din_argv[] array */
 } dt_idnode_t;
 
+typedef struct dt_ixlnode {
+	char *dix_expr;			/* D expression to compile for it */
+} dt_ixlnode_t;
+
 typedef struct dt_idops {
 	void (*di_cook)(struct dt_node *, struct dt_ident *,
 	    int, struct dt_node *);
@@ -98,6 +102,7 @@ typedef struct dt_ident {
 #define	DT_IDENT_PRAGAT	11	/* identifier is #pragma attributes */
 #define	DT_IDENT_PRAGBN	12	/* identifier is #pragma binding */
 #define	DT_IDENT_PROBE	13	/* identifier is a probe definition */
+#define	DT_IDENT_IXLATE	14	/* identifier is an inline tranlator */
 
 #define	DT_IDFLG_TLS	0x0001	/* variable is thread-local storage */
 #define	DT_IDFLG_LOCAL	0x0002	/* variable is local storage */
@@ -112,6 +117,7 @@ typedef struct dt_ident {
 #define	DT_IDFLG_PRIM	0x0400	/* variable is associated with primary object */
 #define	DT_IDFLG_DECL	0x0800	/* variable is associated with explicit decl */
 #define	DT_IDFLG_ORPHAN	0x1000	/* variable is in a dt_node and not dt_idhash */
+#define	DT_IDFLG_IXLATE	0x2000	/* variable is a probe-specific inline translator */
 
 typedef struct dt_idhash {
 	dt_list_t dh_list;	/* list prev/next pointers for dt_idstack */
@@ -134,6 +140,7 @@ extern const dt_idops_t dt_idops_assc;	/* associative array or aggregation */
 extern const dt_idops_t dt_idops_func;	/* function call built-in */
 extern const dt_idops_t dt_idops_args;	/* args[] built-in */
 extern const dt_idops_t dt_idops_regs;	/* regs[]/uregs[] built-in */
+extern const dt_idops_t dt_idops_locals; /* locals[] built-in */
 extern const dt_idops_t dt_idops_type;	/* predefined type name string */
 extern const dt_idops_t dt_idops_thaw;	/* prefrozen type identifier */
 extern const dt_idops_t dt_idops_inline; /* inline variable */

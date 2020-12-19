@@ -37,6 +37,7 @@ LIBSRCS = \
 	dt_decl.c \
 	dt_dis.c \
 	dt_dof.c \
+	dt_dwarf.c \
 	dt_error.c \
 	dt_errtags.c \
 	dt_sugar.c \
@@ -124,7 +125,7 @@ CLEANFILES += $(LIBDAUDITOBJS) $(DRTIOBJS)
 
 CLOBBERFILES += $(LIBDAUDIT) drti.o
 
-CPPFLAGS += -I../common -I.
+CPPFLAGS += -I../common -I. -I$(SRC)/lib/libdwarf/common
 CFLAGS += $(CCVERBOSE) $(C_BIGPICFLAGS)
 CFLAGS64 += $(CCVERBOSE) $(C_BIGPICFLAGS)
 
@@ -138,7 +139,7 @@ CERRWARN += -_gcc=-Wno-switch
 SMATCH=off
 
 YYCFLAGS =
-LDLIBS += -lgen -lproc -lrtld_db -lnsl -lsocket -lctf -lelf -lc
+LDLIBS += -lgen -lproc -lrtld_db -lnsl -lsocket -lctf -lelf -lc -ldwarf
 DRTILDLIBS = $(LDLIBS.lib) -lc
 LIBDAUDITLIBS = $(LDLIBS.lib) -lmapmalloc -lc -lproc $(LDSTACKPROTECT)
 
