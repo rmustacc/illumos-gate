@@ -2321,7 +2321,14 @@ struct i40e_aqc_run_phy_activity {
 };
 #pragma pack()
 
+/*
+ * Unfortunately, for some reason smatch cannot parse the following correctly
+ * and emits divide by zero expressions when it shouldn't. Until this is fixed,
+ * for the time being comment out the check.
+ */
+#ifndef __sun__
 I40E_CHECK_CMD_LENGTH(i40e_aqc_run_phy_activity);
+#endif
 
 /* Set PHY Register command (0x0628) */
 /* Get PHY Register command (0x0629) */
