@@ -410,7 +410,7 @@ hpet_validate_table(ACPI_TABLE_HPET *hpet_table)
 		return (AE_ERROR);
 	}
 
-	if (!ACPI_COMPARE_NAME(table_header->Signature, ACPI_SIG_HPET)) {
+	if (!ACPI_COMPARE_NAMESEG(table_header->Signature, ACPI_SIG_HPET)) {
 		cmn_err(CE_WARN, "!hpet_validate_table: Invalid HPET table "
 		    "signature");
 		return (AE_ERROR);

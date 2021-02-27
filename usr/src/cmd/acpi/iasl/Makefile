@@ -93,11 +93,14 @@ INTERMEDIATES = \
 	aslcompiler.y \
 	aslcompilerlex.c \
 	aslcompilerparse.c \
+	dtcompilerparserlex.c \
+	dtcompilerparserparse.c \
 	dtparserlex.c \
 	dtparserparse.c \
 	prparserlex.c \
 	prparserparse.c \
 	aslcompiler.y.h \
+	dtcompilerparser.y.h \
 	dtparser.y.h \
 	prparser.y.h
 
@@ -107,13 +110,20 @@ SMATCH=off
 CPPFLAGS += -I$(SRC)/uts/intel/sys/acpi -DACPI_ASL_COMPILER -I.
 CPPFLAGS += -DACPI_DATE=\"$(VERSION)\"
 
-LEX_C_FILES = aslcompilerlex.c dtparserlex.c prparserlex.c
-YACC_C_FILES = aslcompilerparse.c dtparserparse.c prparserparse.c
-YACC_H_FILES = aslcompiler.y.h dtparser.y.h prparser.y.h
+LEX_C_FILES = aslcompilerlex.c dtcompilerparserlex.c dtparserlex.c \
+		prparserlex.c
+YACC_C_FILES = aslcompilerparse.c dtcompilerparserparse.c dtparserparse.c \
+		prparserparse.c
+YACC_H_FILES = aslcompiler.y.h dtcompilerparser.y.h dtparser.y.h prparser.y.h
 YACC_FILES = $(YACC_C_FILES) $(YACC_H_FILES)
 
 aslcompilerlex.c aslcompilerparse.c aslcompiler.y.h := PARSER = AslCompiler
 aslcompilerlex.c aslcompilerparse.c aslcompiler.y.h := LY_BASE = aslcompiler
+
+dtcompilerparserlex.c dtcompilerparserparse.c \
+  dtcompilerparser.y.h := PARSER = DtCompilerParser
+dtcompilerparserlex.c dtcompilerparserparse.c \
+  dtcompilerparser.y.h := LY_BASE = dtcompilerparser
 
 dtparserlex.c dtparserparse.c dtparser.y.h := PARSER = DtParser
 dtparserlex.c dtparserparse.c dtparser.y.h := LY_BASE = dtparser

@@ -62,7 +62,7 @@ typedef struct osl_table_info
 {
 	struct osl_table_info	*Next;
 	UINT32			Instance;
-	char			Signature[ACPI_NAME_SIZE];
+	char			Signature[ACPI_NAMESEG_SIZE];
 } OSL_TABLE_INFO;
 
 /* Local prototypes */
@@ -254,7 +254,7 @@ OslAddTableToList(char *Signature)
 		return (AE_NO_MEMORY);
 	}
 
-	ACPI_MOVE_NAME(NewInfo->Signature, Signature);
+	ACPI_COPY_NAMESEG(NewInfo->Signature, Signature);
 
 	if (!Gbl_TableListHead) {
 		Gbl_TableListHead = NewInfo;
@@ -262,7 +262,7 @@ OslAddTableToList(char *Signature)
 		Next = Gbl_TableListHead;
 
 		while (1) {
-			if (ACPI_COMPARE_NAME(Next->Signature, Signature)) {
+			if (ACPI_COMPARE_NAMESEG(Next->Signature, Signature)) {
 				if (Next->Instance == 0) {
 					Found = TRUE;
 				}
@@ -711,11 +711,11 @@ OslGetBiosTable(char *Signature, UINT32 Instance, ACPI_TABLE_HEADER **Table,
 
 	/* Handle special tables whose addresses are not in RSDT/XSDT */
 
-	if (ACPI_COMPARE_NAME(Signature, ACPI_RSDP_NAME) ||
-	    ACPI_COMPARE_NAME(Signature, ACPI_SIG_RSDT) ||
-	    ACPI_COMPARE_NAME(Signature, ACPI_SIG_XSDT) ||
-	    ACPI_COMPARE_NAME(Signature, ACPI_SIG_DSDT) ||
-	    ACPI_COMPARE_NAME(Signature, ACPI_SIG_FACS)) {
+	if (ACPI_COMPARE_NAMESEG(Signature, ACPI_RSDP_NAME) ||
+	    ACPI_COMPARE_NAMESEG(Signature, ACPI_SIG_RSDT) ||
+	    ACPI_COMPARE_NAMESEG(Signature, ACPI_SIG_XSDT) ||
+	    ACPI_COMPARE_NAMESEG(Signature, ACPI_SIG_DSDT) ||
+	    ACPI_COMPARE_NAMESEG(Signature, ACPI_SIG_FACS)) {
 		if (Instance > 0) {
 			return (AE_LIMIT);
 		}
@@ -725,7 +725,7 @@ OslGetBiosTable(char *Signature, UINT32 Instance, ACPI_TABLE_HEADER **Table,
 		 * careful about the FADT length and validate table addresses.
 		 * Note: The 64-bit addresses have priority.
 		 */
-		if (ACPI_COMPARE_NAME(Signature, ACPI_SIG_DSDT)) {
+		if (ACPI_COMPARE_NAMESEG(Signature, ACPI_SIG_DSDT)) {
 			if ((Gbl_Fadt->Header.Length >= MIN_FADT_FOR_XDSDT) &&
 			    Gbl_Fadt->XDsdt) {
 				TableAddress =
@@ -737,7 +737,7 @@ OslGetBiosTable(char *Signature, UINT32 Instance, ACPI_TABLE_HEADER **Table,
 				    (ACPI_PHYSICAL_ADDRESS) Gbl_Fadt->Dsdt;
 			}
 
-		} else if (ACPI_COMPARE_NAME(Signature, ACPI_SIG_FACS)) {
+		} else if (ACPI_COMPARE_NAMESEG(Signature, ACPI_SIG_FACS)) {
 			if ((Gbl_Fadt->Header.Length >= MIN_FADT_FOR_XFACS) &&
 			    Gbl_Fadt->XFacs) {
 				TableAddress =
@@ -749,14 +749,14 @@ OslGetBiosTable(char *Signature, UINT32 Instance, ACPI_TABLE_HEADER **Table,
 				    (ACPI_PHYSICAL_ADDRESS) Gbl_Fadt->Facs;
 			}
 
-		} else if (ACPI_COMPARE_NAME(Signature, ACPI_SIG_XSDT)) {
+		} else if (ACPI_COMPARE_NAMESEG(Signature, ACPI_SIG_XSDT)) {
 			if (!Gbl_Revision) {
 				return (AE_BAD_SIGNATURE);
 			}
 			TableAddress = (ACPI_PHYSICAL_ADDRESS)
 			    Gbl_Rsdp.XsdtPhysicalAddress;
 
-		} else if (ACPI_COMPARE_NAME(Signature, ACPI_SIG_RSDT)) {
+		} else if (ACPI_COMPARE_NAMESEG(Signature, ACPI_SIG_RSDT)) {
 			TableAddress = (ACPI_PHYSICAL_ADDRESS)
 			    Gbl_Rsdp.RsdtPhysicalAddress;
 
@@ -819,7 +819,7 @@ OslGetBiosTable(char *Signature, UINT32 Instance, ACPI_TABLE_HEADER **Table,
 
 			/* Does this table match the requested signature? */
 
-			if (!ACPI_COMPARE_NAME(MappedTable->Signature,
+			if (!ACPI_COMPARE_NAMESEG(MappedTable->Signature,
 			    Signature)) {
 				OslUnmapTable(MappedTable);
 				MappedTable = NULL;
@@ -913,7 +913,7 @@ OslMapTable(ACPI_SIZE Address, char *Signature, ACPI_TABLE_HEADER **Table)
 				    sizeof (ACPI_TABLE_HEADER));
 				return (AE_BAD_SIGNATURE);
 			}
-		} else if (!ACPI_COMPARE_NAME(Signature,
+		} else if (!ACPI_COMPARE_NAMESEG(Signature,
 		    MappedTable->Signature)) {
 			AcpiOsUnmapMemory(MappedTable,
 			    sizeof (ACPI_TABLE_HEADER));
@@ -983,15 +983,15 @@ OslTableNameFromFile(char *Filename, char *Signature, UINT32 *Instance)
 {
 	/* Ignore meaningless files */
 
-	if (strlen(Filename) < ACPI_NAME_SIZE) {
+	if (strlen(Filename) < ACPI_NAMESEG_SIZE) {
 		return (AE_BAD_SIGNATURE);
 	}
 
 	/* Extract instance number */
 
-	if (isdigit((int)Filename[ACPI_NAME_SIZE])) {
-		sscanf(&Filename[ACPI_NAME_SIZE], "%u", Instance);
-	} else if (strlen(Filename) != ACPI_NAME_SIZE) {
+	if (isdigit((int)Filename[ACPI_NAMESEG_SIZE])) {
+		sscanf(&Filename[ACPI_NAMESEG_SIZE], "%u", Instance);
+	} else if (strlen(Filename) != ACPI_NAMESEG_SIZE) {
 		return (AE_BAD_SIGNATURE);
 	} else {
 		*Instance = 0;
@@ -999,7 +999,7 @@ OslTableNameFromFile(char *Filename, char *Signature, UINT32 *Instance)
 
 	/* Extract signature */
 
-	ACPI_MOVE_NAME(Signature, Filename);
+	ACPI_COPY_NAMESEG(Signature, Filename);
 	return (AE_OK);
 }
 

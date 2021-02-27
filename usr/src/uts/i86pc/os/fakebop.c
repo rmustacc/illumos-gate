@@ -2400,7 +2400,7 @@ find_fw_table(ACPI_TABLE_RSDP *rsdp, char *signature)
 	paddr_t table_addr;
 	int	n;
 
-	if (strlen(signature) != ACPI_NAME_SIZE)
+	if (strlen(signature) != ACPI_NAMESEG_SIZE)
 		return (NULL);
 
 	/*
@@ -2470,7 +2470,8 @@ find_fw_table(ACPI_TABLE_RSDP *rsdp, char *signature)
 		if (table_addr == 0)
 			continue;
 		tp = map_fw_table(table_addr);
-		if (strncmp(tp->Signature, signature, ACPI_NAME_SIZE) == 0) {
+		if (strncmp(tp->Signature, signature,
+		    ACPI_NAMESEG_SIZE) == 0) {
 			return (tp);
 		}
 	}
