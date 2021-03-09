@@ -8,7 +8,7 @@
  *
  * 1. Copyright Notice
  *
- * Some or all of this work - Copyright (c) 1999 - 2018, Intel Corp.
+ * Some or all of this work - Copyright (c) 1999 - 2020, Intel Corp.
  * All rights reserved.
  *
  * 2. License
@@ -177,20 +177,27 @@ ApIsExistingFile (
 {
 #if !defined(_GNU_EFI) && !defined(_EDK2_EFI)
     struct stat             StatInfo;
+    int                     InChar;
 
 
     if (!stat (Pathname, &StatInfo))
     {
         fprintf (stderr, "Target path already exists, overwrite? [y|n] ");
 
-        if (getchar () != 'y')
+        InChar = fgetc (stdin);
+        if (InChar == '\n')
+        {
+            InChar = fgetc (stdin);
+        }
+
+        if (InChar != 'y' && InChar != 'Y')
         {
             return (-1);
         }
     }
 #endif
 
-    return 0;
+    return (0);
 }
 
 
@@ -257,7 +264,7 @@ ApWriteToBinaryFile (
     ACPI_TABLE_HEADER       *Table,
     UINT32                  Instance)
 {
-    char                    Filename[ACPI_NAME_SIZE + 16];
+    char                    Filename[ACPI_NAMESEG_SIZE + 16];
     char                    InstanceStr [16];
     ACPI_FILE               File;
     ACPI_SIZE               Actual;
@@ -272,18 +279,18 @@ ApWriteToBinaryFile (
 
     if (ACPI_VALIDATE_RSDP_SIG (Table->Signature))
     {
-        ACPI_MOVE_NAME (Filename, ACPI_RSDP_NAME);
+        ACPI_COPY_NAMESEG (Filename, ACPI_RSDP_NAME);
     }
     else
     {
-        ACPI_MOVE_NAME (Filename, Table->Signature);
+        ACPI_COPY_NAMESEG (Filename, Table->Signature);
     }
 
     Filename[0] = (char) tolower ((int) Filename[0]);
     Filename[1] = (char) tolower ((int) Filename[1]);
     Filename[2] = (char) tolower ((int) Filename[2]);
     Filename[3] = (char) tolower ((int) Filename[3]);
-    Filename[ACPI_NAME_SIZE] = 0;
+    Filename[ACPI_NAMESEG_SIZE] = 0;
 
     /* Handle multiple SSDTs - create different filenames for each */
 

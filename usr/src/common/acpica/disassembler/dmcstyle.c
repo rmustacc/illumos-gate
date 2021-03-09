@@ -8,7 +8,7 @@
  *
  * 1. Copyright Notice
  *
- * Some or all of this work - Copyright (c) 1999 - 2018, Intel Corp.
+ * Some or all of this work - Copyright (c) 1999 - 2020, Intel Corp.
  * All rights reserved.
  *
  * 2. License
@@ -744,7 +744,7 @@ AcpiDmIsOptimizationIgnored (
      * Only a small subset of ASL/AML operators can be optimized.
      * Can only optimize/fold if there is no target (or targets)
      * specified for the operator. And of course, the operator
-     * is surrrounded by a Store() operator.
+     * is surrounded by a Store() operator.
      */
     switch (StoreArgument->Common.AmlOpcode)
     {
@@ -1075,7 +1075,7 @@ AcpiDmIsValidTarget (
  *
  * DESCRIPTION: Determine if the Target duplicates the operand, in order to
  *              detect if the expression can be converted to a compound
- *              assigment. (+=, *=, etc.)
+ *              assignment. (+=, *=, etc.)
  *
  ******************************************************************************/
 
@@ -1131,7 +1131,7 @@ AcpiDmIsTargetAnOperand (
         }
     }
 
-    /* Supress the duplicate operand at the top-level */
+    /* Suppress the duplicate operand at the top-level */
 
     if (TopLevel)
     {

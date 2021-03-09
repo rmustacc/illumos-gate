@@ -8,7 +8,7 @@
  *
  * 1. Copyright Notice
  *
- * Some or all of this work - Copyright (c) 1999 - 2018, Intel Corp.
+ * Some or all of this work - Copyright (c) 1999 - 2020, Intel Corp.
  * All rights reserved.
  *
  * 2. License
@@ -160,7 +160,7 @@
 #define DEBUGGER_THREADING          DEBUGGER_SINGLE_THREADED
 #endif /* !DEBUGGER_THREADING */
 
-/* EDK2 EFI environemnt */
+/* EDK2 EFI environment */
 
 #if defined(_EDK2_EFI)
 

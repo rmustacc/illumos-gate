@@ -8,7 +8,7 @@
  *
  * 1. Copyright Notice
  *
- * Some or all of this work - Copyright (c) 1999 - 2018, Intel Corp.
+ * Some or all of this work - Copyright (c) 1999 - 2020, Intel Corp.
  * All rights reserved.
  *
  * 2. License
@@ -207,10 +207,16 @@ AcpiUtConvertOctalString (
 
     while (*String)
     {
-        /* Character must be ASCII 0-7, otherwise terminate with no error */
-
+        /*
+         * Character must be ASCII 0-7, otherwise:
+         * 1) Runtime: terminate with no error, per the ACPI spec
+         * 2) Compiler: return an error
+         */
         if (!(ACPI_IS_OCTAL_DIGIT (*String)))
         {
+#ifdef ACPI_ASL_COMPILER
+            Status = AE_BAD_OCTAL_CONSTANT;
+#endif
             break;
         }
 
@@ -263,10 +269,16 @@ AcpiUtConvertDecimalString (
 
     while (*String)
     {
-        /* Character must be ASCII 0-9, otherwise terminate with no error */
-
+        /*
+         * Character must be ASCII 0-9, otherwise:
+         * 1) Runtime: terminate with no error, per the ACPI spec
+         * 2) Compiler: return an error
+         */
         if (!isdigit (*String))
         {
+#ifdef ACPI_ASL_COMPILER
+            Status = AE_BAD_DECIMAL_CONSTANT;
+#endif
            break;
         }
 
@@ -319,10 +331,16 @@ AcpiUtConvertHexString (
 
     while (*String)
     {
-        /* Must be ASCII A-F, a-f, or 0-9, otherwise terminate with no error */
-
+        /*
+         * Character must be ASCII A-F, a-f, or 0-9, otherwise:
+         * 1) Runtime: terminate with no error, per the ACPI spec
+         * 2) Compiler: return an error
+         */
         if (!isxdigit (*String))
         {
+#ifdef ACPI_ASL_COMPILER
+            Status = AE_BAD_HEX_CONSTANT;
+#endif
             break;
         }
 
@@ -419,15 +437,39 @@ BOOLEAN
 AcpiUtDetectHexPrefix (
     char                    **String)
 {
+    char                    *InitialPosition = *String;
 
+    AcpiUtRemoveHexPrefix (String);
+    if (*String != InitialPosition)
+    {
+        return (TRUE); /* String is past leading 0x */
+    }
+
+    return (FALSE);     /* Not a hex string */
+}
+
+
+/*******************************************************************************
+ *
+ * FUNCTION:    AcpiUtRemoveHexPrefix
+ *
+ * PARAMETERS:  String                  - Pointer to input ASCII string
+ *
+ * RETURN:      none
+ *
+ * DESCRIPTION: Remove a hex "0x" prefix
+ *
+ ******************************************************************************/
+
+void
+AcpiUtRemoveHexPrefix (
+    char                    **String)
+{
     if ((**String == ACPI_ASCII_ZERO) &&
         (tolower ((int) *(*String + 1)) == 'x'))
     {
         *String += 2;        /* Go past the leading 0x */
-        return (TRUE);
     }
-
-    return (FALSE);     /* Not a hex string */
 }
 
 

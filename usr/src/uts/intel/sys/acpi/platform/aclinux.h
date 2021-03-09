@@ -8,7 +8,7 @@
  *
  * 1. Copyright Notice
  *
- * Some or all of this work - Copyright (c) 1999 - 2018, Intel Corp.
+ * Some or all of this work - Copyright (c) 1999 - 2020, Intel Corp.
  * All rights reserved.
  *
  * 2. License
@@ -205,6 +205,11 @@
 
 #define ACPI_INIT_FUNCTION __init
 
+/* Use a specific bugging default separate from ACPICA */
+
+#undef ACPI_DEBUG_DEFAULT
+#define ACPI_DEBUG_DEFAULT          (ACPI_LV_INFO | ACPI_LV_REPAIR)
+
 #ifndef CONFIG_ACPI
 
 /* External globals for __KERNEL__, stubs is needed */
@@ -319,7 +324,8 @@
 
 #if defined(__ia64__)    || (defined(__x86_64__) && !defined(__ILP32__)) ||\
     defined(__aarch64__) || defined(__PPC64__) ||\
-    defined(__s390x__)
+    defined(__s390x__) ||\
+    (defined(__riscv) && (defined(__LP64__) || defined(_LP64)))
 #define ACPI_MACHINE_WIDTH          64
 #define COMPILER_DEPENDENT_INT64    long
 #define COMPILER_DEPENDENT_UINT64   unsigned long
