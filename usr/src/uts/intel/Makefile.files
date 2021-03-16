@@ -188,6 +188,7 @@ ACPICA_OBJS	+= \
 		   exoparg1.o exoparg2.o exoparg3.o exoparg6.o exprep.o \
 		   exregion.o exresnte.o exresolv.o exresop.o exstore.o \
 		   exstoren.o exstorob.o exsystem.o extrace.o exutils.o \
+		   exserial.o \
 		   \
 		   hwacpi.o hwesleep.o hwgpe.o hwpci.o hwregs.o hwsleep.o \
 		   hwtimer.o hwvalid.o hwxface.o hwxfsleep.o \
