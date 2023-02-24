@@ -12,6 +12,7 @@
 /*
  * Copyright (c) 2021, the University of Queensland
  * Copyright 2020 RackTop Systems, Inc.
+ * Copyright 2023 Oxide Computer Company
  */
 
 /*
@@ -28,6 +29,7 @@
 #include <sys/dlpi.h>
 
 #include <sys/mac_provider.h>
+#include <sys/mac_ether.h>
 
 /* Need these for mac_vlan_header_info() */
 #include <sys/mac_client.h>
@@ -125,6 +127,69 @@ mlxcx_link_fec_cap(link_fec_t fec, mlxcx_pplm_fec_caps_t *pfecp)
 	*pfecp = pplm_fec;
 
 	return (B_TRUE);
+}
+
+static mac_ether_media_t
+mlxcx_mac_media(mlxcx_port_status_t st, mlxcx_eth_proto_t v)
+{
+	switch (st) {
+	case MLXCX_PORT_STATUS_UP:
+	case MLXCX_PORT_STATUS_UP_ONCE:
+		break;
+	case MLXCX_PORT_STATUS_DOWN:
+		return (ETHER_MEDIA_NONE);
+	case MLXCX_PORT_STATUS_DISABLED:
+		return (ETHER_MEDIA_UNKNOWN);
+	}
+
+	switch (v) {
+	case MLXCX_PROTO_SGMII:
+		return (ETHER_MEDIA_1000_SGMII);
+	case MLXCX_PROTO_1000BASE_KX:
+		return (ETHER_MEDIA_1000BASE_KX);
+	case MLXCX_PROTO_10GBASE_CX4:
+		return (ETHER_MEDIA_10GBASE_CX4);
+	case MLXCX_PROTO_10GBASE_KX4:
+		return (ETHER_MEDIA_10GBASE_KX4);
+	case MLXCX_PROTO_10GBASE_KR:
+		return (ETHER_MEDIA_10GBASE_KR);
+	case MLXCX_PROTO_40GBASE_CR4:
+		return (ETHER_MEDIA_40GBASE_CR4);
+	case MLXCX_PROTO_40GBASE_KR4:
+		return (ETHER_MEDIA_40GBASE_KR4);
+	case MLXCX_PROTO_SGMII_100BASE:
+		return (ETHER_MEDIA_100_SGMII);
+	case MLXCX_PROTO_10GBASE_CR:
+		return (ETHER_MEDIA_10GBASE_CR);
+	case MLXCX_PROTO_10GBASE_SR:
+		return (ETHER_MEDIA_10GBASE_SR);
+	case MLXCX_PROTO_10GBASE_ER_LR:
+		return (ETHER_MEDIA_10GBASE_LR);
+	case MLXCX_PROTO_40GBASE_SR4:
+		return (ETHER_MEDIA_40GBASE_SR4);
+	case MLXCX_PROTO_40GBASE_LR4_ER4:
+		return (ETHER_MEDIA_40GBASE_LR4);
+	case MLXCX_PROTO_50GBASE_SR2:
+		return (ETHER_MEDIA_50GBASE_SR2);
+	case MLXCX_PROTO_100GBASE_CR4:
+		return (ETHER_MEDIA_100GBASE_CR4);
+	case MLXCX_PROTO_100GBASE_SR4:
+		return (ETHER_MEDIA_100GBASE_SR4);
+	case MLXCX_PROTO_100GBASE_KR4:
+		return (ETHER_MEDIA_100GBASE_KR4);
+	case MLXCX_PROTO_25GBASE_CR:
+		return (ETHER_MEDIA_25GBASE_CR);
+	case MLXCX_PROTO_25GBASE_KR:
+		return (ETHER_MEDIA_25GBASE_KR);
+	case MLXCX_PROTO_25GBASE_SR:
+		return (ETHER_MEDIA_25GBASE_SR);
+	case MLXCX_PROTO_50GBASE_CR2:
+		return (ETHER_MEDIA_50GBASE_CR2);
+	case MLXCX_PROTO_50GBASE_KR2:
+		return (ETHER_MEDIA_50GBASE_KR2);
+	default:
+		return (ETHER_MEDIA_UNKNOWN);
+	}
 }
 
 static int
@@ -265,6 +330,10 @@ mlxcx_mac_stat(void *arg, uint_t stat, uint64_t *val)
 		break;
 	case MAC_STAT_NORCVBUF:
 		*val = port->mlp_stats.mlps_rx_drops;
+		break;
+	case ETHER_STAT_XCVR_INUSE:
+		*val = (uint64_t)mlxcx_mac_media(port->mlp_oper_status,
+		    port->mlp_oper_proto);
 		break;
 	default:
 		ret = ENOTSUP;
@@ -1358,6 +1427,11 @@ mlxcx_mac_getprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 		default:
 			*(link_state_t *)pr_val = LINK_STATE_UNKNOWN;
 		}
+		break;
+	case MAC_PROP_MEDIA:
+		*(mac_ether_media_t *)pr_val =
+		    mlxcx_mac_media(port->mlp_oper_status,
+		    port->mlp_oper_proto);
 		break;
 	case MAC_PROP_AUTONEG:
 		if (pr_valsize < sizeof (uint8_t)) {
