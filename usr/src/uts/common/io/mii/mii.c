@@ -699,6 +699,12 @@ mii_m_getprop(mii_handle_t mh, const char *name, mac_prop_id_t num,
 		bcopy(&ph->phy_flowctrl, val, sizeof (link_flowctrl_t));
 		break;
 
+	case MAC_PROP_MEDIA: {
+		mac_ether_media_t media = (mac_ether_media_t)ph->phy_type;
+		bcopy(&media, val, sizeof (mac_ether_media_t));
+		break;
+	}
+
 	CASE_PROP_ABILITY(1000FDX_CAP, 1000_fdx)
 	CASE_PROP_ABILITY(1000HDX_CAP, 1000_hdx)
 	CASE_PROP_ABILITY(100T4_CAP, 100_t4)
