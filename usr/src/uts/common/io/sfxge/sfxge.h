@@ -129,6 +129,7 @@ typedef struct sfxge_mac_s {
 	efx_link_mode_t		sm_link_mode;
 	unsigned int		sm_link_speed;
 	sfxge_link_duplex_t	sm_link_duplex;
+	efx_phy_media_type_t	sm_link_media;
 	boolean_t		sm_link_up;
 	boolean_t		sm_link_poll_reqd;
 	kcondvar_t		sm_link_poll_kv;
@@ -429,8 +430,8 @@ struct sfxge_rxq_s {
 			unsigned int			__sr_pending;
 			unsigned int			__sr_completed;
 			unsigned int			__sr_loopback;
-			mblk_t   			*__sr_mp;
-			mblk_t   			**__sr_mpp;
+			mblk_t				*__sr_mp;
+			mblk_t				**__sr_mpp;
 			sfxge_rx_flow_t			*__sr_flow;
 			sfxge_rx_flow_t			*__sr_srfp;
 			sfxge_rx_flow_t			**__sr_srfpp;
@@ -506,7 +507,7 @@ struct sfxge_tx_packet_s {
 	sfxge_tx_packet_t	*stp_next;
 	mblk_t			*stp_mp;
 	struct ether_header	*stp_etherhp;
-	struct ip 		*stp_iphp;
+	struct ip		*stp_iphp;
 	struct tcphdr		*stp_thp;
 	size_t			stp_off;
 	size_t			stp_size;
@@ -764,7 +765,7 @@ struct sfxge_s {
 #endif
 	efx_family_t			s_family;
 	unsigned int			s_pcie_nlanes;
-	unsigned int 			s_pcie_linkspeed;
+	unsigned int			s_pcie_linkspeed;
 	kmutex_t			s_nic_lock;
 	efsys_bar_t			s_bar;
 	sfxge_intr_t			s_intr;
@@ -789,7 +790,7 @@ struct sfxge_s {
 	kmem_cache_t			*s_tqc;
 	unsigned int			s_tx_scale_base[SFXGE_TXQ_NTYPES];
 	unsigned int			s_tx_scale_max[SFXGE_TXQ_NTYPES];
-	int 				s_tx_qcount;
+	int				s_tx_qcount;
 	sfxge_txq_t			*s_stp[SFXGE_RX_SCALE_MAX *
 	    SFXGE_TXQ_NTYPES]; /* Sparse array */
 	kmem_cache_t			*s_tpc;
@@ -952,7 +953,7 @@ extern void			sfxge_rx_qflush_done(sfxge_rxq_t *);
 extern void			sfxge_rx_qflush_failed(sfxge_rxq_t *);
 extern void			sfxge_rx_qfpp_trim(sfxge_rxq_t *);
 extern void			sfxge_rx_stop(sfxge_t *);
-extern unsigned int 		sfxge_rx_loaned(sfxge_t *);
+extern unsigned int		sfxge_rx_loaned(sfxge_t *);
 extern void			sfxge_rx_fini(sfxge_t *);
 
 extern int			sfxge_tx_init(sfxge_t *);

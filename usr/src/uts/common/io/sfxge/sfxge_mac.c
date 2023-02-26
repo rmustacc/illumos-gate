@@ -610,6 +610,7 @@ sfxge_mac_link_update_locked(sfxge_t *sp, efx_link_mode_t mode)
 
 	smp->sm_link_mode = mode;
 	smp->sm_link_up = B_TRUE;
+	efx_phy_media_type_get(sp->s_enp, &smp->sm_link_media);
 
 	switch (smp->sm_link_mode) {
 	case EFX_LINK_UNKNOWN:

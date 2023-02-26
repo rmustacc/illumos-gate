@@ -28,6 +28,10 @@
  * policies, either expressed or implied, of the FreeBSD Project.
  */
 
+/*
+ * Copyright 2023 Oxide Computer Company
+ */
+
 #include <sys/types.h>
 #include <sys/ddi.h>
 #include <sys/sunddi.h>
@@ -109,6 +113,57 @@ static uint64_t
 sfxge_phy_lp_cap_test64(sfxge_t *sp, uint32_t field)
 {
 	return (sfxge_phy_lp_cap_test(sp, field) ? 1ull : 0ull);
+}
+
+/*
+ * Attempt to convert sfxge media information to a phy type. Right now the
+ * driver and firmware does not actually decode SFP and XFP based information
+ * itself and therefore we ultimately will have to return unknown in those
+ * cases. In the future on a link change event we could consider reading and
+ * parsing the compliance codes like other drivers and firmware do.
+ */
+typedef struct {
+	efx_phy_media_type_t smm_type;
+	uint32_t smm_speed;
+	mac_ether_media_t smm_media;
+} sfxge_media_map_t;
+
+static const sfxge_media_map_t sfxge_media_map[] = {
+	{ EFX_PHY_MEDIA_XAUI, 10000, ETHER_MEDIA_10G_XAUI },
+	{ EFX_PHY_MEDIA_CX4, 10000, ETHER_MEDIA_10GBASE_CX4 },
+	{ EFX_PHY_MEDIA_KX4, 10000, ETHER_MEDIA_10GBASE_KX4 },
+	{ EFX_PHY_MEDIA_KX4, 1000, ETHER_MEDIA_1000BASE_KX },
+	{ EFX_PHY_MEDIA_BASE_T, 40000, ETHER_MEDIA_40GBASE_T },
+	{ EFX_PHY_MEDIA_BASE_T, 10000, ETHER_MEDIA_10GBASE_T },
+	{ EFX_PHY_MEDIA_BASE_T, 1000, ETHER_MEDIA_1000BASE_T },
+	{ EFX_PHY_MEDIA_BASE_T, 100, ETHER_MEDIA_100BASE_TX },
+	{ EFX_PHY_MEDIA_BASE_T, 10, ETHER_MEDIA_10BASE_T }
+};
+
+static mac_ether_media_t
+sfxge_phy_to_media(sfxge_t *sp)
+{
+	sfxge_mac_t *smp = &sp->s_mac;
+
+	mutex_enter(&smp->sm_lock);
+	if (smp->sm_link_mode == EFX_LINK_UNKNOWN) {
+		mutex_exit(&smp->sm_lock);
+		return (ETHER_MEDIA_UNKNOWN);
+	} else if (smp->sm_link_mode == EFX_LINK_DOWN) {
+		mutex_exit(&smp->sm_lock);
+		return (ETHER_MEDIA_NONE);
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(sfxge_media_map); i++) {
+		if (smp->sm_link_media == sfxge_media_map[i].smm_type &&
+		    smp->sm_link_speed == sfxge_media_map[i].smm_speed) {
+			mutex_exit(&smp->sm_lock);
+			return (sfxge_media_map[i].smm_media);
+		}
+	}
+
+	mutex_exit(&smp->sm_lock);
+	return (ETHER_MEDIA_UNKNOWN);
 }
 
 static int
@@ -270,6 +325,11 @@ sfxge_gld_getstat(void *arg, unsigned int id, uint64_t *valp)
 		*valp = oui;
 		break;
 	}
+
+	case ETHER_STAT_XCVR_INUSE:
+		*valp = (uint64_t)sfxge_phy_to_media(sp);
+		break;
+
 	case MAC_STAT_MULTIRCV:
 		sfxge_mac_stat_get(sp, EFX_MAC_RX_MULTICST_PKTS, valp);
 		break;
@@ -444,6 +504,124 @@ sfxge_gld_tx(void *arg, mblk_t *mp)
 	return (NULL);
 }
 
+static int
+sfxgbe_gld_led_set(void *arg, mac_led_mode_t mode, uint_t flags)
+{
+	sfxge_t *sp = arg;
+	efx_phy_led_mode_t efx_mode;
+
+	if (flags != 0) {
+		return (EINVAL);
+	}
+
+	switch (mode) {
+	case MAC_LED_DEFAULT:
+		efx_mode = EFX_PHY_LED_DEFAULT;
+		break;
+	case MAC_LED_OFF:
+		efx_mode = EFX_PHY_LED_OFF;
+		break;
+	case MAC_LED_ON:
+		efx_mode = EFX_PHY_LED_ON;
+		break;
+	case MAC_LED_IDENT:
+		efx_mode = EFX_PHY_LED_FLASH;
+		break;
+	default:
+		return (ENOTSUP);
+	}
+
+	return (efx_phy_led_set(sp->s_enp, efx_mode));
+}
+
+static int
+sfxge_gld_txr_info(void *arg, uint_t id, mac_transceiver_info_t *infop)
+{
+	sfxge_t *sp = arg;
+
+	if (id != 0) {
+		return (EINVAL);
+	}
+
+	mutex_enter(&sp->s_mac.sm_lock);
+	switch (sp->s_mac.sm_link_media) {
+	case EFX_PHY_MEDIA_QSFP_PLUS:
+	case EFX_PHY_MEDIA_SFP_PLUS:
+		break;
+	case EFX_PHY_MEDIA_INVALID:
+	case EFX_PHY_MEDIA_XAUI:
+	case EFX_PHY_MEDIA_CX4:
+	case EFX_PHY_MEDIA_KX4:
+	case EFX_PHY_MEDIA_XFP:
+	case EFX_PHY_MEDIA_BASE_T:
+	default:
+		mutex_exit(&sp->s_mac.sm_lock);
+		return (ENOTSUP);
+	}
+	mutex_exit(&sp->s_mac.sm_lock);
+
+	/*
+	 * There doesn't seem to be an explicit way to tell if a module is
+	 * usable or not. As such, we assume that if the media type indicates
+	 * that something is present that it is usable.
+	 */
+	mac_transceiver_info_set_present(infop, B_TRUE);
+	mac_transceiver_info_set_usable(infop, B_TRUE);
+
+	return (0);
+}
+
+static int
+sfxge_gld_txr_read(void *arg, uint_t id, uint_t page, void *buf, size_t nbytes,
+    off_t off, size_t *nread)
+{
+	sfxge_t *sp = arg;
+	int ret;
+	uint8_t out;
+
+	if (id != 0 || buf == NULL || nbytes == 0 || nread == NULL ||
+	    (page != 0xa0 && page != 0xa2) || off < 0) {
+		return (EINVAL);
+	}
+
+	/*
+	 * Both supported pages have a length of 256 bytes, ensure nothing asks
+	 * us to go beyond that.
+	 */
+	if (nbytes > 256 || off >= 256 || (off + nbytes > 256)) {
+		return (EINVAL);
+	}
+
+	mutex_enter(&sp->s_mac.sm_lock);
+	switch (sp->s_mac.sm_link_media) {
+	case EFX_PHY_MEDIA_QSFP_PLUS:
+	case EFX_PHY_MEDIA_SFP_PLUS:
+		break;
+	case EFX_PHY_MEDIA_INVALID:
+	case EFX_PHY_MEDIA_XAUI:
+	case EFX_PHY_MEDIA_CX4:
+	case EFX_PHY_MEDIA_KX4:
+	case EFX_PHY_MEDIA_XFP:
+	case EFX_PHY_MEDIA_BASE_T:
+	default:
+		mutex_exit(&sp->s_mac.sm_lock);
+		return (ENOTSUP);
+	}
+
+	/*
+	 * The efx API appears to want pages to start at 0x0, so we need to
+	 * adjust to that.
+	 */
+	page -= 0xa0;
+	ret = efx_phy_module_get_info(sp->s_enp, page - 0xa0, (uint8_t)off,
+	    (uint8_t)nbytes, &out);
+	if (ret == 0) {
+		*nread = out;
+	}
+	mutex_exit(&sp->s_mac.sm_lock);
+	return (ret);
+}
+
 /*
  * This must not be static, in order to be tunable by /etc/system.
  * (Static declarations may be optmized away by the compiler.)
@@ -479,6 +657,23 @@ sfxge_gld_getcapab(void *arg, mac_capab_t cap, void *cap_arg)
 		DTRACE_PROBE(cksum);
 
 		*hcksump = HCKSUM_INET_FULL_V4 | HCKSUM_IPHDRCKSUM;
+		break;
+	}
+	case MAC_CAPAB_LED: {
+		mac_capab_led_t *led = cap_arg;
+
+		led->mcl_flags = 0;
+		led->mcl_modes = MAC_LED_ON | MAC_LED_OFF | MAC_LED_IDENT |
+		    MAC_LED_DEFAULT;
+		led->mcl_set = sfxgbe_gld_led_set;
+		break;
+	}
+	case MAC_CAPAB_TRANSCEIVER: {
+		mac_capab_transceiver_t *txr = cap_arg;
+		txr->mct_flags = 0;
+		txr->mct_ntransceivers = 1;
+		txr->mct_info = sfxge_gld_txr_info;
+		txr->mct_read = sfxge_gld_txr_read;
 		break;
 	}
 	default:
@@ -807,6 +1002,12 @@ sfxge_gld_getprop(void *arg, const char *name, mac_prop_id_t id,
 			goto fail1;
 		}
 		break;
+	case MAC_PROP_MEDIA:
+		if (size < sizeof (mac_ether_media_t)) {
+			rc = EINVAL;
+			goto fail1;
+		}
+		break;
 	case MAC_PROP_PRIVATE:
 		/* sfxge_gld_priv_prop_get should do any size checking */
 		break;
@@ -928,6 +1129,11 @@ sfxge_gld_getprop(void *arg, const char *name, mac_prop_id_t id,
 		}
 		break;
 	}
+
+	case MAC_PROP_MEDIA:
+		*(mac_ether_media_t *)valp = sfxge_phy_to_media(sp);
+		break;
+
 	case MAC_PROP_PRIVATE:
 		if ((rc = sfxge_gld_priv_prop_get(sp, name, size, valp)) != 0)
 			goto fail2;
