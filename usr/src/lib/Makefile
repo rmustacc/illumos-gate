@@ -139,6 +139,7 @@ SUBDIRS +=				\
 	libgrubmgmt	\
 	libgss		\
 	libhotplug	\
+	libi2c		\
 	libidmap	\
 	libidspace	\
 	libilb		\
@@ -409,6 +410,7 @@ HDRSUBDIRS=				\
 	libfstyp	\
 	libgen		\
 	libgrubmgmt	\
+	libi2c		\
 	libidmap	\
 	libidspace	\
 	libilb		\
@@ -635,6 +637,7 @@ libfru:		libfruutils
 libfsmgt:	libkstat
 libgrubmgmt:	libdevinfo libzfs libfstyp libefi
 $(INTEL_BLD)libgrubmgmt: libfdisk
+libi2c:		libdevinfo
 libidmap:	libavl libuutil
 libidspace:	libumem
 libinetsvc:	libscf
